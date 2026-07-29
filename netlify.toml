@@ -1,0 +1,10 @@
+# Voxel Craft is a static site with no build step: the files are served as-is.
+[build]
+  publish = "."
+  command = ""
+
+# ES modules and the Web Worker must be served with correct MIME types.
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Content-Type = "application/javascript; charset=utf-8"

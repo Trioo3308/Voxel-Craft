@@ -1,0 +1,16 @@
+# Dependencies (the game has none at runtime — three.js loads from a CDN)
+node_modules/
+
+# Netlify CLI state
+.netlify/
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
