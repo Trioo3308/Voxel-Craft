@@ -1,0 +1,432 @@
+# Voxel Craft
+
+A Minecraft-style voxel game in JavaScript + Three.js. Infinite procedural
+terrain, block building, a day/night survival loop, and mobs — with no build
+step and no asset files.
+
+Chose the web stack because it needs zero install, has direct GPU access for
+chunk meshing, and gives you Web Workers for off-thread world generation.
+
+---
+
+## Running it
+
+The game uses ES modules and a Web Worker, so it must be served over HTTP
+(opening `index.html` from the filesystem will not work — module and worker
+loading are blocked on `file://`).
+
+```bash
+npm run dev
+```
+
+Then open <http://localhost:5173>. Any static server works — `python -m http.server 5173`
+is fine too.
+
+Three.js loads from a CDN via the import map in `index.html`. To go offline,
+download `three.module.js` into `vendor/` and point the import map at it.
+
+---
+
+## Playing with other people
+
+### On your own network (easiest)
+
+```bash
+npm run host
+```
+
+That binds the server to every network interface instead of just your own
+machine. To see the exact link to send:
+
+```bash
+npm run whoami
+```
+
+It prints something like `http://192.168.1.171:5173` — anyone on the same
+Wi-Fi opens that in a browser and plays. No install on their side.
+
+If they cannot connect, Windows Firewall is blocking the port. Open PowerShell
+**as Administrator** once and run:
+
+```bash
+New-NetFirewallRule -DisplayName "Voxel Craft 5173" -Direction Inbound -LocalPort 5173 -Protocol TCP -Action Allow -Profile Private
+```
+
+`-Profile Private` keeps the rule to networks you have marked as trusted, so it
+does not expose the port on public Wi-Fi. Remove it later with
+`Remove-NetFirewallRule -DisplayName "Voxel Craft 5173"`.
+
+### Over the internet
+
+The game is 100% static files — no server code, no database — so any static host
+works. Drop the folder on GitHub Pages, Netlify, Cloudflare Pages or Vercel and
+share the URL. Nothing in the project needs configuring first.
+
+### What this is and is not
+
+Everyone gets **their own independent world**, saved in their own browser. This
+is shared *access*, not shared *play*: you will not see each other's characters
+or edits.
+
+Real-time multiplayer is a much larger piece of work — it needs an authoritative
+server, per-player state and edit replication. The groundwork is there, though:
+terrain is a pure function of the seed, so a networked version only ever has to
+sync *edits*, never terrain. `world.setBlock()` is the single choke point where
+that broadcast would go.
+
+---
+
+## Controls
+
+| Key | Action |
+| --- | --- |
+| `W` `A` `S` `D` | Move |
+| Mouse | Look |
+| `Space` | Jump / swim up / fly up |
+| `Shift` | Sneak (descend while flying) |
+| `Ctrl` | Sprint |
+| Left click | Hold to mine · click to attack a mob |
+| Right click | Place block · eat held food |
+| `1`–`9`, mouse wheel | Select hotbar slot |
+| `E` | Inventory (creative palette appears in creative mode) |
+
+### Inventory handling
+
+Slot interaction follows Minecraft, which is what makes distributing ingredients
+across a crafting grid practical later:
+
+| | Empty hand | Holding a stack |
+| --- | --- | --- |
+| **Left click** | Take the whole stack | Drop it all — merging into a matching stack, otherwise swapping |
+| **Right click** | Take half (rounded up) | Place **one** item; swap if the types differ |
+
+In the creative palette, left click takes a full stack and right click takes a
+single item. Closing the inventory while holding a stack returns it rather than
+destroying it.
+| `G` | Toggle creative / survival |
+| `F` | Toggle flight (creative only) |
+| `F3` | Debug overlay |
+| `Esc` | Pause |
+
+---
+
+## The survival loop
+
+- **Health** (20) and **hunger** (20). Moving, sprinting, jumping and fighting
+  burn *exhaustion*, which drains saturation, then hunger. A full hunger bar
+  regenerates health; an empty one starves you.
+- **Fall damage** past ~3.5 blocks. Water breaks a fall.
+- **Pigs** spawn on grass in daylight and drop raw porkchops — right-click to eat.
+- **Zombies** spawn at night, chase you within 22 blocks, hit for 3 damage with
+  knockback, and **burn in direct sunlight** — so surviving the night is the
+  actual challenge, and daylight is genuinely safe.
+- Death drops your inventory and respawns you at your spawn point.
+
+Mining drops the right block (stone → cobblestone, grass → dirt) as a physical
+item entity you walk over to collect.
+
+**Lava** burns: standing in it deals 4 damage every half-second and ignores
+invulnerability frames, so it is reliably lethal.
+
+---
+
+## Flowing fluids
+
+Water and lava spread like early Minecraft. Both are placeable from the creative
+palette — drop a source and watch it run.
+
+A fluid cell is either a **source** (level 0, permanent) or a **flow**
+(level 1..max, which exists only while something upstream feeds it). Each tick a
+flow recomputes the level it is entitled to:
+
+- fed from directly above → level 1, so waterfalls stay at full strength
+- otherwise `min(horizontal neighbour levels) + 1`
+- if that exceeds the family maximum, the cell dries up
+
+Then it spreads: straight down if there is room, otherwise outward one level
+weaker. Because levels only grow as you move away from a source, the system
+always settles — and **removing a source makes the whole pool recede on its own**,
+with no bookkeeping.
+
+| | Spread | Tick rate |
+| --- | --- | --- |
+| Water | 7 blocks | every tick (0.2 s) |
+| Lava | 3 blocks | every 3rd tick (viscous) |
+
+Water meeting lava turns to stone. Fluid never replaces solid blocks.
+
+Flowing levels render at reduced height so a stream visibly tapers, while a cell
+with more fluid above it fills its whole cube — otherwise a waterfall would look
+like a stack of disconnected slabs.
+
+Two things make this affordable in an infinite world:
+
+1. **It is event-driven, not a per-frame sweep.** Only cells adjacent to a change
+   are queued, so a static ocean of source blocks costs nothing until you disturb
+   it. Digging next to the sea *does* correctly let it pour in.
+2. **Worker sync is batched per tick.** A spreading pool changes dozens of voxels;
+   `world.flushBlockChanges()` sends them as one message so each affected chunk is
+   remeshed once rather than once per block.
+
+---
+
+## Saved worlds, and why updates won't break them
+
+Worlds live in your browser's IndexedDB. The menu lists them with their seed,
+play time and edit count; you can create, delete, **export** to a `.json` file
+and **import** one back. The game autosaves every 30 seconds, on pause, on death
+and when you close the tab.
+
+Three separate hazards could corrupt a world when the game is updated, so there
+are three separate defences:
+
+| Hazard | Defence |
+| --- | --- |
+| The save layout changes | Every save records `formatVersion`. `MIGRATIONS` in `world/save.js` holds one function per version step, applied in order on load. Old saves are upgraded, never rejected. |
+| Terrain generation changes | Every save records `terrainVersion`, and the generator is built with **that** version, not the newest. A world keeps the landscape rules it was born with, so newly explored chunks still match the ones you already walked through. |
+| Block or item ids get renumbered | Saves store a **palette** mapping id → stable name, and loading remaps by name. Ids can be reshuffled freely; only *renaming* or *deleting* a block loses data, and that is reported to the console rather than applied silently. |
+
+The third one is the sneaky one. Saved edits are just numbers — without a
+palette, inserting one new block in the middle of the registry would silently
+turn someone's cobblestone house into dirt.
+
+A world saved by a **newer** build than you are running is detected and refused
+with an explanation, rather than being loaded and mangled.
+
+**If you change terrain generation later:** bump `TERRAIN_VERSION` in
+`world/terrain.js` and branch on `this.version` where behaviour differs. Never
+edit v1 behaviour in place — that is exactly what silently reshapes existing
+worlds.
+
+---
+
+## Progression
+
+Mining is gated by tool tier, which is what gives the game a spine:
+
+| Ore | Depth | Needs |
+| --- | --- | --- |
+| Coal | y 5–118 | wooden pickaxe |
+| Iron | y 3–62 | stone pickaxe |
+| Lapis | y 2–34 | stone pickaxe |
+| Gold | y 3–32 | iron pickaxe |
+| Redstone | y 2–22 | iron pickaxe |
+| Diamond | y 1–16 | iron pickaxe |
+| Emerald | y 4–40, **mountains only** | iron pickaxe |
+
+Mining a diamond with a stone pickaxe destroys the block and gives you nothing,
+so the loop is: wood → stone → iron (smelted in a furnace) → diamond.
+
+**Tools** come in wood, stone, iron, gold and diamond — pickaxe, axe, shovel and
+sword each. The right tool class multiplies mining speed; the wrong one is no
+better than bare hands. Gold keeps its Minecraft quirk: very fast, very fragile.
+Tools wear out and break.
+
+**Armour** comes in iron, gold and diamond. Each armour point removes 4% of
+incoming damage, capped at 80%, so full diamond (20 points) blocks four fifths of
+a hit. Armour wears down when it saves you, and does not protect against
+starvation or falling out of the world.
+
+**Furnaces** smelt iron and gold ore into ingots, sand into glass, cobblestone
+back into stone and porkchops into a much better meal. Coal, logs, planks and
+sticks all burn. Smelting continues while the menu is closed.
+
+---
+
+## Architecture
+
+```
+src/
+├─ main.js                 Game loop + state machine (loading/menu/playing/paused/dead)
+├─ settings.js             All tunables in one place
+├─ engine/
+│  ├─ renderer.js          Three.js scene, camera, lights, block highlight
+│  ├─ input.js             Keyboard/mouse state + edges, pointer lock
+│  └─ sky.js               Day/night cycle; authority on isDay/isNight
+├─ world/
+│  ├─ blocks.js            Block + item registry  ← add content here
+│  ├─ textures.js          Procedurally painted texture atlas
+│  ├─ noise.js             Seeded Perlin noise + hashing
+│  ├─ chunk.js             Chunk constants and indexing math
+│  ├─ terrain.js           Terrain, biomes, caves, ores, trees
+│  ├─ fluids.js            Flowing water & lava automaton
+│  ├─ save.js              Persistence + version/palette migration
+│  ├─ mesher.js            Voxels → vertex buffers (culling + ambient occlusion)
+│  ├─ worker.js            Worker entry: owns generation and meshing
+│  └─ world.js             Main-thread chunk streaming + block read/write
+├─ player/
+│  ├─ physics.js           AABB vs. voxel collision (shared with mobs)
+│  ├─ raycast.js           Voxel DDA ray traversal
+│  ├─ player.js            First-person controller + block interaction
+│  ├─ inventory.js         Hotbar, backpack, armour, durability
+│  ├─ crafting.js          Recipes, grid matching, furnace smelting
+│  └─ survival.js          Health, hunger, armour mitigation, death
+├─ entities/
+│  ├─ mob.js               Base mob: physics, health, animation
+│  ├─ mobTypes.js          Mob registry  ← add creatures here
+│  ├─ itemEntity.js        Dropped items
+│  └─ entityManager.js     Spawning, despawning, ray picking
+└─ ui/
+   └─ hud.js               All DOM UI
+```
+
+### How performance is achieved
+
+The world is infinite, so the work has to be bounded at every stage:
+
+1. **Everything expensive runs in a Web Worker.** Noise sampling, chunk assembly
+   and vertex-buffer construction all happen off the render thread. Finished
+   geometry comes back as transferable `ArrayBuffer`s (zero-copy).
+2. **Hidden-face culling.** Only faces touching a non-opaque neighbour are
+   emitted — about **1,860 triangles per chunk**, where a naive "six quads per
+   block" mesher would emit nearly 200,000. The padded snapshot mirrors the
+   floor block into its `y = -1` skirt so chunks do not emit the permanently
+   invisible underside of the world (another 512 triangles each).
+3. **One draw call per chunk.** A single procedural texture atlas plus one
+   material means each chunk is one `Mesh`, and Three.js frustum-culls it for free.
+4. **Baked lighting.** Ambient occlusion, sky exposure and per-face shading are
+   computed once at mesh time and stored in vertex colours, so the runtime
+   material is unlit `MeshBasicMaterial` — no per-fragment lighting cost. Day/night
+   is a single material colour multiply.
+5. **Budgeted uploads.** At most 2 chunk meshes are pushed to the GPU per frame
+   (`Settings.maxUploadsPerFrame`) and at most 6 generation jobs are in flight,
+   so streaming never causes a frame hitch.
+6. **Circular load area with hysteresis**, so walking back and forth across a
+   boundary does not thrash chunks.
+
+Terrain generation measures ~8 ms/chunk, entirely on the worker thread.
+
+### Two design decisions worth knowing
+
+**Generation is a pure function of `(x, z, seed)`.** No chunk ever reads its
+neighbours' stored state. That is what makes trees straddling a chunk border line
+up perfectly — both sides compute the identical answer. It also means the worker
+can cheaply generate the 8 neighbours it needs for correct edge culling and
+ambient occlusion, so chunk seams are right on the *first* draw and never need a
+second "seam fix" pass.
+
+**Voxel data is deliberately duplicated.** The worker owns the authoritative copy
+for meshing; the main thread keeps its own copy for collision, raycasting and
+instant edit feedback. Round-tripping to the worker for those would add a frame
+of latency to every block you place.
+
+---
+
+## Extending it
+
+### Add a block
+
+1. Add a tile id to `TILE` in `world/blocks.js`.
+2. Paint it in `PAINTERS` in `world/textures.js` (16×16 pixels, `set(x,y,r,g,b,a)`).
+3. Add a `defineBlock(...)` line.
+
+Terrain, mesher, inventory, hotbar icons, drops and the creative palette all read
+from the registry — nothing else needs touching.
+
+### Add a mob
+
+Append one object to `MOB_TYPES` in `entities/mobTypes.js` with `buildModel()`
+and `ai(mob, dt, ctx)`. Physics, animation, combat, spawning and despawning are
+generic. The `steerToward` / `wander` / `avoidCliffs` helpers are already there.
+
+### Add a recipe
+
+One line in `player/crafting.js`:
+
+```js
+shaped(['DDD', ' S ', ' S '], { D: DIAMOND_BLOCK.id, S: ITEM_ID.STICK },
+       { id: someItemId, count: 1 });
+```
+
+Patterns are auto-trimmed, so they match anywhere in the grid, and a 3×3 recipe
+is automatically unavailable in the 2×2 inventory grid. `shapeless([...], result)`
+ignores arrangement. Smelting is two `Map` entries: `SMELTING` and `FUELS`.
+
+### Add a biome
+
+Add an entry to `BIOME`, a case in `surfacePalette()` for its ground blocks and
+one in `treeStyle()` for its trees, then a branch in `biomeAt()` deciding when it
+appears from the temperature / humidity / weirdness fields.
+
+Note that raw fBm noise clusters near zero — the climate axes are amplified by
+~2.2 before thresholding for exactly this reason. Without that, almost the whole
+map comes out as one biome.
+
+### Add multiplayer
+
+The clean seam is `world.setBlock()`. It applies locally, then posts to the
+worker. Add a network broadcast at the same point and apply remote edits through
+the same function, and terrain stays consistent because generation is seed-pure —
+you only ever need to sync *edits*, never terrain.
+
+---
+
+## Known simplifications
+
+These are deliberate scope choices, not bugs:
+
+- **Fluid is not simulated on chunk load**, only on change. Terrain-generated
+  oceans and cave water sit still until you disturb them — which is both the
+  cheap option and roughly how early Minecraft behaved.
+- **No buckets.** Water and lava sources are placed from the creative palette.
+- **Zombie AI is steering-based**, not A\* — they walk toward you and jump at
+  obstacles, so they can get stuck on complex terrain.
+- **No enchanting, potions or redstone circuitry.** Redstone and lapis generate
+  and can be mined, but currently have no use beyond decoration.
+- **Armour comes in iron, gold and diamond only** — the three metal tiers, as in
+  Minecraft. There is no leather (no cows) and no wood or stone armour.
+- Dropped item stacks do not merge with each other.
+
+---
+
+## Verified behaviour
+
+Checked against a running instance plus headless harnesses for the generator,
+the fluid automaton and the mesher.
+
+**World** — terrain layering (grass → dirt ×4 → stone → bedrock), caves, ore
+blobs; chunk seams continuous; identical seed reproduces a chunk exactly; trees
+stand on dirt with canopy above, none floating.
+
+**Controls** — W/S/A/D move in the correct directions at yaw 0 and rotated;
+right click places (middle click does not); breaking yields the correct drop;
+solid blocks cannot be placed inside the player, non-solid ones can.
+
+**Inventory** — right click takes half (rounding up) and deposits one at a time;
+left click still moves whole stacks and merges with overflow retained; full
+stacks reject deposits; closing while holding returns the stack.
+
+**Fluids** — water spreads exactly 7 blocks in a concentric diamond
+(1/4/8/12/16/20/24/28 cells by level) and lava exactly 3; pools recede fully when
+the source is removed; water falls off ledges and pools below; water + lava makes
+stone; fluid never overwrites solids; the automaton goes quiescent rather than
+churning.
+
+**Rendering** — flowing fluid is tapered, submerged cells fill their cube, lava
+renders opaque and unshaded while normal blocks keep their baked AO, and a solid
+chunk emits only its 256 top faces.
+
+**Survival** — night spawns zombies, day spawns pigs; zombies chase and deal 3
+damage with knockback; player attacks apply damage and knockback; pigs drop
+porkchops; zombies burn in direct sunlight; lava damages the player; the player
+rests exactly flush on the block surface.
+
+**Ores & biomes** — all seven ores generate and stay inside their depth bands;
+emerald appears only in mountains and is the rarest; diamond is rarer than iron
+which is rarer than coal; all ten biomes appear with a sane spread (36% plains
+down to 0.9% mountains); savanna/taiga/swamp surface blocks and acacia/spruce
+trees all reachable.
+
+**Crafting & gear** — all 49 recipes match, including all 20 tools, all 12
+armour pieces and the mirrored axe layout; 3×3 recipes are correctly rejected by
+the 2×2 grid; nonsense layouts produce nothing; bare hands drop no stone; a
+wooden pickaxe cannot harvest diamond but an iron one can; tools wear down and
+break; a diamond pickaxe mines ~8× faster than fists; furnaces smelt, keep
+running with the menu closed, and return their contents when broken; full
+diamond armour blocks 80% of damage but none of starvation.
+
+**Persistence** — a full round trip through a page reload restores position,
+health, hunger, time of day, every inventory slot in place, tool durability,
+worn armour, block edits and furnace contents; saves from a newer build are
+refused rather than mangled; block ids can be renumbered without corrupting a
+save.

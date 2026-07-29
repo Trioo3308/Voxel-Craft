@@ -1,0 +1,15 @@
+{
+  "name": "voxel-craft",
+  "version": "1.0.0",
+  "description": "A modular Minecraft-style voxel game built with Three.js",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "npx --yes serve -l 5173 .",
+    "start": "npx --yes serve -l 5173 .",
+    "host": "npx --yes serve -l tcp://0.0.0.0:5173 .",
+    "whoami": "node scripts/whoami.mjs"
+  },
+  "keywords": ["voxel", "minecraft", "three.js", "webgl", "game"],
+  "license": "MIT"
+}

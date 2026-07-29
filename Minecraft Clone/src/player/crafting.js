@@ -1,0 +1,340 @@
+/**
+ * crafting.js — Recipes, grid matching and furnace smelting.
+ *
+ * Two recipe kinds, as in Minecraft:
+ *   shaped     — the arrangement matters; the pattern is matched against the
+ *                grid's trimmed bounding box, so it works anywhere in the grid
+ *   shapeless  — only the multiset of ingredients matters
+ *
+ * Tool and armour recipes are generated from templates rather than written out
+ * 35 times, so adding a material is one line in `GEAR_TIERS`.
+ */
+
+import {
+  PLANKS, LOG, ACACIA_LOG, SPRUCE_LOG, COBBLE, STONE, SAND, GLASS,
+  CRAFTING_TABLE, FURNACE, IRON_ORE, GOLD_ORE,
+  IRON_BLOCK, GOLD_BLOCK, DIAMOND_BLOCK,
+  ITEM_ID, TOOL_KINDS, ARMOR_PIECES, ARMOR_MATERIAL_NAMES,
+  toolItemId, armorItemId, getDisplayName,
+} from '../world/blocks.js';
+
+// ---------------------------------------------------------------------------
+// Recipe construction
+// ---------------------------------------------------------------------------
+
+export const RECIPES = [];
+
+// Function declarations (not const arrows) — these run during the recipe
+// registrations further down, which happen at module evaluation time.
+function isEmptyCell(c) {
+  return c === '.' || c === ' ' || c === undefined;
+}
+
+/**
+ * Strip empty rows and columns from a pattern.
+ *
+ * Matching compares the pattern against the *trimmed* bounding box of the
+ * player's grid, so the pattern has to be trimmed too. Without this, a shovel
+ * written as ['.M.', '.S.', '.S.'] claims to be 3 wide while the grid it
+ * matches is only 1 wide, and the recipe can never fire.
+ */
+function trimPattern(pattern) {
+  let minX = Infinity, maxX = -1, minY = Infinity, maxY = -1;
+
+  for (let y = 0; y < pattern.length; y++) {
+    for (let x = 0; x < pattern[y].length; x++) {
+      if (isEmptyCell(pattern[y][x])) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < 0) return pattern; // empty pattern; leave it alone
+
+  const trimmed = [];
+  for (let y = minY; y <= maxY; y++) {
+    let row = '';
+    for (let x = minX; x <= maxX; x++) row += pattern[y][x] ?? '.';
+    trimmed.push(row);
+  }
+  return trimmed;
+}
+
+/**
+ * @param pattern rows of single characters; '.' or ' ' is an empty cell
+ * @param key     character -> ingredient id
+ * @param result  {id, count}
+ */
+function shaped(pattern, key, result) {
+  RECIPES.push({ type: 'shaped', pattern: trimPattern(pattern), key, result });
+}
+
+function shapeless(ingredients, result) {
+  RECIPES.push({ type: 'shapeless', ingredients, result });
+}
+
+// --- Basics -----------------------------------------------------------------
+
+// Every log type yields the same generic planks.
+for (const log of [LOG, ACACIA_LOG, SPRUCE_LOG]) {
+  shapeless([log.id], { id: PLANKS.id, count: 4 });
+}
+
+shaped(['P', 'P'], { P: PLANKS.id }, { id: ITEM_ID.STICK, count: 4 });
+shaped(['PP', 'PP'], { P: PLANKS.id }, { id: CRAFTING_TABLE.id, count: 1 });
+shaped(['CCC', 'C.C', 'CCC'], { C: COBBLE.id }, { id: FURNACE.id, count: 1 });
+
+// --- Storage blocks (and back again) ----------------------------------------
+
+const STORAGE = [
+  [ITEM_ID.IRON_INGOT, IRON_BLOCK.id],
+  [ITEM_ID.GOLD_INGOT, GOLD_BLOCK.id],
+  [ITEM_ID.DIAMOND, DIAMOND_BLOCK.id],
+];
+for (const [ingot, block] of STORAGE) {
+  shaped(['III', 'III', 'III'], { I: ingot }, { id: block, count: 1 });
+  shapeless([block], { id: ingot, count: 9 });
+}
+
+// --- Tools & armour ---------------------------------------------------------
+
+/** Crafting material for each gear tier. */
+const GEAR_TIERS = {
+  wood: PLANKS.id,
+  stone: COBBLE.id,
+  iron: ITEM_ID.IRON_INGOT,
+  gold: ITEM_ID.GOLD_INGOT,
+  diamond: ITEM_ID.DIAMOND,
+};
+
+/** M = material, S = stick. Axes get a mirrored variant, as in Minecraft. */
+const TOOL_PATTERNS = {
+  pickaxe: [['MMM', '.S.', '.S.']],
+  axe: [['MM.', 'MS.', '.S.'], ['.MM', '.SM', '.S.']],
+  shovel: [['.M.', '.S.', '.S.']],
+  sword: [['.M.', '.M.', '.S.']],
+};
+
+const ARMOR_PATTERNS = {
+  helmet: ['MMM', 'M.M'],
+  chestplate: ['M.M', 'MMM', 'MMM'],
+  leggings: ['MMM', 'M.M', 'M.M'],
+  boots: ['M.M', 'M.M'],
+};
+
+for (const kind of TOOL_KINDS) {
+  for (const [material, ingredient] of Object.entries(GEAR_TIERS)) {
+    for (const pattern of TOOL_PATTERNS[kind]) {
+      shaped(pattern, { M: ingredient, S: ITEM_ID.STICK }, { id: toolItemId(kind, material), count: 1 });
+    }
+  }
+}
+
+for (const piece of ARMOR_PIECES) {
+  for (const material of ARMOR_MATERIAL_NAMES) {
+    shaped(ARMOR_PATTERNS[piece], { M: GEAR_TIERS[material] }, { id: armorItemId(piece, material), count: 1 });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Grid matching
+// ---------------------------------------------------------------------------
+
+/** Bounding box of the non-empty cells in a square grid of stacks. */
+function boundingBox(grid, size) {
+  let minX = size, minY = size, maxX = -1, maxY = -1;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      if (!grid[y * size + x]) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  return maxX < 0 ? null : { minX, minY, maxX, maxY };
+}
+
+function matchShaped(recipe, grid, size, box) {
+  const height = recipe.pattern.length;
+  const width = Math.max(...recipe.pattern.map((r) => r.length));
+  if (box.maxX - box.minX + 1 !== width) return false;
+  if (box.maxY - box.minY + 1 !== height) return false;
+
+  for (let py = 0; py < height; py++) {
+    for (let px = 0; px < width; px++) {
+      const ch = recipe.pattern[py][px] ?? '.';
+      const stack = grid[(box.minY + py) * size + (box.minX + px)];
+      if (isEmptyCell(ch)) {
+        if (stack) return false;
+      } else {
+        if (!stack || stack.id !== recipe.key[ch]) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function matchShapeless(recipe, grid) {
+  const present = grid.filter(Boolean).map((s) => s.id).sort((a, b) => a - b);
+  const wanted = [...recipe.ingredients].sort((a, b) => a - b);
+  if (present.length !== wanted.length) return false;
+  return present.every((id, i) => id === wanted[i]);
+}
+
+/**
+ * Find the recipe a crafting grid produces.
+ * @param grid flat array of `size * size` stacks (null for empty)
+ * @param size 2 for the inventory grid, 3 for a crafting table
+ * @returns {{id, count}|null}
+ */
+export function findRecipe(grid, size) {
+  const box = boundingBox(grid, size);
+  if (!box) return null;
+
+  for (const recipe of RECIPES) {
+    if (recipe.type === 'shaped') {
+      const h = recipe.pattern.length;
+      const w = Math.max(...recipe.pattern.map((r) => r.length));
+      if (h > size || w > size) continue; // needs a bigger grid than we have
+      if (matchShaped(recipe, grid, size, box)) return { ...recipe.result };
+    } else if (matchShapeless(recipe, grid)) {
+      return { ...recipe.result };
+    }
+  }
+  return null;
+}
+
+/**
+ * Consume one of every ingredient after a successful craft.
+ * Mutates the grid in place, emptying spent slots.
+ */
+export function consumeGrid(grid) {
+  for (let i = 0; i < grid.length; i++) {
+    const stack = grid[i];
+    if (!stack) continue;
+    stack.count--;
+    if (stack.count <= 0) grid[i] = null;
+  }
+}
+
+/** Every recipe producing a given id — used by the recipe book UI. */
+export function recipesFor(id) {
+  return RECIPES.filter((r) => r.result.id === id);
+}
+
+// ---------------------------------------------------------------------------
+// Smelting
+// ---------------------------------------------------------------------------
+
+/** input id -> {id, count} produced. */
+export const SMELTING = new Map([
+  [IRON_ORE.id, { id: ITEM_ID.IRON_INGOT, count: 1 }],
+  [GOLD_ORE.id, { id: ITEM_ID.GOLD_INGOT, count: 1 }],
+  [SAND.id, { id: GLASS.id, count: 1 }],
+  [COBBLE.id, { id: STONE.id, count: 1 }],
+  [ITEM_ID.PORKCHOP, { id: ITEM_ID.COOKED_PORKCHOP, count: 1 }],
+]);
+
+/** Seconds of burn time each fuel provides. One smelt takes SMELT_SECONDS. */
+export const FUELS = new Map([
+  [ITEM_ID.COAL, 80],
+  [LOG.id, 15],
+  [ACACIA_LOG.id, 15],
+  [SPRUCE_LOG.id, 15],
+  [PLANKS.id, 15],
+  [CRAFTING_TABLE.id, 15],
+  [ITEM_ID.STICK, 5],
+]);
+
+export const SMELT_SECONDS = 10;
+
+export function smeltResultFor(id) {
+  return SMELTING.get(id) ?? null;
+}
+
+export function fuelValueFor(id) {
+  return FUELS.get(id) ?? 0;
+}
+
+/** A fresh, empty furnace. */
+export function makeFurnaceState() {
+  return {
+    input: null,
+    fuel: null,
+    output: null,
+    /** Seconds of fuel left, and what a full unit of it was worth. */
+    burnRemaining: 0,
+    burnMax: 0,
+    /** Seconds of progress on the current smelt. */
+    cookProgress: 0,
+  };
+}
+
+/**
+ * Advance a furnace. Runs whether or not its UI is open, so ores keep smelting
+ * while you wander off.
+ * @returns {boolean} true if anything changed (so the UI can redraw)
+ */
+export function tickFurnace(state, dt) {
+  const before = state.burnRemaining > 0;
+  let changed = false;
+
+  if (state.burnRemaining > 0) {
+    state.burnRemaining = Math.max(0, state.burnRemaining - dt);
+    changed = true;
+  }
+
+  const recipe = state.input ? smeltResultFor(state.input.id) : null;
+  // Output must be empty or already holding the same item with room to spare.
+  const outputHasRoom =
+    recipe &&
+    (!state.output || (state.output.id === recipe.id && state.output.count + recipe.count <= 64));
+  const canSmelt = !!recipe && outputHasRoom;
+
+  // Light the furnace only when there is something worth burning fuel for.
+  if (state.burnRemaining <= 0 && canSmelt && state.fuel) {
+    const value = fuelValueFor(state.fuel.id);
+    if (value > 0) {
+      state.burnRemaining = value;
+      state.burnMax = value;
+      state.fuel.count--;
+      if (state.fuel.count <= 0) state.fuel = null;
+      changed = true;
+    }
+  }
+
+  if (state.burnRemaining > 0 && canSmelt) {
+    state.cookProgress += dt;
+    changed = true;
+    if (state.cookProgress >= SMELT_SECONDS) {
+      state.cookProgress = 0;
+      state.input.count--;
+      if (state.input.count <= 0) state.input = null;
+      if (state.output) state.output.count += recipe.count;
+      else state.output = { id: recipe.id, count: recipe.count };
+    }
+  } else if (state.cookProgress > 0) {
+    // Progress decays when the fire goes out, rather than freezing forever.
+    state.cookProgress = Math.max(0, state.cookProgress - dt * 2);
+    changed = true;
+  }
+
+  return changed || before !== state.burnRemaining > 0;
+}
+
+/** Is this furnace currently burning? Drives the lit texture. */
+export function isFurnaceLit(state) {
+  return !!state && state.burnRemaining > 0;
+}
+
+/** Human-readable recipe list, handy for debugging and the README. */
+export function describeRecipes() {
+  return RECIPES.map((r) => {
+    const out = `${getDisplayName(r.result.id)} x${r.result.count}`;
+    return r.type === 'shaped'
+      ? `${out}  <=  [${r.pattern.join(' | ')}]`
+      : `${out}  <=  ${r.ingredients.map(getDisplayName).join(' + ')}`;
+  });
+}

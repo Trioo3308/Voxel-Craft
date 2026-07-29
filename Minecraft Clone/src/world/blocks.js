@@ -1,0 +1,643 @@
+/**
+ * blocks.js — Block & item registry.
+ *
+ * ADDING A NEW BLOCK
+ * ------------------
+ *  1. Add a tile index to `TILE` (and paint it in `src/world/textures.js`).
+ *  2. Add an entry to the `defineBlock` list below with a fresh id.
+ *  3. That's it — terrain, mesher, inventory, HUD and drops all read from here.
+ *
+ * This module is imported by the worker, so it must not touch Three.js or DOM.
+ */
+
+// ---------------------------------------------------------------------------
+// Texture atlas tile indices (row-major in a 16x16 grid of 16px tiles).
+// ---------------------------------------------------------------------------
+export const TILE = {
+  GRASS_TOP: 0,
+  GRASS_SIDE: 1,
+  DIRT: 2,
+  STONE: 3,
+  COBBLE: 4,
+  SAND: 5,
+  GRAVEL: 6,
+  LOG_SIDE: 7,
+  LOG_TOP: 8,
+  LEAVES: 9,
+  PLANKS: 10,
+  WATER: 11,
+  BEDROCK: 12,
+  COAL_ORE: 13,
+  IRON_ORE: 14,
+  GLASS: 15,
+  SNOW_TOP: 16,
+  SNOW_SIDE: 17,
+  BRICK: 18,
+  LAVA: 22,
+  // Item-only icons (never appear on a cube face).
+  PORKCHOP: 19,
+  ROTTEN_FLESH: 20,
+  STICK: 21,
+
+  // --- Ores ---------------------------------------------------------------
+  GOLD_ORE: 23,
+  REDSTONE_ORE: 24,
+  LAPIS_ORE: 25,
+  DIAMOND_ORE: 26,
+  EMERALD_ORE: 27,
+
+  // --- Crafting stations & storage blocks ---------------------------------
+  CRAFTING_TOP: 28,
+  CRAFTING_SIDE: 29,
+  CRAFTING_FRONT: 30,
+  FURNACE_TOP: 31,
+  FURNACE_SIDE: 32,
+  FURNACE_FRONT: 33,
+  FURNACE_LIT: 34,
+  IRON_BLOCK: 35,
+  GOLD_BLOCK: 36,
+  DIAMOND_BLOCK: 37,
+
+  // --- Biome blocks -------------------------------------------------------
+  ACACIA_LOG_SIDE: 38,
+  ACACIA_LOG_TOP: 39,
+  ACACIA_LEAVES: 40,
+  SPRUCE_LOG_SIDE: 41,
+  SPRUCE_LOG_TOP: 42,
+  SPRUCE_LEAVES: 43,
+  DRY_GRASS_TOP: 44,
+  DRY_GRASS_SIDE: 45,
+  PODZOL_TOP: 46,
+  PODZOL_SIDE: 47,
+  SWAMP_GRASS_TOP: 48,
+  SWAMP_GRASS_SIDE: 49,
+  CLAY: 50,
+  SANDSTONE_TOP: 51,
+  SANDSTONE_SIDE: 52,
+
+  // --- Material item icons ------------------------------------------------
+  COAL_ITEM: 53,
+  IRON_INGOT: 54,
+  GOLD_INGOT: 55,
+  DIAMOND_GEM: 56,
+  REDSTONE_DUST: 57,
+  LAPIS_GEM: 58,
+  EMERALD_GEM: 59,
+  COOKED_PORKCHOP: 60,
+
+  /**
+   * Tool and armour icons are generated parametrically (shape x material), so
+   * they occupy reserved runs rather than individual named entries.
+   * Tools:  TOOL_BASE + toolIndex * 5 + materialIndex
+   * Armour: ARMOR_BASE + pieceIndex * 5 + materialIndex
+   */
+  TOOL_BASE: 64,
+  ARMOR_BASE: 96,
+};
+
+/** Order used for the parametric tool/armour tile runs. */
+export const TOOL_KINDS = ['pickaxe', 'axe', 'shovel', 'sword'];
+export const ARMOR_PIECES = ['helmet', 'chestplate', 'leggings', 'boots'];
+export const GEAR_MATERIALS = ['wood', 'stone', 'iron', 'gold', 'diamond'];
+
+export function toolTile(kind, material) {
+  return TILE.TOOL_BASE + TOOL_KINDS.indexOf(kind) * 5 + GEAR_MATERIALS.indexOf(material);
+}
+
+export function armorTile(piece, material) {
+  return TILE.ARMOR_BASE + ARMOR_PIECES.indexOf(piece) * 5 + GEAR_MATERIALS.indexOf(material);
+}
+
+export const ATLAS_COLS = 16; // 16x16 tiles
+export const ATLAS_TILE_PX = 16;
+
+// ---------------------------------------------------------------------------
+// Block ids. Keep AIR at 0 — a lot of code treats 0 as "nothing here".
+// ---------------------------------------------------------------------------
+export const AIR = 0;
+
+/** Face order used everywhere: +X, -X, +Y, -Y, +Z, -Z. */
+export const FACE_PX = 0, FACE_NX = 1, FACE_PY = 2, FACE_NY = 3, FACE_PZ = 4, FACE_NZ = 5;
+
+/** Expand a shorthand tile spec into the 6-face array. */
+function faceTiles(spec) {
+  if (typeof spec === 'number') return [spec, spec, spec, spec, spec, spec];
+  const side = spec.side ?? spec.all ?? 0;
+  const top = spec.top ?? spec.all ?? side;
+  const bottom = spec.bottom ?? spec.all ?? side;
+  return [side, side, top, bottom, side, side];
+}
+
+/** Registry array indexed by block id. Sparse entries are simply undefined. */
+export const BLOCKS = [];
+
+function defineBlock(id, name, options = {}) {
+  const block = {
+    id,
+    name,
+    tiles: faceTiles(options.tiles ?? 0),
+    /** Blocks entity movement. */
+    solid: options.solid !== false,
+    /** Fully hides the faces behind it (used for face culling + skylight). */
+    opaque: options.opaque !== false,
+    /** Behaves as a fluid for physics (swimmable, not walkable). */
+    liquid: options.liquid === true,
+    /** Rendered in the alpha-blended pass rather than the opaque/cutout pass. */
+    translucent: options.translucent === true,
+    /**
+     * When true, two adjacent blocks of this same type hide their shared face.
+     * Water/glass want this; leaves do not (you'd see straight through a tree).
+     */
+    cullSameType: options.cullSameType !== false,
+    /** Seconds of mining to break by hand. Infinity = unbreakable. */
+    hardness: options.hardness ?? 0.5,
+    /** Block/item id produced when broken; defaults to itself. */
+    drops: options.drops ?? id,
+    /** How many drop, as [min, max]. */
+    dropCount: options.dropCount ?? [1, 1],
+    /** Which tool class mines this quickly: 'pickaxe' | 'axe' | 'shovel' | null. */
+    toolType: options.toolType ?? null,
+    /**
+     * Minimum tool tier needed to collect drops.
+     * -1 = bare hands are fine, 0 = wood/gold, 1 = stone, 2 = iron, 3 = diamond.
+     */
+    harvestLevel: options.harvestLevel ?? -1,
+    /** If true, breaking without a good enough tool yields nothing. */
+    requiresTool: options.requiresTool === true,
+    /** Shown in the creative palette / obtainable in survival. */
+    obtainable: options.obtainable !== false,
+    /** Renders at full brightness, ignoring sky light and AO (lava). */
+    emissive: options.emissive === true,
+    /** Set by defineFluidFamily for flowing blocks; null for everything else. */
+    fluid: null,
+    displayName: options.displayName ?? name,
+  };
+  BLOCKS[id] = block;
+  return block;
+}
+
+defineBlock(AIR, 'air', { solid: false, opaque: false, obtainable: false, hardness: Infinity });
+
+export const GRASS      = defineBlock(1,  'grass',       { displayName: 'Grass Block', tiles: { top: TILE.GRASS_TOP, side: TILE.GRASS_SIDE, bottom: TILE.DIRT }, hardness: 0.6, drops: 2, toolType: 'shovel' });
+export const DIRT       = defineBlock(2,  'dirt',        { displayName: 'Dirt',        tiles: TILE.DIRT,   hardness: 0.5, toolType: 'shovel' });
+export const STONE      = defineBlock(3,  'stone',       { displayName: 'Stone',       tiles: TILE.STONE,  hardness: 1.5, drops: 4, toolType: 'pickaxe', harvestLevel: 0, requiresTool: true });
+export const COBBLE     = defineBlock(4,  'cobblestone', { displayName: 'Cobblestone', tiles: TILE.COBBLE, hardness: 1.5, toolType: 'pickaxe', harvestLevel: 0, requiresTool: true });
+export const SAND       = defineBlock(5,  'sand',        { displayName: 'Sand',        tiles: TILE.SAND,   hardness: 0.5, toolType: 'shovel' });
+export const GRAVEL     = defineBlock(6,  'gravel',      { displayName: 'Gravel',      tiles: TILE.GRAVEL, hardness: 0.6, toolType: 'shovel' });
+export const LOG        = defineBlock(7,  'log',         { displayName: 'Oak Log',     tiles: { top: TILE.LOG_TOP, bottom: TILE.LOG_TOP, side: TILE.LOG_SIDE }, hardness: 1.0, toolType: 'axe' });
+export const LEAVES     = defineBlock(8,  'leaves',      { displayName: 'Oak Leaves',  tiles: TILE.LEAVES, hardness: 0.2, opaque: false, cullSameType: false });
+export const PLANKS     = defineBlock(9,  'planks',      { displayName: 'Oak Planks',  tiles: TILE.PLANKS, hardness: 0.8, toolType: 'axe' });
+export const BEDROCK    = defineBlock(11, 'bedrock',     { displayName: 'Bedrock',     tiles: TILE.BEDROCK, hardness: Infinity, obtainable: false });
+export const GLASS      = defineBlock(14, 'glass',       { displayName: 'Glass',       tiles: TILE.GLASS,  hardness: 0.3, opaque: false, toolType: 'pickaxe' });
+export const SNOW       = defineBlock(15, 'snow',        { displayName: 'Snow Block',  tiles: { top: TILE.SNOW_TOP, side: TILE.SNOW_SIDE, bottom: TILE.DIRT }, hardness: 0.4, toolType: 'shovel' });
+export const BRICK      = defineBlock(16, 'brick',       { displayName: 'Bricks',      tiles: TILE.BRICK,  hardness: 1.8, toolType: 'pickaxe', harvestLevel: 0, requiresTool: true });
+
+// ---------------------------------------------------------------------------
+// Fluids
+// ---------------------------------------------------------------------------
+/**
+ * A fluid family occupies a contiguous run of block ids:
+ *   level 0        = the source block. Permanent; never dries up.
+ *   level 1..max   = progressively thinner flowing states.
+ *
+ * Encoding the level in the block id keeps the world a single flat Uint8Array
+ * (no parallel metadata layer), which the worker and mesher both depend on.
+ * Each level also carries a render `height`, so flowing fluid visibly tapers.
+ */
+export const FLUIDS = {};
+
+function defineFluidFamily(family, options) {
+  const { sourceId, flowStartId, maxLevel, tile, tickInterval, displayName, emissive, translucent } = options;
+  const ids = new Array(maxLevel + 1);
+
+  for (let level = 0; level <= maxLevel; level++) {
+    const id = level === 0 ? sourceId : flowStartId + (level - 1);
+    ids[level] = id;
+
+    const block = defineBlock(id, level === 0 ? family : `${family}_flow_${level}`, {
+      displayName: level === 0 ? displayName : `Flowing ${displayName}`,
+      tiles: tile,
+      solid: false,
+      opaque: false,
+      liquid: true,
+      hardness: Infinity,
+      // Only the source is placeable; flowing states are simulation-owned.
+      obtainable: level === 0,
+      emissive,
+      translucent,
+    });
+
+    block.fluid = {
+      family,
+      level,
+      maxLevel,
+      // Source renders as a full cube so oceans stay flat; flows taper off.
+      height: level === 0 ? 1 : Math.max(0.2, 1 - level * 0.11),
+    };
+  }
+
+  FLUIDS[family] = { family, ids, sourceId, maxLevel, tickInterval };
+  return FLUIDS[family];
+}
+
+// Water spreads 7 blocks from a source and updates every fluid tick.
+export const WATER_FLUID = defineFluidFamily('water', {
+  sourceId: 10, flowStartId: 17, maxLevel: 7,
+  tile: TILE.WATER, tickInterval: 1, displayName: 'Water', translucent: true,
+});
+
+// Lava spreads only 3 blocks and is three times more viscous.
+export const LAVA_FLUID = defineFluidFamily('lava', {
+  sourceId: 24, flowStartId: 25, maxLevel: 3,
+  tile: TILE.LAVA, tickInterval: 3, displayName: 'Lava', emissive: true,
+});
+
+export const WATER = BLOCKS[WATER_FLUID.sourceId];
+export const LAVA = BLOCKS[LAVA_FLUID.sourceId];
+
+// ---------------------------------------------------------------------------
+// Item ids
+// ---------------------------------------------------------------------------
+// Declared before the ore blocks so their `drops` can name the item they yield.
+export const ITEM_ID_BASE = 128;
+
+export const ITEM_ID = {
+  PORKCHOP: 128,
+  ROTTEN_FLESH: 129,
+  STICK: 130,
+  COAL: 131,
+  IRON_INGOT: 132,
+  GOLD_INGOT: 133,
+  DIAMOND: 134,
+  REDSTONE: 135,
+  LAPIS: 136,
+  EMERALD: 137,
+  COOKED_PORKCHOP: 138,
+  // Tools occupy 144..163 and armour 164..183, assigned in the gear section.
+  TOOL_BASE: 144,
+  ARMOR_BASE: 164,
+};
+
+// ---------------------------------------------------------------------------
+// Ores
+// ---------------------------------------------------------------------------
+// `harvestLevel` gates the drop: mining diamond with a stone pickaxe destroys
+// the block and gives nothing, which is what drives the tool progression.
+
+export const COAL_ORE = defineBlock(12, 'coal_ore', {
+  displayName: 'Coal Ore', tiles: TILE.COAL_ORE, hardness: 2.0,
+  toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
+  drops: ITEM_ID.COAL, dropCount: [1, 1],
+});
+
+export const IRON_ORE = defineBlock(13, 'iron_ore', {
+  displayName: 'Iron Ore', tiles: TILE.IRON_ORE, hardness: 2.5,
+  toolType: 'pickaxe', harvestLevel: 1, requiresTool: true,
+  // Drops the ore itself — smelt it in a furnace for an ingot.
+});
+
+export const GOLD_ORE = defineBlock(28, 'gold_ore', {
+  displayName: 'Gold Ore', tiles: TILE.GOLD_ORE, hardness: 3.0,
+  toolType: 'pickaxe', harvestLevel: 2, requiresTool: true,
+});
+
+export const REDSTONE_ORE = defineBlock(29, 'redstone_ore', {
+  displayName: 'Redstone Ore', tiles: TILE.REDSTONE_ORE, hardness: 3.0,
+  toolType: 'pickaxe', harvestLevel: 2, requiresTool: true,
+  drops: ITEM_ID.REDSTONE, dropCount: [4, 5],
+});
+
+export const LAPIS_ORE = defineBlock(30, 'lapis_ore', {
+  displayName: 'Lapis Ore', tiles: TILE.LAPIS_ORE, hardness: 3.0,
+  toolType: 'pickaxe', harvestLevel: 1, requiresTool: true,
+  drops: ITEM_ID.LAPIS, dropCount: [4, 8],
+});
+
+export const DIAMOND_ORE = defineBlock(31, 'diamond_ore', {
+  displayName: 'Diamond Ore', tiles: TILE.DIAMOND_ORE, hardness: 3.5,
+  toolType: 'pickaxe', harvestLevel: 2, requiresTool: true,
+  drops: ITEM_ID.DIAMOND, dropCount: [1, 1],
+});
+
+export const EMERALD_ORE = defineBlock(32, 'emerald_ore', {
+  displayName: 'Emerald Ore', tiles: TILE.EMERALD_ORE, hardness: 3.5,
+  toolType: 'pickaxe', harvestLevel: 2, requiresTool: true,
+  drops: ITEM_ID.EMERALD, dropCount: [1, 1],
+});
+
+// ---------------------------------------------------------------------------
+// Crafting stations & storage blocks
+// ---------------------------------------------------------------------------
+
+export const CRAFTING_TABLE = defineBlock(33, 'crafting_table', {
+  displayName: 'Crafting Table', hardness: 1.2, toolType: 'axe',
+  tiles: { top: TILE.CRAFTING_TOP, bottom: TILE.PLANKS, side: TILE.CRAFTING_SIDE },
+});
+
+export const FURNACE = defineBlock(34, 'furnace', {
+  displayName: 'Furnace', hardness: 1.8,
+  toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
+  tiles: { top: TILE.FURNACE_TOP, bottom: TILE.FURNACE_TOP, side: TILE.FURNACE_SIDE },
+});
+
+export const IRON_BLOCK = defineBlock(35, 'iron_block', {
+  displayName: 'Block of Iron', tiles: TILE.IRON_BLOCK, hardness: 3.0,
+  toolType: 'pickaxe', harvestLevel: 1, requiresTool: true,
+});
+
+export const GOLD_BLOCK = defineBlock(36, 'gold_block', {
+  displayName: 'Block of Gold', tiles: TILE.GOLD_BLOCK, hardness: 3.0,
+  toolType: 'pickaxe', harvestLevel: 2, requiresTool: true,
+});
+
+export const DIAMOND_BLOCK = defineBlock(37, 'diamond_block', {
+  displayName: 'Block of Diamond', tiles: TILE.DIAMOND_BLOCK, hardness: 4.0,
+  toolType: 'pickaxe', harvestLevel: 2, requiresTool: true,
+});
+
+// ---------------------------------------------------------------------------
+// Biome blocks
+// ---------------------------------------------------------------------------
+
+export const ACACIA_LOG = defineBlock(38, 'acacia_log', {
+  displayName: 'Acacia Log', hardness: 1.0, toolType: 'axe',
+  tiles: { top: TILE.ACACIA_LOG_TOP, bottom: TILE.ACACIA_LOG_TOP, side: TILE.ACACIA_LOG_SIDE },
+});
+
+export const ACACIA_LEAVES = defineBlock(39, 'acacia_leaves', {
+  displayName: 'Acacia Leaves', tiles: TILE.ACACIA_LEAVES, hardness: 0.2,
+  opaque: false, cullSameType: false,
+});
+
+export const SPRUCE_LOG = defineBlock(40, 'spruce_log', {
+  displayName: 'Spruce Log', hardness: 1.0, toolType: 'axe',
+  tiles: { top: TILE.SPRUCE_LOG_TOP, bottom: TILE.SPRUCE_LOG_TOP, side: TILE.SPRUCE_LOG_SIDE },
+});
+
+export const SPRUCE_LEAVES = defineBlock(41, 'spruce_leaves', {
+  displayName: 'Spruce Leaves', tiles: TILE.SPRUCE_LEAVES, hardness: 0.2,
+  opaque: false, cullSameType: false,
+});
+
+export const DRY_GRASS = defineBlock(42, 'dry_grass', {
+  displayName: 'Savanna Grass', hardness: 0.6, drops: 2, toolType: 'shovel',
+  tiles: { top: TILE.DRY_GRASS_TOP, side: TILE.DRY_GRASS_SIDE, bottom: TILE.DIRT },
+});
+
+export const PODZOL = defineBlock(43, 'podzol', {
+  displayName: 'Podzol', hardness: 0.6, drops: 2, toolType: 'shovel',
+  tiles: { top: TILE.PODZOL_TOP, side: TILE.PODZOL_SIDE, bottom: TILE.DIRT },
+});
+
+export const SWAMP_GRASS = defineBlock(44, 'swamp_grass', {
+  displayName: 'Swamp Grass', hardness: 0.6, drops: 2, toolType: 'shovel',
+  tiles: { top: TILE.SWAMP_GRASS_TOP, side: TILE.SWAMP_GRASS_SIDE, bottom: TILE.DIRT },
+});
+
+export const CLAY = defineBlock(45, 'clay', {
+  displayName: 'Clay', tiles: TILE.CLAY, hardness: 0.7, toolType: 'shovel',
+});
+
+export const SANDSTONE = defineBlock(46, 'sandstone', {
+  displayName: 'Sandstone', hardness: 1.2,
+  toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
+  tiles: { top: TILE.SANDSTONE_TOP, bottom: TILE.SANDSTONE_TOP, side: TILE.SANDSTONE_SIDE },
+});
+
+/** Every log/leaf pair, so terrain can pick a tree style per biome. */
+export const TREE_WOODS = {
+  oak: { log: LOG.id, leaves: LEAVES.id },
+  acacia: { log: ACACIA_LOG.id, leaves: ACACIA_LEAVES.id },
+  spruce: { log: SPRUCE_LOG.id, leaves: SPRUCE_LEAVES.id },
+};
+
+// ---------------------------------------------------------------------------
+// Items — ids >= 128 so `id < 128` cheaply means "placeable block".
+// ---------------------------------------------------------------------------
+export const ITEMS = [];
+
+function defineItem(id, name, options = {}) {
+  const item = {
+    id,
+    name,
+    displayName: options.displayName ?? name,
+    tile: options.tile ?? 0,
+    /** Hunger points restored when eaten; 0 = not edible. */
+    food: options.food ?? 0,
+    /** Saturation granted alongside the hunger points. */
+    saturation: options.saturation ?? 0,
+    /** Tools and armour never stack. */
+    maxStack: options.maxStack ?? 64,
+    /** {kind, material, tier, speed, durability, damage} for tools. */
+    tool: options.tool ?? null,
+    /** {piece, material, defense, durability} for armour. */
+    armor: options.armor ?? null,
+  };
+  ITEMS[id - ITEM_ID_BASE] = item;
+  return item;
+}
+
+export const PORKCHOP     = defineItem(ITEM_ID.PORKCHOP,     'porkchop',     { displayName: 'Raw Porkchop', tile: TILE.PORKCHOP, food: 6, saturation: 3 });
+export const ROTTEN_FLESH = defineItem(ITEM_ID.ROTTEN_FLESH, 'rotten_flesh', { displayName: 'Rotten Flesh', tile: TILE.ROTTEN_FLESH, food: 3, saturation: 1 });
+export const STICK        = defineItem(ITEM_ID.STICK,        'stick',        { displayName: 'Stick',        tile: TILE.STICK });
+export const COAL         = defineItem(ITEM_ID.COAL,         'coal',         { displayName: 'Coal',         tile: TILE.COAL_ITEM });
+export const IRON_INGOT   = defineItem(ITEM_ID.IRON_INGOT,   'iron_ingot',   { displayName: 'Iron Ingot',   tile: TILE.IRON_INGOT });
+export const GOLD_INGOT   = defineItem(ITEM_ID.GOLD_INGOT,   'gold_ingot',   { displayName: 'Gold Ingot',   tile: TILE.GOLD_INGOT });
+export const DIAMOND      = defineItem(ITEM_ID.DIAMOND,      'diamond',      { displayName: 'Diamond',      tile: TILE.DIAMOND_GEM });
+export const REDSTONE     = defineItem(ITEM_ID.REDSTONE,     'redstone',     { displayName: 'Redstone Dust', tile: TILE.REDSTONE_DUST });
+export const LAPIS        = defineItem(ITEM_ID.LAPIS,        'lapis',        { displayName: 'Lapis Lazuli', tile: TILE.LAPIS_GEM });
+export const EMERALD      = defineItem(ITEM_ID.EMERALD,      'emerald',      { displayName: 'Emerald',      tile: TILE.EMERALD_GEM });
+export const COOKED_PORKCHOP = defineItem(ITEM_ID.COOKED_PORKCHOP, 'cooked_porkchop', { displayName: 'Cooked Porkchop', tile: TILE.COOKED_PORKCHOP, food: 8, saturation: 5 });
+
+// ---------------------------------------------------------------------------
+// Tools & armour
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-material gear stats.
+ *  tier      — gates which ores you can collect (see block.harvestLevel)
+ *  speed     — mining-speed multiplier vs. bare hands
+ *  swordDamage / durability — combat and wear
+ *
+ * Gold keeps its Minecraft quirk: very fast, very fragile, low tier.
+ */
+export const TOOL_MATERIALS = {
+  wood:    { label: 'Wooden',  tier: 0, speed: 2,  durability: 59,   swordDamage: 4, color: 0x9c7a4a },
+  stone:   { label: 'Stone',   tier: 1, speed: 4,  durability: 131,  swordDamage: 5, color: 0x8a8a8a },
+  iron:    { label: 'Iron',    tier: 2, speed: 6,  durability: 250,  swordDamage: 6, color: 0xd8d8d8 },
+  gold:    { label: 'Golden',  tier: 0, speed: 12, durability: 32,   swordDamage: 4, color: 0xf2d24b },
+  diamond: { label: 'Diamond', tier: 3, speed: 8,  durability: 1561, swordDamage: 7, color: 0x4de0d6 },
+};
+
+const TOOL_LABELS = { pickaxe: 'Pickaxe', axe: 'Axe', shovel: 'Shovel', sword: 'Sword' };
+
+/** id = TOOL_BASE + kindIndex * 5 + materialIndex, matching the tile layout. */
+export function toolItemId(kind, material) {
+  return ITEM_ID.TOOL_BASE + TOOL_KINDS.indexOf(kind) * 5 + GEAR_MATERIALS.indexOf(material);
+}
+
+for (const kind of TOOL_KINDS) {
+  for (const material of GEAR_MATERIALS) {
+    const stats = TOOL_MATERIALS[material];
+    defineItem(toolItemId(kind, material), `${material}_${kind}`, {
+      displayName: `${stats.label} ${TOOL_LABELS[kind]}`,
+      tile: toolTile(kind, material),
+      maxStack: 1,
+      tool: {
+        kind,
+        material,
+        tier: stats.tier,
+        speed: stats.speed,
+        durability: stats.durability,
+        // Swords hit hardest; other tools are middling weapons.
+        damage: kind === 'sword' ? stats.swordDamage : Math.max(2, stats.swordDamage - 2),
+      },
+    });
+  }
+}
+
+/**
+ * Armour exists in the three metal tiers, as in Minecraft — there is no wooden
+ * or stone armour to craft. Defense points are the classic values; each point
+ * removes 4% of incoming damage, capped at 80%.
+ */
+export const ARMOR_MATERIALS = {
+  iron:    { label: 'Iron',    defense: { helmet: 2, chestplate: 6, leggings: 5, boots: 2 }, durability: { helmet: 165, chestplate: 240, leggings: 225, boots: 195 } },
+  gold:    { label: 'Golden',  defense: { helmet: 2, chestplate: 5, leggings: 3, boots: 1 }, durability: { helmet: 77,  chestplate: 112, leggings: 105, boots: 91 } },
+  diamond: { label: 'Diamond', defense: { helmet: 3, chestplate: 8, leggings: 6, boots: 3 }, durability: { helmet: 363, chestplate: 528, leggings: 495, boots: 429 } },
+};
+
+export const ARMOR_MATERIAL_NAMES = ['iron', 'gold', 'diamond'];
+
+const ARMOR_LABELS = { helmet: 'Helmet', chestplate: 'Chestplate', leggings: 'Leggings', boots: 'Boots' };
+
+export function armorItemId(piece, material) {
+  return ITEM_ID.ARMOR_BASE + ARMOR_PIECES.indexOf(piece) * 5 + GEAR_MATERIALS.indexOf(material);
+}
+
+for (const piece of ARMOR_PIECES) {
+  for (const material of ARMOR_MATERIAL_NAMES) {
+    const stats = ARMOR_MATERIALS[material];
+    defineItem(armorItemId(piece, material), `${material}_${piece}`, {
+      displayName: `${stats.label} ${ARMOR_LABELS[piece]}`,
+      tile: armorTile(piece, material),
+      maxStack: 1,
+      armor: {
+        piece,
+        material,
+        defense: stats.defense[piece],
+        durability: stats.durability[piece],
+      },
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Lookup helpers
+// ---------------------------------------------------------------------------
+
+export function isBlockId(id) {
+  return id > 0 && id < ITEM_ID_BASE;
+}
+
+export function getBlock(id) {
+  return BLOCKS[id] ?? BLOCKS[AIR];
+}
+
+export function getItem(id) {
+  return ITEMS[id - ITEM_ID_BASE];
+}
+
+/** Unified lookup used by the inventory / HUD, which mixes blocks and items. */
+export function getThing(id) {
+  return isBlockId(id) ? BLOCKS[id] : getItem(id);
+}
+
+/** Icon tile for the hotbar: blocks use their top face, items their icon. */
+export function getIconTile(id) {
+  if (isBlockId(id)) return BLOCKS[id].tiles[FACE_PY];
+  const item = getItem(id);
+  return item ? item.tile : 0;
+}
+
+export function getDisplayName(id) {
+  const thing = getThing(id);
+  return thing ? thing.displayName : 'Unknown';
+}
+
+export function isSolid(id) {
+  const b = BLOCKS[id];
+  return b ? b.solid : false;
+}
+
+export function isOpaque(id) {
+  const b = BLOCKS[id];
+  return b ? b.opaque : false;
+}
+
+export function isLiquid(id) {
+  const b = BLOCKS[id];
+  return b ? b.liquid : false;
+}
+
+/** Fluid descriptor `{family, level, maxLevel, height}`, or null. */
+export function getFluid(id) {
+  const b = BLOCKS[id];
+  return b && b.fluid ? b.fluid : null;
+}
+
+/** Block id for a given fluid family and level. */
+export function fluidId(family, level) {
+  const f = FLUIDS[family];
+  return f ? f.ids[level] : AIR;
+}
+
+/** Do two block ids belong to the same fluid family? */
+export function sameFluidFamily(idA, idB) {
+  const a = getFluid(idA);
+  const b = getFluid(idB);
+  return !!a && !!b && a.family === b.family;
+}
+
+export function isFluidFamily(id, family) {
+  const f = getFluid(id);
+  return !!f && f.family === family;
+}
+
+/** Every block a player can hold — used to build the creative palette. */
+export function obtainableBlocks() {
+  return BLOCKS.filter((b) => b && b.id !== AIR && b.obtainable).map((b) => b.id);
+}
+
+/** Every craftable item id, for the creative palette's item row. */
+export function obtainableItems() {
+  return ITEMS.filter((i) => i).map((i) => i.id);
+}
+
+/** Tool descriptor for an item id, or null. */
+export function getTool(id) {
+  const item = getItem(id);
+  return item && item.tool ? item.tool : null;
+}
+
+/** Armour descriptor for an item id, or null. */
+export function getArmor(id) {
+  const item = getItem(id);
+  return item && item.armor ? item.armor : null;
+}
+
+/** Stack limit — blocks always 64, tools and armour 1. */
+export function getMaxStack(id) {
+  if (isBlockId(id)) return 64;
+  const item = getItem(id);
+  return item ? item.maxStack : 64;
+}
+
+/** Max durability for a tool or armour piece, or 0 if it does not wear. */
+export function getDurability(id) {
+  const item = getItem(id);
+  if (!item) return 0;
+  if (item.tool) return item.tool.durability;
+  if (item.armor) return item.armor.durability;
+  return 0;
+}
