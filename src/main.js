@@ -18,6 +18,7 @@ import { World } from './world/world.js';
 import { Player } from './player/player.js';
 import { EntityManager } from './entities/entityManager.js';
 import { HUD } from './ui/hud.js';
+import { SettingsScreen } from './ui/settings.js';
 import { TerrainGenerator } from './world/terrain.js';
 import { SaveManager, captureState, applyState, SAVE_FORMAT_VERSION } from './world/save.js';
 import { makeFurnaceState } from './player/crafting.js';
@@ -64,6 +65,9 @@ export class Game {
     this.entities = new EntityManager(this.renderer.scene, null);
     this.entities.onItemPickup = () => audio.pickup();
     this.hud = new HUD(this);
+    // Remembers where settings was opened from, so closing returns there.
+    this._settingsReturnState = 'menu';
+    this.settings = new SettingsScreen(this.input, () => this._closeSettings());
 
     this.state = 'worlds';
     this.cameraInWater = false;
@@ -91,6 +95,8 @@ export class Game {
     el('playButton').addEventListener('click', () => this.input.requestLock());
     el('resumeButton').addEventListener('click', () => this.input.requestLock());
     el('quitButton').addEventListener('click', () => this.exitToMenu());
+    el('startSettingsButton').addEventListener('click', () => this._openSettings());
+    el('pauseSettingsButton').addEventListener('click', () => this._openSettings());
     el('respawnButton').addEventListener('click', () => this._respawn());
 
     el('newWorldButton').addEventListener('click', () => this._showCreateForm(true));
@@ -548,6 +554,32 @@ export class Game {
     el('startScreen').classList.toggle('show', next === 'menu');
     el('pauseScreen').classList.toggle('show', next === 'paused');
     el('deathScreen').classList.toggle('show', next === 'dead');
+    if (next !== 'settings' && this.settings && this.settings.isOpen) {
+      this.settings.screen.classList.remove('show');
+    }
+  }
+
+  /**
+   * Open settings. Remembers where it was opened from so closing goes back
+   * there rather than always dumping you on the main menu.
+   */
+  _openSettings() {
+    if (this.settings.isOpen) return;
+    this._settingsReturnState = this.state === 'settings' ? this._settingsReturnState : this.state;
+    this.hud.closeAllContainers();
+    this._setState('settings');
+    this.input.releaseLock();
+    this.settings.open();
+  }
+
+  _closeSettings() {
+    const back = this._settingsReturnState;
+    // Returning to play needs the pointer back; a menu does not.
+    if (back === 'playing' || back === 'container') {
+      this._setState('paused');
+    } else {
+      this._setState(back);
+    }
   }
 
   /** Open a container UI, releasing the pointer so the mouse can click slots. */
@@ -612,25 +644,26 @@ export class Game {
 
     // --- Global hotkeys ----------------------------------------------------
     if (playing || this.state === 'container') {
-      if (input.wasPressed('F3')) this.hud.toggleDebug();
+      if (input.actionWasPressed('debug')) this.hud.toggleDebug();
 
-      if (input.wasPressed('KeyM')) {
+      if (input.actionWasPressed('mute')) {
         this.hud.showToast(audio.toggleMute() ? 'Sound off' : 'Sound on');
       }
 
-      // Q throws one item; Ctrl+Q throws the whole stack.
-      if (playing && input.wasPressed('KeyQ')) {
-        const whole = input.isDown('ControlLeft') || input.isDown('ControlRight');
-        this.player.dropHeld(whole, { entities: this.entities });
+      if (input.actionWasPressed('settings')) this._openSettings();
+
+      // Drop throws one item; holding sprint throws the whole stack.
+      if (playing && input.actionWasPressed('drop')) {
+        this.player.dropHeld(input.isActionDown('sprint'), { entities: this.entities });
       }
 
-      if (input.wasPressed('KeyG')) {
+      if (input.actionWasPressed('creative')) {
         const creative = this.player.toggleCreative();
         this.hud.showToast(creative ? 'Creative mode' : 'Survival mode');
         if (this.state === 'container') this.hud.openInventory();
       }
 
-      if (input.wasPressed('KeyE')) {
+      if (input.actionWasPressed('inventory')) {
         if (this.state === 'container') this._closeContainer();
         else this._openContainer(() => this.hud.openInventory());
       } else if (input.wasPressed('Escape') && this.state === 'container') {

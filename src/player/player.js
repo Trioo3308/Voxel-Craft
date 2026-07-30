@@ -187,29 +187,37 @@ export class Player {
     const input = this.input;
 
     // Creative-only flight, so survival keeps its stakes.
-    if (input.wasPressed('KeyF') && this.creative) {
+    if (input.actionWasPressed('fly') && this.creative) {
       this.flying = !this.flying;
       this.velocity.y = 0;
     }
     if (!this.creative) this.flying = false;
 
-    this.sneaking = input.isDown('ShiftLeft') || input.isDown('ShiftRight');
+    this.sneaking = input.isActionDown('crouch');
     this._updateStance();
     this.inLiquid = isInLiquid(this.world, this.position, P.width, this.height);
 
     // Desired horizontal direction in world space, from yaw.
     let wishX = 0;
     let wishZ = 0;
-    if (input.isDown('KeyW')) wishZ -= 1;
-    if (input.isDown('KeyS')) wishZ += 1;
-    if (input.isDown('KeyA')) wishX -= 1;
-    if (input.isDown('KeyD')) wishX += 1;
+    if (input.isActionDown('forward')) wishZ -= 1;
+    if (input.isActionDown('back')) wishZ += 1;
+    if (input.isActionDown('left')) wishX -= 1;
+    if (input.isActionDown('right')) wishX += 1;
 
     const moving = wishX !== 0 || wishZ !== 0;
+
+    // Double-tapping forward also sprints, as in Minecraft. Worth having as
+    // well as the modifier, since a browser makes Ctrl combinations awkward.
+    this._updateDoubleTapSprint(dt, input);
+
     this.sprinting =
       moving && !this.sneaking &&
-      (input.isDown('ControlLeft') || input.isDown('ControlRight')) &&
+      (input.isActionDown('sprint') || this._doubleTapSprint) &&
       this.survival.hunger > 6;
+
+    // Releasing forward ends a double-tap sprint.
+    if (!input.isActionDown('forward')) this._doubleTapSprint = false;
 
     let dirX = 0;
     let dirZ = 0;
@@ -274,8 +282,24 @@ export class Player {
     }
   }
 
+  /**
+   * Double-tap forward to sprint. Two presses inside the window latch sprinting
+   * until forward is released.
+   */
+  _updateDoubleTapSprint(dt, input) {
+    this._tapWindow = Math.max(0, (this._tapWindow ?? 0) - dt);
+
+    if (!input.actionWasPressed('forward')) return;
+    if (this._tapWindow > 0) {
+      this._doubleTapSprint = true;
+      this._tapWindow = 0;
+    } else {
+      this._tapWindow = 0.3;
+    }
+  }
+
   _currentSpeed() {
-    if (this.flying) return this.input.isDown('ControlLeft') ? P.flySpeed * 2 : P.flySpeed;
+    if (this.flying) return this.input.isActionDown('sprint') ? P.flySpeed * 2 : P.flySpeed;
     if (this.inLiquid) return P.walkSpeed * 0.55;
     if (this.sneaking) return P.sneakSpeed;
     if (this.sprinting) return P.sprintSpeed;
@@ -284,7 +308,7 @@ export class Player {
 
   _updateFlight(dt) {
     let vy = 0;
-    if (this.input.isDown('Space')) vy += 1;
+    if (this.input.isActionDown('jump')) vy += 1;
     if (this.sneaking) vy -= 1;
     const target = vy * this._currentSpeed();
     this.velocity.y += (target - this.velocity.y) * (1 - Math.exp(-14 * dt));
@@ -292,7 +316,7 @@ export class Player {
   }
 
   _updateJumpAndGravity(dt) {
-    const wantsUp = this.input.isDown('Space');
+    const wantsUp = this.input.isActionDown('jump');
 
     if (this.inLiquid) {
       // Swimming: gentle buoyancy, and Space paddles upward.

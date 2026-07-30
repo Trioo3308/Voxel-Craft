@@ -108,8 +108,26 @@ that broadcast would go.
 | `Space` | Jump / swim up / fly up |
 | `Shift` | Crouch — shorter hitbox, and you cannot walk off a ledge |
 | `Ctrl` | Sprint (works while jumping) |
-| `Q` / `Ctrl+Q` | Drop one item / the whole stack |
+| `Q` / `Sprint+Q` | Drop one item / the whole stack |
 | `M` | Mute sound |
+| `F1` | Settings — full control list, and rebind anything |
+
+Every key above is rebindable in Settings, reachable from the title screen, the
+pause menu or `F1`. Bindings persist in `localStorage`, and assigning a key that
+is already in use swaps the two rather than leaving one action unreachable.
+Sprinting also works by double-tapping forward, so no modifier is strictly needed.
+
+### Browser shortcuts
+
+While the pointer is locked, key events are suppressed wholesale apart from a
+short allowlist (`Escape`, `F5`, `F11`, `F12`). Without that, `Ctrl` being the
+sprint key meant every `Ctrl`+movement combination reached the browser —
+bookmarking the page, opening find, or worse, mid-fight.
+
+A handful of combinations (`Ctrl+W`, `Ctrl+T`, `Ctrl+N`) are reserved by the
+browser and `preventDefault` cannot touch them. Settings offers a **Capture all
+keys** button which uses the Keyboard Lock API in fullscreen — the only way to
+intercept those. It is opt-in, since it takes over the whole keyboard.
 | Left click | Hold to mine · click to attack a mob |
 | Right click | Place block · eat held food |
 | `1`–`9`, mouse wheel | Select hotbar slot |
