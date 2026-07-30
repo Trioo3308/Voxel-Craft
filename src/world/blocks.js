@@ -85,6 +85,14 @@ export const TILE = {
   EMERALD_GEM: 59,
   COOKED_PORKCHOP: 60,
   WOOL: 61,
+  DOOR: 62,
+  BED_TOP: 63,
+  BED_SIDE: 128,
+  TORCH: 129,
+  CHEST_TOP: 130,
+  CHEST_SIDE: 131,
+  BOW: 132,
+  GUNPOWDER: 133,
 
   // --- Mob drop icons (after the reserved gear runs) -----------------------
   BEEF: 116,
@@ -133,6 +141,42 @@ export const AIR = 0;
 
 /** Face order used everywhere: +X, -X, +Y, -Y, +Z, -Z. */
 export const FACE_PX = 0, FACE_NX = 1, FACE_PY = 2, FACE_NY = 3, FACE_PZ = 4, FACE_NZ = 5;
+
+// ---------------------------------------------------------------------------
+// Block shapes
+// ---------------------------------------------------------------------------
+/**
+ * A block's physical form, as a list of axis-aligned boxes in unit space
+ * ([minX, minY, minZ, maxX, maxY, maxZ], each 0..1).
+ *
+ * `null` means the ordinary full cube, which is the overwhelming majority — the
+ * fast path in both physics and the mesher checks for null and skips all of
+ * this. Anything else (slab, stair, fence, door, bed) lists its boxes here and
+ * gets collision and geometry generated from them automatically.
+ */
+export const SHAPES = {
+  FULL: null,
+  SLAB_BOTTOM: [[0, 0, 0, 1, 0.5, 1]],
+  SLAB_TOP: [[0, 0.5, 0, 1, 1, 1]],
+  // Lower step plus a raised back half.
+  STAIR: [[0, 0, 0, 1, 0.5, 1], [0, 0.5, 0, 1, 1, 0.5]],
+  // Post plus two rails; 1.5 high so mobs cannot hop it.
+  FENCE: [[0.375, 0, 0.375, 0.625, 1.5, 0.625]],
+  // Thin panel against the -Z face, and the rotated open position.
+  DOOR_CLOSED: [[0, 0, 0, 1, 1, 0.1875]],
+  DOOR_OPEN: [[0, 0, 0, 0.1875, 1, 1]],
+  BED: [[0, 0, 0, 1, 0.5625, 1]],
+  TORCH: [[0.4375, 0, 0.4375, 0.5625, 0.625, 0.5625]],
+  CHEST: [[0.0625, 0, 0.0625, 0.9375, 0.875, 0.9375]],
+};
+
+/** Height of a shape's tallest box, used for step-up and headroom checks. */
+export function shapeHeight(shape) {
+  if (!shape) return 1;
+  let top = 0;
+  for (const box of shape) if (box[4] > top) top = box[4];
+  return top;
+}
 
 /** Expand a shorthand tile spec into the 6-face array. */
 function faceTiles(spec) {
@@ -185,8 +229,19 @@ function defineBlock(id, name, options = {}) {
     emissive: options.emissive === true,
     /** Set by defineFluidFamily for flowing blocks; null for everything else. */
     fluid: null,
+    /**
+     * Collision/render boxes, or null for a plain full cube. A block with a
+     * shape is automatically non-opaque, since it cannot fill its cell and so
+     * must not hide its neighbours' faces.
+     */
+    shape: options.shape ?? null,
+    /** Light this block emits, 0..15. */
+    lightEmission: options.lightEmission ?? 0,
     displayName: options.displayName ?? name,
   };
+
+  // A partial block can never occlude, whatever was requested.
+  if (block.shape) block.opaque = false;
   BLOCKS[id] = block;
   return block;
 }
@@ -222,7 +277,10 @@ export const BRICK      = defineBlock(16, 'brick',       { displayName: 'Bricks'
 export const FLUIDS = {};
 
 function defineFluidFamily(family, options) {
-  const { sourceId, flowStartId, maxLevel, tile, tickInterval, displayName, emissive, translucent } = options;
+  const {
+    sourceId, flowStartId, maxLevel, tile, tickInterval, displayName,
+    emissive, translucent, lightEmission,
+  } = options;
   const ids = new Array(maxLevel + 1);
 
   for (let level = 0; level <= maxLevel; level++) {
@@ -240,6 +298,8 @@ function defineFluidFamily(family, options) {
       obtainable: level === 0,
       emissive,
       translucent,
+      // Thinner flows glow slightly less than a full source.
+      lightEmission: lightEmission ? Math.max(0, lightEmission - level) : 0,
     });
 
     block.fluid = {
@@ -265,6 +325,7 @@ export const WATER_FLUID = defineFluidFamily('water', {
 export const LAVA_FLUID = defineFluidFamily('lava', {
   sourceId: 24, flowStartId: 25, maxLevel: 3,
   tile: TILE.LAVA, tickInterval: 3, displayName: 'Lava', emissive: true,
+  lightEmission: 15,
 });
 
 export const WATER = BLOCKS[WATER_FLUID.sourceId];
@@ -304,6 +365,8 @@ export const ITEM_ID = {
   STRING: 188,
   ARROW: 189,
   SPIDER_EYE: 190,
+  BOW: 191,
+  GUNPOWDER: 192,
 };
 
 // ---------------------------------------------------------------------------
@@ -456,6 +519,99 @@ export const SANDSTONE = defineBlock(46, 'sandstone', {
   tiles: { top: TILE.SANDSTONE_TOP, bottom: TILE.SANDSTONE_TOP, side: TILE.SANDSTONE_SIDE },
 });
 
+// ---------------------------------------------------------------------------
+// Building blocks: slabs, stairs, fences
+// ---------------------------------------------------------------------------
+/**
+ * Generated from a base block so each family stays in step — a new stone type
+ * only needs one entry here to gain a slab, a stair and a fence.
+ */
+export const BUILDING_FAMILIES = [];
+
+function defineBuildingSet(baseId, startId, options = {}) {
+  const base = BLOCKS[baseId];
+  const set = { base: baseId };
+
+  set.slab = defineBlock(startId, `${base.name}_slab`, {
+    displayName: `${base.displayName} Slab`,
+    tiles: { top: base.tiles[FACE_PY], bottom: base.tiles[FACE_NY], side: base.tiles[FACE_PX] },
+    hardness: base.hardness * 0.8,
+    toolType: base.toolType,
+    harvestLevel: base.harvestLevel,
+    requiresTool: base.requiresTool,
+    shape: SHAPES.SLAB_BOTTOM,
+  }).id;
+
+  set.stair = defineBlock(startId + 1, `${base.name}_stairs`, {
+    displayName: `${base.displayName} Stairs`,
+    tiles: { top: base.tiles[FACE_PY], bottom: base.tiles[FACE_NY], side: base.tiles[FACE_PX] },
+    hardness: base.hardness,
+    toolType: base.toolType,
+    harvestLevel: base.harvestLevel,
+    requiresTool: base.requiresTool,
+    shape: SHAPES.STAIR,
+  }).id;
+
+  if (options.fence !== false) {
+    set.fence = defineBlock(startId + 2, `${base.name}_fence`, {
+      displayName: `${base.displayName} Fence`,
+      tiles: base.tiles[FACE_PX],
+      hardness: base.hardness,
+      toolType: base.toolType,
+      harvestLevel: base.harvestLevel,
+      requiresTool: base.requiresTool,
+      shape: SHAPES.FENCE,
+    }).id;
+  }
+
+  BUILDING_FAMILIES.push(set);
+  return set;
+}
+
+export const STONE_BUILD = defineBuildingSet(3, 49);      // 49,50,51
+export const COBBLE_BUILD = defineBuildingSet(4, 52);     // 52,53,54
+export const PLANKS_BUILD = defineBuildingSet(9, 55);     // 55,56,57
+export const SANDSTONE_BUILD = defineBuildingSet(46, 58); // 58,59,60
+
+// ---------------------------------------------------------------------------
+// Stateful blocks: doors, beds, torches, chests
+// ---------------------------------------------------------------------------
+// Open/closed is encoded as two block ids rather than metadata, the same trick
+// used for the lit furnace — it keeps the world a flat Uint8Array.
+
+export const DOOR_CLOSED = defineBlock(61, 'door', {
+  displayName: 'Wooden Door', tiles: TILE.DOOR, hardness: 1.0, toolType: 'axe',
+  shape: SHAPES.DOOR_CLOSED,
+});
+
+export const DOOR_OPEN = defineBlock(62, 'door_open', {
+  displayName: 'Wooden Door', tiles: TILE.DOOR, hardness: 1.0, toolType: 'axe',
+  shape: SHAPES.DOOR_OPEN, drops: 61, obtainable: false,
+});
+
+export function isDoor(id) {
+  return id === DOOR_CLOSED.id || id === DOOR_OPEN.id;
+}
+
+export const BED = defineBlock(63, 'bed', {
+  displayName: 'Bed', hardness: 0.4,
+  tiles: { top: TILE.BED_TOP, bottom: TILE.PLANKS, side: TILE.BED_SIDE },
+  shape: SHAPES.BED,
+});
+
+export const TORCH = defineBlock(64, 'torch', {
+  displayName: 'Torch', tiles: TILE.TORCH, hardness: 0.1,
+  shape: SHAPES.TORCH, emissive: true,
+  // The whole point: a portable light source.
+  lightEmission: 14,
+});
+
+export const CHEST = defineBlock(65, 'chest', {
+  displayName: 'Chest', hardness: 1.2, toolType: 'axe',
+  tiles: { top: TILE.CHEST_TOP, bottom: TILE.CHEST_TOP, side: TILE.CHEST_SIDE },
+  shape: SHAPES.CHEST,
+});
+
 /** Every log/leaf pair, so terrain can pick a tree style per biome. */
 export const TREE_WOODS = {
   oak: { log: LOG.id, leaves: LEAVES.id },
@@ -484,6 +640,8 @@ function defineItem(id, name, options = {}) {
     tool: options.tool ?? null,
     /** {piece, material, defense, durability} for armour. */
     armor: options.armor ?? null,
+    /** {drawTime, speed, maxDamage, ...} for ranged weapons. */
+    ranged: options.ranged ?? null,
   };
   ITEMS[id - ITEM_ID_BASE] = item;
   return item;
@@ -514,6 +672,34 @@ export const BONE           = defineItem(ITEM_ID.BONE,           'bone',        
 export const STRING_ITEM    = defineItem(ITEM_ID.STRING,         'string',         { displayName: 'String',          tile: TILE.STRING });
 export const ARROW          = defineItem(ITEM_ID.ARROW,          'arrow',          { displayName: 'Arrow',           tile: TILE.ARROW });
 export const SPIDER_EYE     = defineItem(ITEM_ID.SPIDER_EYE,     'spider_eye',     { displayName: 'Spider Eye',      tile: TILE.SPIDER_EYE, food: 2, saturation: 1 });
+export const GUNPOWDER      = defineItem(ITEM_ID.GUNPOWDER,      'gunpowder',      { displayName: 'Gunpowder',       tile: TILE.GUNPOWDER });
+
+/**
+ * The bow is a tool so it gets durability and a non-stacking slot, but it has
+ * its own `ranged` block of stats rather than a mining `kind`.
+ */
+export const BOW = defineItem(ITEM_ID.BOW, 'bow', {
+  displayName: 'Bow',
+  tile: TILE.BOW,
+  maxStack: 1,
+  tool: { kind: 'bow', material: 'wood', tier: -1, speed: 1, durability: 384, damage: 1 },
+  ranged: {
+    /** Seconds to a full draw. */
+    drawTime: 1.0,
+    /** Arrow speed at full charge. */
+    speed: 34,
+    /** Damage at full charge; scaled down for partial draws. */
+    maxDamage: 9,
+    minDamage: 1,
+    spread: 0.012,
+  },
+});
+
+/** Ranged weapon stats for an item id, or null. */
+export function getRanged(id) {
+  const item = getItem(id);
+  return item && item.ranged ? item.ranged : null;
+}
 
 // ---------------------------------------------------------------------------
 // Tools & armour

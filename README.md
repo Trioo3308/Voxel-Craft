@@ -150,6 +150,7 @@ destroying it.
 | **Zombie** | Melee, burns in sunlight, **calls nearby zombies** when it spots you | Rotten flesh |
 | **Skeleton** | **Ranged** — keeps its distance, circles, and shoots arrows | Bones, arrows |
 | **Spider** | Fast, **pounces** from range; goes timid in daylight rather than burning | String, spider eye |
+| **Creeper** | Silent approach, then hisses and **explodes**, cratering terrain. Backing off defuses it. Does not burn, so it is a daytime threat too | Gunpowder |
 | **Pig** | Grazes, flees when hit | Porkchop |
 | **Cow** | Grazes, flees when hit | Beef, leather |
 | **Sheep** | Grazes, flees when hit | Mutton, wool |
@@ -262,6 +263,15 @@ shipped. Footsteps, digging and block breaks are **material-aware** (stone rings
 sand hisses, wool thuds), each species has its own voice, and glass gets a
 shatter tail. `M` mutes.
 
+Animal calls went through a round of rework after they turned out to be shrill
+and relentless. Three things were wrong: raw square and sawtooth waves at
+340–620 Hz are all upper harmonics and read as electronic beeps; every mob called
+every 6–18 seconds, which with a herd of eight meant a noise every second or two;
+and nothing accounted for distance. Now every voice runs through a lowpass filter
+with pitches roughly halved, vibrato carries the bleats and moos instead of
+harshness, idle calls fire every 22–50 seconds and compete for a single global
+slot, and anything past 24 blocks is attenuated or dropped outright.
+
 ---
 
 ## Progression
@@ -292,8 +302,41 @@ a hit. Armour wears down when it saves you, and does not protect against
 starvation or falling out of the world.
 
 **Furnaces** smelt iron and gold ore into ingots, sand into glass, cobblestone
-back into stone and porkchops into a much better meal. Coal, logs, planks and
+back into stone and raw meat into a much better meal. Coal, logs, planks and
 sticks all burn. Smelting continues while the menu is closed.
+
+**The bow** is drawn by holding right click and fired on release. Damage and
+arrow speed both scale with the draw — a snap shot is nearly useless, a full draw
+hits for 9. Arrows are spent from anywhere in your inventory, and a charge
+indicator under the crosshair turns green at full power.
+
+---
+
+## Building and light
+
+**Slabs, stairs and fences** exist for stone, cobblestone, planks and sandstone.
+These required generalising blocks away from implicit unit cubes: every block now
+optionally carries a list of collision/render boxes, which both the physics and
+the mesher read. A `null` shape means "ordinary full cube" and takes the fast
+path, so the overwhelming majority of blocks cost nothing extra.
+
+**Doors** are two blocks tall and swing on right click, with both halves kept in
+step. **Beds** set your spawn point and skip to dawn — but only at night, and only
+with no hostiles within 12 blocks, so a bed is not simply a danger-skip button.
+**Chests** hold 27 slots and keep their contents when you close them, spilling
+into your inventory if broken.
+
+**Torches** are the important one. Caves were previously lit only by a sky-exposure
+floor, which made them dim-but-navigable and left nothing to solve. That floor is
+now genuinely dark, and torches (coal + stick) provide a real block-light channel:
+a breadth-first flood fill from each emitter, losing one level per block, sampled
+by the mesher alongside daylight. Lava emits too. Glass passes light, water dims
+it, opaque blocks stop it.
+
+Removing a light source is the subtle half — you cannot just clear its cell,
+because everything it lit must be un-lit and then re-lit from any *other* source
+still in range. That runs as its own BFS which erases the affected region and
+collects surviving neighbours as seeds for a refill.
 
 ---
 
@@ -316,6 +359,7 @@ src/
 │  ├─ chunk.js             Chunk constants and indexing math
 │  ├─ terrain.js           Terrain, biomes, caves, ores, trees
 │  ├─ fluids.js            Flowing water & lava automaton
+│  ├─ light.js             Block light propagation (BFS flood fill)
 │  ├─ save.js              Persistence + version/palette migration
 │  ├─ mesher.js            Voxels → vertex buffers (culling + ambient occlusion)
 │  ├─ worker.js            Worker entry: owns generation and meshing
@@ -509,6 +553,32 @@ go timid by day; struck animals flee; sheep drop mutton and wool.
 from v1 in 13/36 sampled chunks, roughness affects 14% of columns with up to 10
 blocks of relief, local relief measurably increases, and the bedrock floor and
 height limits still hold.
+
+**Block shapes** — a box resting on a slab does not collide while one sunk into
+it does; slabs support at half height and not a block up; a fence is 1.5 tall but
+narrow enough to slip past at the cell edge; a closed door blocks a doorway an
+open one does not; a shaped block emits all six faces of each box and stops at the
+right height; shaped blocks are forced non-opaque. **Landing was a real bug** —
+the downward snap used `Math.ceil(y)`, assuming integer block tops, so landing on
+a slab overshot to the top of the cell and jittered. Now rests at exactly 101.501
+with zero variance over 60 frames, and full cubes still land correctly.
+
+**Bow** — holding right click draws to full in one second; releasing fires and
+consumes one arrow; damage scales 1 → 9 with draw (verified 2.28 at 40%); no
+arrows means no shot.
+
+**Lighting** — falls off exactly one level per block and reaches exactly 15;
+opaque walls cast shadow with no leakage; light bends through a gap and spreads
+beyond it; glass passes light, water dims it; **removing a torch clears everything
+it lit** while a second source correctly re-lights the region to its own level;
+an unlit chunk allocates nothing at all; a torch outside a chunk still lights its
+edge.
+
+**Building & containers** — doors toggle both halves together; chests keep
+contents across close/reopen and spill when broken; beds set spawn, skip to dawn
+at night, and refuse with monsters within 12 blocks; explosions crater terrain
+(49 → 28 solid blocks), hurt the player with falloff, and leave bedrock intact;
+creepers start their fuse on approach.
 
 **Persistence** — a full round trip through a page reload restores position,
 health, hunger, time of day, every inventory slot in place, tool durability,

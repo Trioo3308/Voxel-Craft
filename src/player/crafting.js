@@ -14,6 +14,7 @@ import {
   PLANKS, LOG, ACACIA_LOG, SPRUCE_LOG, COBBLE, STONE, SAND, GLASS,
   CRAFTING_TABLE, FURNACE, IRON_ORE, GOLD_ORE,
   IRON_BLOCK, GOLD_BLOCK, DIAMOND_BLOCK, WOOL,
+  BUILDING_FAMILIES, DOOR_CLOSED, BED, TORCH, CHEST,
   ITEM_ID, TOOL_KINDS, ARMOR_PIECES, ARMOR_MATERIAL_NAMES,
   toolItemId, armorItemId, getDisplayName,
 } from '../world/blocks.js';
@@ -96,6 +97,27 @@ for (const [ingot, block] of STORAGE) {
   shaped(['III', 'III', 'III'], { I: ingot }, { id: block, count: 1 });
   shapeless([block], { id: ingot, count: 9 });
 }
+
+// --- Building blocks --------------------------------------------------------
+// Slabs, stairs and fences for every family, generated from the same table the
+// blocks themselves came from.
+for (const set of BUILDING_FAMILIES) {
+  shaped(['BBB'], { B: set.base }, { id: set.slab, count: 6 });
+  shaped(['B..', 'BB.', 'BBB'], { B: set.base }, { id: set.stair, count: 4 });
+  if (set.fence) {
+    shaped(['BSB', 'BSB'], { B: set.base, S: ITEM_ID.STICK }, { id: set.fence, count: 3 });
+  }
+}
+
+// --- Doors, beds, torches, chests ------------------------------------------
+
+shaped(['PP', 'PP', 'PP'], { P: PLANKS.id }, { id: DOOR_CLOSED.id, count: 1 });
+shaped(['WWW', 'PPP'], { W: WOOL.id, P: PLANKS.id }, { id: BED.id, count: 1 });
+shaped(['C', 'S'], { C: ITEM_ID.COAL, S: ITEM_ID.STICK }, { id: TORCH.id, count: 4 });
+shaped(['PPP', 'P.P', 'PPP'], { P: PLANKS.id }, { id: CHEST.id, count: 1 });
+
+// --- Bow --------------------------------------------------------------------
+shaped(['.SG', 'S.G', '.SG'], { S: ITEM_ID.STICK, G: ITEM_ID.STRING }, { id: ITEM_ID.BOW, count: 1 });
 
 // --- Mob-drop recipes -------------------------------------------------------
 

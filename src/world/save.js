@@ -228,17 +228,30 @@ export async function applyState(game, save) {
     return { key: chunk.key, indices: chunk.indices, ids };
   });
 
-  // Furnace contents go through the same id remap as everything else.
+  // Container contents go through the same id remap as everything else.
   game.world.blockEntities.clear();
   for (const entity of save.blockEntities ?? []) {
     const state = { ...entity.state };
+
+    // Furnace slots.
     for (const field of ['input', 'fuel', 'output']) {
+      if (!(field in state)) continue;
       const stack = state[field];
       if (!stack) { state[field] = null; continue; }
       const id = translate(stack.id);
       state[field] = id === AIR ? null : { ...stack, id };
     }
-    game.world.blockEntities.set(entity.key, { type: entity.type, state });
+
+    // Chest slots.
+    if (Array.isArray(state.slots)) {
+      state.slots = state.slots.map((stack) => {
+        if (!stack) return null;
+        const id = translate(stack.id);
+        return id === AIR ? null : { ...stack, id };
+      });
+    }
+
+    game.world.blockEntities.set(entity.key, { type: entity.type, state, wasLit: false });
   }
 
   await game.world.importEdits(edits);

@@ -784,6 +784,112 @@ const PAINTERS = {
     set(6, 6, 220, 180, 180);
   },
 
+  // --- Doors, beds, torches, chests ---------------------------------------
+
+  [TILE.DOOR]: (set, rnd) => {
+    noiseFill(set, rnd, [148, 112, 66], 12);
+    // Two recessed panels with a frame.
+    for (let i = 0; i < T; i++) { set(i, 0, 176, 138, 88); set(i, T - 1, 104, 76, 44); }
+    for (const [py0, py1] of [[2, 6], [9, 13]]) {
+      for (let y = py0; y <= py1; y++) {
+        for (let x = 3; x <= 12; x++) {
+          const edge = y === py0 || y === py1 || x === 3 || x === 12;
+          const d = (rnd() - 0.5) * 10;
+          if (edge) set(x, y, 108 + d, 80 + d, 46 + d);
+          else set(x, y, 160 + d, 122 + d, 74 + d);
+        }
+      }
+    }
+    // Handle.
+    set(13, 8, 216, 200, 120);
+    set(13, 7, 190, 174, 100);
+  },
+
+  [TILE.BED_TOP]: (set, rnd) => {
+    // Red quilt with a pillow at one end.
+    noiseFill(set, rnd, [172, 42, 44], 12);
+    for (let y = 0; y < 5; y++) {
+      for (let x = 1; x < T - 1; x++) {
+        const d = (rnd() - 0.5) * 10;
+        set(x, y, 238 + d, 234 + d, 228 + d);
+      }
+    }
+    for (let i = 0; i < T; i++) { set(i, 5, 130, 30, 32); set(i, T - 1, 128, 28, 30); }
+  },
+
+  [TILE.BED_SIDE]: (set, rnd) => {
+    // Mattress over a wooden frame.
+    noiseFill(set, rnd, [172, 42, 44], 10);
+    for (let y = 9; y < T; y++) {
+      for (let x = 0; x < T; x++) {
+        const d = (rnd() - 0.5) * 12;
+        set(x, y, 144 + d, 108 + d, 62 + d);
+      }
+    }
+    for (let i = 0; i < T; i++) set(i, 9, 108, 78, 44);
+  },
+
+  [TILE.TORCH]: (set, rnd) => {
+    // Stick with a burning head; background stays transparent.
+    for (let y = 6; y < T; y++) {
+      const d = (rnd() - 0.5) * 16;
+      set(7, y, 138 + d, 102 + d, 58 + d);
+      set(8, y, 116 + d, 84 + d, 46 + d);
+    }
+    // Flame.
+    for (let y = 2; y < 6; y++) {
+      for (let x = 6; x < 10; x++) {
+        const heat = (6 - y) / 4;
+        const d = (rnd() - 0.5) * 40;
+        set(x, y, 250 + d, 180 + heat * 60 + d, 60 + d);
+      }
+    }
+    set(7, 1, 255, 240, 180);
+    set(8, 1, 255, 228, 150);
+  },
+
+  [TILE.CHEST_TOP]: (set, rnd) => {
+    noiseFill(set, rnd, [140, 100, 54], 12);
+    for (let i = 0; i < T; i++) { set(i, 0, 168, 126, 72); set(i, T - 1, 100, 70, 36); }
+    // Iron band across the lid.
+    for (let x = 6; x < 10; x++) for (let y = 0; y < T; y++) set(x, y, 92, 92, 96);
+  },
+
+  [TILE.CHEST_SIDE]: (set, rnd) => {
+    noiseFill(set, rnd, [140, 100, 54], 12);
+    // Lid seam.
+    for (let x = 0; x < T; x++) { set(x, 5, 96, 68, 34); set(x, 6, 168, 126, 72); }
+    // Latch.
+    for (let y = 4; y < 9; y++) for (let x = 7; x < 10; x++) set(x, y, 96, 96, 100);
+    set(8, 6, 214, 196, 120);
+    for (let i = 0; i < T; i++) { set(i, 0, 166, 124, 70); set(i, T - 1, 98, 68, 34); }
+  },
+
+  [TILE.BOW]: (set, rnd) => {
+    // Curved limb with a string across the chord.
+    for (let i = 0; i < 13; i++) {
+      const t = i / 12;
+      const y = 2 + i;
+      const x = 11 - Math.round(Math.sin(t * Math.PI) * 4);
+      const d = (rnd() - 0.5) * 16;
+      set(x, y, 142 + d, 102 + d, 56 + d);
+      set(x + 1, y, 116 + d, 82 + d, 44 + d);
+    }
+    for (let i = 0; i < 13; i++) set(11, 2 + i, 232, 230, 222);
+    set(12, 2, 116, 82, 44);
+    set(12, 14, 116, 82, 44);
+  },
+
+  [TILE.GUNPOWDER]: (set, rnd) => {
+    // Loose grey powder.
+    for (let i = 0; i < 44; i++) {
+      const x = 3 + ((rnd() * 10) | 0);
+      const y = 4 + ((rnd() * 9) | 0);
+      const d = (rnd() - 0.5) * 34;
+      set(x, y, 96 + d, 96 + d, 100 + d);
+    }
+  },
+
   [TILE.REDSTONE_DUST]: (set, rnd) => {
     // Scattered glowing dust rather than a solid shape.
     for (let i = 0; i < 40; i++) {

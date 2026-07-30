@@ -135,9 +135,18 @@ export class AudioEngine {
     source.stop(t + decay + 0.05);
   }
 
-  /** Shaped oscillator, optionally sweeping between two pitches. */
-  tone({ freq = 440, endFreq = null, duration = 0.15, gain = 0.2, type = 'sine', delay = 0, attack = 0.005 } = {}) {
-    if (!this.ready) return;
+  /**
+   * Shaped oscillator, optionally sweeping between two pitches.
+   *
+   * `lowpass` matters more than it looks: a bare sawtooth or square is all
+   * upper harmonics and reads as a harsh electronic beep. Rolling the top off
+   * is what makes a synthesised animal call sound like an animal.
+   */
+  tone({
+    freq = 440, endFreq = null, duration = 0.15, gain = 0.2, type = 'sine',
+    delay = 0, attack = 0.005, lowpass = null, vibrato = null,
+  } = {}) {
+    if (!this.ready || gain <= 0.0005) return;
     const t = this.ctx.currentTime + delay;
 
     const osc = this.ctx.createOscillator();
@@ -145,12 +154,34 @@ export class AudioEngine {
     osc.frequency.setValueAtTime(freq, t);
     if (endFreq !== null) osc.frequency.exponentialRampToValueAtTime(Math.max(1, endFreq), t + duration);
 
+    // Optional warble, which is what sells a bleat or a moo.
+    if (vibrato) {
+      const lfo = this.ctx.createOscillator();
+      lfo.frequency.value = vibrato.rate;
+      const depth = this.ctx.createGain();
+      depth.gain.value = vibrato.depth;
+      lfo.connect(depth);
+      depth.connect(osc.frequency);
+      lfo.start(t);
+      lfo.stop(t + duration + 0.02);
+    }
+
     const env = this.ctx.createGain();
     env.gain.setValueAtTime(0, t);
     env.gain.linearRampToValueAtTime(gain, t + attack);
     env.gain.exponentialRampToValueAtTime(0.0001, t + duration);
 
-    osc.connect(env);
+    let node = osc;
+    if (lowpass !== null) {
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = lowpass;
+      filter.Q.value = 0.7;
+      osc.connect(filter);
+      node = filter;
+    }
+
+    node.connect(env);
     env.connect(this.master);
     osc.start(t);
     osc.stop(t + duration + 0.02);
@@ -279,55 +310,108 @@ export class AudioEngine {
   /**
    * Mob voice. `profile` comes from the mob type so each species is distinct
    * without needing its own bespoke code.
+   *
+   * @param distance metres from the listener; used to attenuate and to drop
+   *   calls from animals too far away to be worth hearing.
    */
-  mobSound(profile, kind = 'idle') {
+  mobSound(profile, kind = 'idle', distance = 0) {
     if (!this.ready || !profile) return;
-    if (!this._throttle('mob:' + profile.name + kind, 0.12)) return;
 
-    const base = profile.pitch * (0.88 + Math.random() * 0.24);
-    const gain = kind === 'hurt' ? 0.28 : kind === 'death' ? 0.3 : 0.18;
-    const duration = kind === 'death' ? profile.duration * 2 : profile.duration;
+    // Distance culling and falloff. Without this, a herd two hundred blocks
+    // away is just as loud as the cow next to you.
+    if (distance > MOB_AUDIBLE_RANGE) return;
+    const falloff = Math.pow(1 - distance / MOB_AUDIBLE_RANGE, 1.7);
+    if (falloff <= 0.02) return;
+
+    // Idle chatter also competes for one global slot, so a big herd cannot
+    // produce a continuous stream of noise.
+    if (kind === 'idle' && !this._throttle('mobIdle', 1.6)) return;
+    if (!this._throttle('mob:' + profile.name + kind, 0.25)) return;
+
+    // ±6% pitch jitter: enough to stop repetition sounding mechanical, small
+    // enough that a species stays recognisable.
+    const base = profile.pitch * (0.94 + Math.random() * 0.12);
+    const level = (kind === 'hurt' ? 0.20 : kind === 'death' ? 0.22 : 0.11) * falloff;
+    const duration = kind === 'death' ? profile.duration * 1.8 : profile.duration;
 
     switch (profile.voice) {
-      case 'groan': // zombie
-        this.tone({ freq: base, endFreq: base * 0.7, duration: duration * 1.6, gain, type: 'sawtooth' });
-        this.noise({ freq: base * 3, q: 1.2, decay: duration, gain: gain * 0.5, kind: 'pink' });
+      case 'groan': // zombie — low, breathy
+        this.tone({ freq: base, endFreq: base * 0.72, duration: duration * 1.7, gain: level, type: 'sawtooth', lowpass: base * 5, attack: 0.05 });
+        this.noise({ freq: base * 4, q: 0.8, decay: duration, gain: level * 0.35, kind: 'pink', type: 'lowpass' });
         break;
 
-      case 'rattle': // skeleton — dry clicks, no voice
-        for (let i = 0; i < 4; i++) {
-          this.noise({ freq: 2200 + Math.random() * 900, q: 9, decay: 0.05, gain: gain * 0.7, delay: i * 0.055 });
+      case 'rattle': // skeleton — dry bone clicks, no voice at all
+        for (let i = 0; i < 3; i++) {
+          this.noise({ freq: 900 + Math.random() * 500, q: 5, decay: 0.045, gain: level * 0.55, delay: i * 0.07 });
         }
         break;
 
       case 'hiss': // spider
-        this.noise({ freq: 3400, q: 0.9, decay: duration * 1.4, gain: gain * 0.8, type: 'highpass' });
+        this.noise({ freq: 1500, q: 0.6, decay: duration * 1.3, gain: level * 0.5, kind: 'pink', type: 'bandpass' });
         break;
 
-      case 'oink': // pig
-        this.tone({ freq: base, endFreq: base * 1.5, duration: duration * 0.5, gain, type: 'sawtooth' });
-        this.tone({ freq: base * 1.2, endFreq: base * 0.8, duration: duration * 0.5, gain: gain * 0.8, type: 'sawtooth', delay: duration * 0.45 });
+      case 'fuse': // creeper — sharp intake, unmistakable
+        this.noise({ freq: 2000, q: 0.7, decay: 0.5, gain: level * 1.4, kind: 'white', type: 'bandpass' });
         break;
 
-      case 'moo': // cow
-        this.tone({ freq: base, endFreq: base * 0.85, duration: duration * 2.2, gain, type: 'triangle', attack: 0.06 });
+      case 'oink': // pig — two short grunts
+        this.tone({ freq: base, endFreq: base * 1.35, duration: duration * 0.45, gain: level, type: 'sawtooth', lowpass: base * 4, attack: 0.015 });
+        this.tone({ freq: base * 1.1, endFreq: base * 0.8, duration: duration * 0.45, gain: level * 0.75, type: 'sawtooth', lowpass: base * 4, delay: duration * 0.5, attack: 0.015 });
         break;
 
-      case 'baa': // sheep
-        this.tone({ freq: base, endFreq: base * 1.1, duration: duration * 1.4, gain, type: 'sawtooth' });
-        // Vibrato-ish warble via a couple of quick repeats.
-        this.tone({ freq: base * 1.06, duration: duration * 0.5, gain: gain * 0.6, type: 'sawtooth', delay: duration * 0.5 });
+      case 'moo': // cow — long, low, slow swell
+        this.tone({ freq: base, endFreq: base * 0.8, duration: duration * 2.4, gain: level, type: 'triangle', lowpass: base * 6, attack: 0.14, vibrato: { rate: 5, depth: base * 0.02 } });
         break;
 
-      case 'cluck': // chicken
-        this.tone({ freq: base, endFreq: base * 0.6, duration: 0.07, gain, type: 'square' });
-        this.tone({ freq: base * 0.9, endFreq: base * 0.5, duration: 0.06, gain: gain * 0.8, type: 'square', delay: 0.1 });
+      case 'baa': // sheep — bleat carried by the warble, not by harshness
+        this.tone({ freq: base, endFreq: base * 0.94, duration: duration * 1.5, gain: level, type: 'triangle', lowpass: base * 5, attack: 0.04, vibrato: { rate: 17, depth: base * 0.07 } });
+        break;
+
+      case 'cluck': // chicken — soft wooden knock, not a beep
+        this.tone({ freq: base, endFreq: base * 0.62, duration: 0.09, gain: level * 0.8, type: 'triangle', lowpass: base * 3, attack: 0.008 });
+        this.tone({ freq: base * 0.85, endFreq: base * 0.5, duration: 0.08, gain: level * 0.55, type: 'triangle', lowpass: base * 3, delay: 0.13, attack: 0.008 });
         break;
 
       default:
-        this.tone({ freq: base, duration, gain, type: 'triangle' });
+        this.tone({ freq: base, duration, gain: level, type: 'triangle', lowpass: base * 4 });
     }
   }
+
+  /** Explosion: deep boom plus a long debris tail. */
+  explosion(distance = 0) {
+    if (!this.ready) return;
+    const falloff = Math.max(0, Math.pow(1 - Math.min(1, distance / 42), 1.5));
+    if (falloff <= 0.02) return;
+
+    this.tone({ freq: 90, endFreq: 26, duration: 0.85, gain: 0.42 * falloff, type: 'sine' });
+    this.noise({ freq: 320, q: 0.4, decay: 0.7, gain: 0.38 * falloff, kind: 'pink', type: 'lowpass' });
+    this.noise({ freq: 1500, q: 0.5, decay: 0.35, gain: 0.16 * falloff });
+    // Debris settling afterwards.
+    for (let i = 0; i < 5; i++) {
+      this.noise({ freq: 700 + Math.random() * 900, q: 3, decay: 0.09, gain: 0.09 * falloff, delay: 0.2 + Math.random() * 0.5 });
+    }
+  }
+
+  /** Bowstring being drawn — pitch rises with charge. */
+  bowDraw(charge) {
+    if (!this._throttle('bowDraw', 0.18)) return;
+    this.tone({ freq: 160 + charge * 180, duration: 0.1, gain: 0.06, type: 'triangle', lowpass: 1200 });
+  }
+
+  /** Door hinge. */
+  door(opening) {
+    this.noise({ freq: opening ? 700 : 520, q: 2.5, decay: 0.22, gain: 0.18, kind: 'pink' });
+    this.tone({ freq: opening ? 220 : 180, endFreq: opening ? 300 : 140, duration: 0.18, gain: 0.1, type: 'triangle', lowpass: 900 });
+  }
+
+  /** Chest lid. */
+  chest(opening) {
+    this.noise({ freq: 400, q: 1.6, decay: 0.2, gain: 0.16, kind: 'pink', type: 'lowpass' });
+    this.tone({ freq: opening ? 180 : 150, endFreq: opening ? 260 : 110, duration: 0.16, gain: 0.09, type: 'triangle', lowpass: 800 });
+  }
 }
+
+/** Mob calls fade to nothing past this many blocks. */
+const MOB_AUDIBLE_RANGE = 24;
 
 export const audio = new AudioEngine();

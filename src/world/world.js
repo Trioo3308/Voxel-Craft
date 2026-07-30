@@ -464,6 +464,16 @@ export class World {
     return blockIsLiquid(this.getBlock(wx, wy, wz));
   }
 
+  /**
+   * Collision boxes for a block, or null for a plain full cube.
+   * Physics calls this only after `isSolid` says something is there, so the
+   * common case costs one array lookup.
+   */
+  getShape(wx, wy, wz) {
+    const block = BLOCKS[this.getBlock(wx, wy, wz)];
+    return block ? block.shape : null;
+  }
+
   /** Water specifically (for swimming vs. burning). */
   isWater(wx, wy, wz) {
     return isFluidFamily(this.getBlock(wx, wy, wz), 'water');

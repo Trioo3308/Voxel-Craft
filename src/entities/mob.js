@@ -69,8 +69,11 @@ export class Mob {
     /** Seconds since we last actually saw the target. */
     this.lostSightFor = 0;
     this.fleeTimer = 0;
-    /** Countdown to the next idle vocalisation. */
-    this._voiceTimer = 2 + Math.random() * 8;
+    /** Countdown to the next idle vocalisation. Staggered so a freshly spawned
+     *  group does not all call at once. */
+    this._voiceTimer = 8 + Math.random() * 30;
+    /** Distance to the listener, refreshed each think for audio falloff. */
+    this._listenerDist = 0;
     /** Ranged attack cooldown, separate from melee. */
     this.rangedCooldown = 0;
     /** Sideways bias while circling a target, flipped occasionally. */
@@ -162,9 +165,11 @@ export class Mob {
 
     const player = ctx.player;
     this.target = player;
+    // Cached so takeDamage/die can attenuate without needing the context.
+    this._listenerDist = this.distanceTo(player.eyePosition);
 
     this._updateSunlightBurn(dt, ctx, brain);
-    this._updateVoice(dt);
+    this._updateVoice(dt, ctx);
 
     // Fleeing overrides everything else while it lasts.
     if (this.fleeTimer > 0) {
@@ -348,13 +353,31 @@ export class Mob {
     }
   }
 
-  /** Occasional idle noises so the world feels inhabited. */
-  _updateVoice(dt) {
+  /**
+   * Occasional idle noises so the world feels inhabited.
+   *
+   * The interval is deliberately long. Each mob calling every 6-18s sounds
+   * reasonable in isolation, but with a herd of eight it produced a noise every
+   * second or two, which was maddening. Distance is passed through so animals
+   * across the valley are attenuated or dropped entirely.
+   */
+  _updateVoice(dt, ctx) {
     if (!this.type.voice) return;
+
     this._voiceTimer -= dt;
     if (this._voiceTimer > 0) return;
-    this._voiceTimer = 6 + Math.random() * 12;
-    audio.mobSound(this.type.voice, 'idle');
+    this._voiceTimer = 22 + Math.random() * 28;
+
+    // Do not even bother if the player could not hear it.
+    const distance = ctx.player ? this.distanceTo(ctx.player.eyePosition) : 0;
+    if (distance > 24) return;
+
+    audio.mobSound(this.type.voice, 'idle', distance);
+  }
+
+  /** Distance from this mob to the listener, for audio falloff. */
+  _listenerDistance(ctx) {
+    return ctx && ctx.player ? this.distanceTo(ctx.player.eyePosition) : 0;
   }
 
   // --- Steering helpers -----------------------------------------------------
@@ -530,7 +553,8 @@ export class Mob {
 
     this.health -= amount;
     this.hurtTimer = 0.4;
-    audio.mobSound(this.type.voice, this.health - amount <= 0 ? 'death' : 'hurt');
+    // `die()` plays the death cry, so only sound hurt if we survived it.
+    if (this.health > 0) audio.mobSound(this.type.voice, 'hurt', this._listenerDist ?? 0);
 
     // Anything that gets hit panics for a moment; hostiles then re-engage.
     const brain = this.type.brain;
@@ -553,7 +577,7 @@ export class Mob {
     this.dead = true;
     this.deathTimer = 0;
     this.velocity.set(0, 0, 0);
-    audio.mobSound(this.type.voice, 'death');
+    audio.mobSound(this.type.voice, 'death', this._listenerDist ?? 0);
   }
 
   /** Called by a pack-mate that spotted the player. */

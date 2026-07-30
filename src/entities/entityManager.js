@@ -11,7 +11,8 @@ import { Mob } from './mob.js';
 import { MOB_TYPES } from './mobTypes.js';
 import { ItemEntity } from './itemEntity.js';
 import { Arrow } from './projectile.js';
-import { AIR } from '../world/blocks.js';
+import { AIR, BLOCKS } from '../world/blocks.js';
+import { audio } from '../engine/audio.js';
 
 const M = Settings.mobs;
 
@@ -191,6 +192,88 @@ export class EntityManager {
     this.projectiles.push(arrow);
     this.scene.add(arrow.mesh);
     return arrow;
+  }
+
+  /** Launch an arrow with an explicit velocity (used by the player's bow). */
+  spawnArrow(position, velocity, owner, damage) {
+    const arrow = new Arrow(
+      this.world,
+      this._tmpVec.set(position.x, position.y, position.z),
+      new THREE.Vector3(velocity.x, velocity.y, velocity.z),
+      owner,
+      damage
+    );
+    this.projectiles.push(arrow);
+    this.scene.add(arrow.mesh);
+    return arrow;
+  }
+
+  /**
+   * Blow a spherical crater and hurt everything nearby.
+   *
+   * Block removal is batched through `setBlocks` so the whole crater costs one
+   * remesh per affected chunk rather than one per block — a radius-3 explosion
+   * touches over a hundred voxels.
+   */
+  explode(x, y, z, radius, ctx) {
+    const world = this.world;
+    const rSq = radius * radius;
+
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dz = -radius; dz <= radius; dz++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const distSq = dx * dx + dy * dy + dz * dz;
+          if (distSq > rSq) continue;
+          // Ragged edge rather than a perfect sphere.
+          if (distSq > rSq * 0.45 && Math.random() < 0.35) continue;
+
+          const bx = Math.floor(x) + dx;
+          const by = Math.floor(y) + dy;
+          const bz = Math.floor(z) + dz;
+
+          const block = world.getBlock(bx, by, bz);
+          if (block === AIR) continue;
+          // Bedrock and other unbreakable blocks survive.
+          const def = BLOCKS[block];
+          if (!def || def.hardness === Infinity) continue;
+
+          world.setBlock(bx, by, bz, AIR, true);
+        }
+      }
+    }
+    world.flushBlockChanges();
+
+    // --- Damage with falloff ------------------------------------------------
+    const centre = { x, y, z };
+    const maxDamage = radius * 6;
+
+    for (const mob of this.mobs) {
+      if (mob.dead) continue;
+      const d = mob.distanceTo(centre);
+      if (d > radius * 1.6) continue;
+      const falloff = 1 - d / (radius * 1.6);
+      mob.takeDamage(Math.ceil(maxDamage * falloff), {
+        x: (mob.position.x - x) / (d || 1),
+        y: 0.6,
+        z: (mob.position.z - z) / (d || 1),
+      });
+    }
+
+    const player = ctx && ctx.player;
+    if (player && !player.survival.dead) {
+      const d = player.eyePosition.distanceTo(new THREE.Vector3(x, y, z));
+      if (d <= radius * 1.6) {
+        const falloff = 1 - d / (radius * 1.6);
+        player.survival.damage(Math.ceil(maxDamage * falloff), 'explosion');
+        const dx = player.position.x - x;
+        const dz = player.position.z - z;
+        const len = Math.hypot(dx, dz) || 1;
+        player.velocity.x += (dx / len) * 9 * falloff;
+        player.velocity.z += (dz / len) * 9 * falloff;
+        player.velocity.y = Math.max(player.velocity.y, 7 * falloff);
+      }
+      audio.explosion(d);
+    }
   }
 
   /** A mob that spotted the player tells its neighbours of the same species. */

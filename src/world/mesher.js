@@ -99,14 +99,49 @@ function buildPaddedSnapshot(sampleBlock, cx, cz) {
   }
 }
 
-/** How lit a voxel position is, from how deeply buried it is. */
+/**
+ * How lit a voxel position is from the sky, based on how deeply buried it is.
+ *
+ * The floor is deliberately very dark. It used to be 0.32, which made caves
+ * dim-but-navigable and left torches pointless; now an unlit cave really is
+ * dark and a light source is worth carrying.
+ */
 function skyExposure(x, y, z) {
   const top = heightMap[(x + 1) + PAD_SX * (z + 1)];
   if (y > top) return 1.0; // open to the sky
   const depth = top - y;
-  const light = 1.0 - depth * 0.09;
-  return light < 0.32 ? 0.32 : light;
+  const light = 1.0 - depth * 0.11;
+  return light < 0.10 ? 0.10 : light;
 }
+
+/** Block-light array for the chunk being meshed, or null if nothing lights it. */
+let chunkLight = null;
+
+/**
+ * Combined lighting: the brighter of daylight reaching this cell and any
+ * torchlight falling on it.
+ */
+function lightAt(x, y, z) {
+  const sky = skyExposure(x, y, z);
+  if (!chunkLight) return sky;
+
+  // Block light is only stored for this chunk, so border samples clamp inward.
+  // A one-voxel inaccuracy at a chunk seam is invisible next to the cost of
+  // carrying a padded light volume around.
+  const cx = x < 0 ? 0 : x >= CHUNK_SX ? CHUNK_SX - 1 : x;
+  const cz = z < 0 ? 0 : z >= CHUNK_SZ ? CHUNK_SZ - 1 : z;
+  if (y < 0 || y >= CHUNK_SY) return sky;
+
+  const level = chunkLight[cx + CHUNK_SX * (cz + CHUNK_SZ * y)];
+  if (level === 0) return sky;
+
+  // Level 15 is not quite daylight — torchlight is warm and local, and letting
+  // it hit 1.0 makes torch-lit rooms look flat.
+  const block = 0.12 + (level / MAX_BLOCK_LIGHT) * 0.82;
+  return sky > block ? sky : block;
+}
+
+const MAX_BLOCK_LIGHT = 15;
 
 /**
  * Classic Minecraft-style vertex AO from the three voxels surrounding a corner.
@@ -180,8 +215,9 @@ class MeshBuffer {
  * @param {number} cz chunk Z
  * @returns {{opaque: object|null, water: object|null}} transferable geometry
  */
-export function buildChunkMesh(sampleBlock, cx, cz) {
+export function buildChunkMesh(sampleBlock, cx, cz, blockLight = null) {
   buildPaddedSnapshot(sampleBlock, cx, cz);
+  chunkLight = blockLight;
 
   // Two passes share one traversal: solid/cutout blocks and liquids need
   // different materials (alpha-test vs. alpha-blend) so they get separate meshes.
@@ -203,6 +239,16 @@ export function buildChunkMesh(sampleBlock, cx, cz) {
 
         // Water is alpha-blended; lava is opaque despite also being a fluid.
         const target = block.translucent ? water : opaque;
+
+        // Partial blocks (slabs, stairs, fences, doors...) are built box by box
+        // rather than as a single cube. Each box always emits all six of its
+        // faces: a sub-box does not fill the cell, so there is no neighbour
+        // relationship that could safely hide one.
+        if (block.shape) {
+          emitShape(target, block, x, y, z, tileSpan, inset);
+          continue;
+        }
+
         const fluid = block.fluid;
         const height = fluid ? fluidHeightAt(x, y, z, fluid) : 1;
 
@@ -239,6 +285,76 @@ export function buildChunkMesh(sampleBlock, cx, cz) {
   return { opaque: opaque.toGeometry(), water: water.toGeometry() };
 }
 
+/**
+ * Emit every face of every box in a partial block's shape.
+ *
+ * Shading uses the block's own cell for sky exposure (rather than the air cell
+ * a full face would look at), and skips ambient occlusion — a sub-box's corners
+ * do not line up with the voxel grid, so grid-based AO would look wrong.
+ */
+function emitShape(buf, block, x, y, z, tileSpan, inset) {
+  const sky = lightAt(x, y, z);
+
+  for (const box of block.shape) {
+    const [x0, y0, z0, x1, y1, z1] = box;
+
+    for (let f = 0; f < 6; f++) {
+      const face = FACES[f];
+      const tile = block.tiles[f];
+      const tileCol = tile % ATLAS_COLS;
+      const tileRow = Math.floor(tile / ATLAS_COLS);
+      const u0 = tileCol * tileSpan;
+      const v0 = 1 - (tileRow + 1) * tileSpan;
+
+      const shade = block.emissive ? 1 : face.tint * sky;
+      const [ax, ay, az] = face.n;
+
+      const start = buf.vertexCount;
+      for (let c = 0; c < 4; c++) {
+        const su = CORNERS[c][0];
+        const sv = CORNERS[c][1];
+
+        // Corner in unit-cube space, then remapped into the box's extent.
+        const unit = [
+          0.5 + 0.5 * ax + 0.5 * su * face.u[0] + 0.5 * sv * face.v[0],
+          0.5 + 0.5 * ay + 0.5 * su * face.u[1] + 0.5 * sv * face.v[1],
+          0.5 + 0.5 * az + 0.5 * su * face.u[2] + 0.5 * sv * face.v[2],
+        ];
+
+        buf.positions.push(
+          x + x0 + unit[0] * (x1 - x0),
+          y + y0 + unit[1] * (y1 - y0),
+          z + z0 + unit[2] * (z1 - z0)
+        );
+        buf.normals.push(ax, ay, az);
+        buf.colors.push(shade, shade, shade);
+
+        // Crop the texture to the box's extent so a slab shows the bottom half
+        // of its side texture rather than a squashed copy of the whole thing.
+        let lu = (su + 1) * 0.5;
+        let lv = (sv + 1) * 0.5;
+        if (ay === 0) {
+          // Side face: V follows height, U follows whichever axis is tangent.
+          lv = y0 + lv * (y1 - y0);
+          const spanU = Math.abs(face.u[0]) > 0 ? [x0, x1] : [z0, z1];
+          lu = spanU[0] + lu * (spanU[1] - spanU[0]);
+        } else {
+          lu = x0 + lu * (x1 - x0);
+          lv = z0 + lv * (z1 - z0);
+        }
+
+        buf.uvs.push(
+          u0 + inset + lu * (tileSpan - 2 * inset),
+          v0 + inset + lv * (tileSpan - 2 * inset)
+        );
+      }
+
+      buf.vertexCount += 4;
+      buf.indices.push(start, start + 1, start + 2, start, start + 2, start + 3);
+    }
+  }
+}
+
 /** Face visibility rule — the heart of the culling. */
 function shouldEmitFace(id, block, neighborId) {
   if (neighborId === AIR) return true;
@@ -267,9 +383,9 @@ function emitFace(buf, block, face, faceIndex, x, y, z, nx, ny, nz, tileSpan, in
   // but at V = 1 in UV space.
   const v0 = 1 - (tileRow + 1) * tileSpan;
 
-  // Sky light is sampled on the *air* side of the face — that is the side the
-  // light would actually arrive from.
-  const sky = skyExposure(nx, ny, nz);
+  // Light is sampled on the *air* side of the face — that is the side the light
+  // would actually arrive from.
+  const sky = lightAt(nx, ny, nz);
   const base = face.tint * sky;
 
   const [ax, ay, az] = face.n;

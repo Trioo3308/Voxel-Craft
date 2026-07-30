@@ -26,10 +26,28 @@ export function collidesWithWorld(world, position, width, height) {
   const maxY = Math.ceil(position.y + height) - 1;
   const maxZ = Math.ceil(position.z + hw) - 1;
 
+  // Entity box in world space, reused for the shape tests below.
+  const eMinX = position.x - hw, eMaxX = position.x + hw;
+  const eMinY = position.y, eMaxY = position.y + height;
+  const eMinZ = position.z - hw, eMaxZ = position.z + hw;
+
   for (let y = minY; y <= maxY; y++) {
     for (let z = minZ; z <= maxZ; z++) {
       for (let x = minX; x <= maxX; x++) {
-        if (world.isSolid(x, y, z)) return true;
+        if (!world.isSolid(x, y, z)) continue;
+
+        // Fast path: a full cube fills its cell, so overlapping the cell is
+        // enough. Only partial blocks need the per-box test.
+        const shape = world.getShape ? world.getShape(x, y, z) : null;
+        if (!shape) return true;
+
+        for (const box of shape) {
+          if (
+            eMinX < x + box[3] && eMaxX > x + box[0] &&
+            eMinY < y + box[4] && eMaxY > y + box[1] &&
+            eMinZ < z + box[5] && eMaxZ > z + box[2]
+          ) return true;
+        }
       }
     }
   }
@@ -63,7 +81,8 @@ export function isInLiquid(world, position, width, height) {
  */
 export function isSupported(world, position, width) {
   const hw = width / 2;
-  const y = Math.floor(position.y - 0.02);
+  const probeY = position.y - 0.02;
+  const y = Math.floor(probeY);
 
   const minX = Math.floor(position.x - hw);
   const maxX = Math.ceil(position.x + hw) - 1;
@@ -72,10 +91,95 @@ export function isSupported(world, position, width) {
 
   for (let z = minZ; z <= maxZ; z++) {
     for (let x = minX; x <= maxX; x++) {
-      if (world.isSolid(x, y, z)) return true;
+      if (!world.isSolid(x, y, z)) continue;
+
+      const shape = world.getShape ? world.getShape(x, y, z) : null;
+      if (!shape) return true;
+      // A partial block only supports us if one of its boxes actually reaches
+      // the height we are standing at — standing on the air above a slab does
+      // not count.
+      for (const box of shape) {
+        if (y + box[4] >= probeY && y + box[1] <= probeY + 0.04) return true;
+      }
     }
   }
   return false;
+}
+
+/**
+ * Highest solid surface at or below `fromY` under the box's footprint.
+ *
+ * Landing used to snap with `Math.ceil(y)`, which silently assumes every block
+ * top sits on an integer height. That is true for full cubes and wrong for every
+ * partial block: landing on a slab would snap to the top of its *cell* instead
+ * of the top of the slab, leaving the entity hovering and then falling again in
+ * a permanent jitter.
+ *
+ * @returns {number} surface height, or -Infinity if there is nothing to land on
+ */
+function landingSurface(world, position, width, height, fromY) {
+  const hw = width / 2;
+  const minX = Math.floor(position.x - hw);
+  const maxX = Math.ceil(position.x + hw) - 1;
+  const minZ = Math.floor(position.z - hw);
+  const maxZ = Math.ceil(position.z + hw) - 1;
+  const minY = Math.floor(position.y);
+  const maxY = Math.floor(fromY);
+
+  let best = -Infinity;
+  for (let y = minY; y <= maxY; y++) {
+    for (let z = minZ; z <= maxZ; z++) {
+      for (let x = minX; x <= maxX; x++) {
+        if (!world.isSolid(x, y, z)) continue;
+
+        const shape = world.getShape ? world.getShape(x, y, z) : null;
+        if (!shape) {
+          if (y + 1 <= fromY + 1e-6 && y + 1 > best) best = y + 1;
+          continue;
+        }
+        for (const box of shape) {
+          const top = y + box[4];
+          if (top <= fromY + 1e-6 && top > best) best = top;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Lowest solid surface at or above the box's head, for resolving a bonk.
+ * Same reasoning as `landingSurface` — a shape's underside is not necessarily on
+ * an integer boundary.
+ */
+function ceilingSurface(world, position, width, height, fromTop) {
+  const hw = width / 2;
+  const minX = Math.floor(position.x - hw);
+  const maxX = Math.ceil(position.x + hw) - 1;
+  const minZ = Math.floor(position.z - hw);
+  const maxZ = Math.ceil(position.z + hw) - 1;
+  const minY = Math.floor(fromTop);
+  const maxY = Math.ceil(position.y + height);
+
+  let best = Infinity;
+  for (let y = minY; y <= maxY; y++) {
+    for (let z = minZ; z <= maxZ; z++) {
+      for (let x = minX; x <= maxX; x++) {
+        if (!world.isSolid(x, y, z)) continue;
+
+        const shape = world.getShape ? world.getShape(x, y, z) : null;
+        if (!shape) {
+          if (y >= fromTop - 1e-6 && y < best) best = y;
+          continue;
+        }
+        for (const box of shape) {
+          const bottom = y + box[1];
+          if (bottom >= fromTop - 1e-6 && bottom < best) best = bottom;
+        }
+      }
+    }
+  }
+  return best;
 }
 
 /**
@@ -133,9 +237,16 @@ export function moveWithCollision(world, position, velocity, size, dt, options =
       const prevY = position.y;
       position.y += dy;
       if (collidesWithWorld(world, position, width, height)) {
-        position.y = dy > 0
-          ? Math.floor(position.y + height) - height - EPS // bonked head
-          : Math.ceil(position.y) + EPS;                   // landed
+        if (dy > 0) {
+          // Bonked head: sit just under whatever we hit.
+          const ceiling = ceilingSurface(world, position, width, height, prevY + height);
+          position.y = ceiling < Infinity ? ceiling - height - EPS
+                                          : Math.floor(position.y + height) - height - EPS;
+        } else {
+          // Landed: rest on the actual surface, which may be a slab or stair.
+          const surface = landingSurface(world, position, width, height, prevY);
+          position.y = surface > -Infinity ? surface + EPS : Math.ceil(position.y) + EPS;
+        }
         // If snapping somehow still overlaps (e.g. a block was placed inside
         // us), fall back to simply not moving.
         if (collidesWithWorld(world, position, width, height)) position.y = prevY;

@@ -26,6 +26,7 @@
 
 import { TerrainGenerator } from './terrain.js';
 import { buildChunkMesh } from './mesher.js';
+import { computeChunkLight, emissionOf, LIGHT_MARGIN } from './light.js';
 import { CHUNK_SX, CHUNK_SY, CHUNK_SZ, chunkKey, voxelIndex, toLocalCoord, toChunkCoord } from './chunk.js';
 import { AIR } from './blocks.js';
 
@@ -43,6 +44,42 @@ const edits = new Map();
 
 /** Chunks the main thread currently holds — only these are worth remeshing. */
 const sentChunks = new Set();
+
+/**
+ * Every light-emitting block, keyed "x,y,z" -> emission level.
+ *
+ * Kept as a registry rather than discovered by scanning: lighting a chunk only
+ * needs the handful of emitters near it, and searching for them would cost
+ * hundreds of thousands of block lookups per chunk.
+ */
+const emitters = new Map();
+
+/** Register or clear an emitter after a block changes. */
+function updateEmitter(wx, wy, wz, id) {
+  const key = wx + ',' + wy + ',' + wz;
+  const level = emissionOf(id);
+  if (level > 0) emitters.set(key, level);
+  else emitters.delete(key);
+}
+
+/** Emitters close enough to affect a chunk. */
+function emittersNear(cx, cz) {
+  const minX = cx * CHUNK_SX - LIGHT_MARGIN;
+  const maxX = cx * CHUNK_SX + CHUNK_SX + LIGHT_MARGIN;
+  const minZ = cz * CHUNK_SZ - LIGHT_MARGIN;
+  const maxZ = cz * CHUNK_SZ + CHUNK_SZ + LIGHT_MARGIN;
+
+  const found = [];
+  for (const [key, level] of emitters) {
+    const comma1 = key.indexOf(',');
+    const comma2 = key.indexOf(',', comma1 + 1);
+    const x = +key.slice(0, comma1);
+    const z = +key.slice(comma2 + 1);
+    if (x < minX || x >= maxX || z < minZ || z >= maxZ) continue;
+    found.push({ x, y: +key.slice(comma1 + 1, comma2), z, level });
+  }
+  return found;
+}
 
 // ---------------------------------------------------------------------------
 // Voxel access
@@ -62,6 +99,9 @@ function ensureChunk(cx, cz) {
   }
 
   chunks.set(key, voxels);
+  // Torches restored from a save live in the edits, so emitters have to be
+  // picked up here rather than only when a block is placed.
+  registerChunkEmitters(cx, cz, voxels);
   return voxels;
 }
 
@@ -103,6 +143,21 @@ function collectTransferables(geometry, out) {
   );
 }
 
+/** Scan a freshly generated chunk for emitters (restored torches, lava). */
+function registerChunkEmitters(cx, cz, voxels) {
+  const baseX = cx * CHUNK_SX;
+  const baseZ = cz * CHUNK_SZ;
+  for (let y = 0; y < CHUNK_SY; y++) {
+    for (let z = 0; z < CHUNK_SZ; z++) {
+      for (let x = 0; x < CHUNK_SX; x++) {
+        const id = voxels[voxelIndex(x, y, z)];
+        if (id === AIR) continue;
+        if (emissionOf(id) > 0) updateEmitter(baseX + x, y, baseZ + z, id);
+      }
+    }
+  }
+}
+
 function meshChunk(cx, cz) {
   // The mesher reads one voxel past every edge (and diagonally, for ambient
   // occlusion), so all eight neighbours must exist first. Because generation is
@@ -112,7 +167,9 @@ function meshChunk(cx, cz) {
     for (let dx = -1; dx <= 1; dx++) ensureChunk(cx + dx, cz + dz);
   }
   invalidateSampleCache();
-  return buildChunkMesh(sampleBlock, cx, cz);
+  const light = computeChunkLight(cx, cz, sampleBlock, emittersNear(cx, cz));
+  invalidateSampleCache();
+  return buildChunkMesh(sampleBlock, cx, cz, light);
 }
 
 function sendChunk(cx, cz) {
@@ -165,6 +222,7 @@ function recordEdit(wx, wy, wz, id, dirty) {
 
   const voxels = chunks.get(key);
   if (voxels) voxels[index] = id;
+  updateEmitter(wx, wy, wz, id);
 
   // The owning chunk, plus any neighbour whose 1-voxel skirt just changed.
   const touchesNegX = lx === 0;

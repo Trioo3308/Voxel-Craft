@@ -12,7 +12,7 @@ import { moveWithCollision, isInLiquid, collidesWithWorld, isSupported } from '.
 import { raycastVoxels } from './raycast.js';
 import { Inventory } from './inventory.js';
 import { Survival, EXHAUSTION } from './survival.js';
-import { AIR, getBlock, isLiquid, getSoundMaterial } from '../world/blocks.js';
+import { AIR, getBlock, isLiquid, getSoundMaterial, getRanged, ITEM_ID } from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
 
 const P = Settings.player;
@@ -74,6 +74,8 @@ export class Player {
     this._attackCooldown = 0;
     /** Set for one frame when the player swings — the HUD animates from this. */
     this.didSwing = false;
+    /** Bow draw, 0..1. Drives arrow power and the viewmodel pose. */
+    this.drawProgress = 0;
 
     this.camera.rotation.order = 'YXZ';
 
@@ -458,6 +460,21 @@ export class Player {
       this.breakProgress = 0;
     }
 
+    // --- Bow: hold right click to draw, release to fire --------------------
+    const bow = getRanged(this.inventory.getSelected()?.id);
+    if (bow) {
+      if (input.isMouseDown(2)) {
+        this.drawProgress = Math.min(1, this.drawProgress + dt / bow.drawTime);
+        audio.bowDraw(this.drawProgress);
+      } else if (this.drawProgress > 0) {
+        this._fireBow(bow, ctx);
+        this.drawProgress = 0;
+      }
+      // A drawn bow does nothing else on right click.
+      return;
+    }
+    this.drawProgress = 0;
+
     // --- Right click: use a station, else eat, else place ------------------
     // MouseEvent.button: 0 = left, 1 = middle, 2 = right.
     if (input.isMouseDown(2) && this._placeCooldown === 0) {
@@ -510,6 +527,45 @@ export class Player {
     // Brief pickup delay so it does not fly straight back into the inventory.
     item.age = -0.6;
     return item;
+  }
+
+  /**
+   * Release the bowstring.
+   *
+   * Damage and speed scale with how far it was drawn, so a snap shot is weak
+   * and a full draw hurts. Creative mode does not consume arrows.
+   */
+  _fireBow(bow, ctx) {
+    // A barely-touched string should not fire at all.
+    if (this.drawProgress < 0.15) return;
+    if (!ctx.entities) return;
+
+    const hasArrow = this.creative || this.inventory.countOf(ITEM_ID.ARROW) > 0;
+    if (!hasArrow) return;
+    if (!this.creative) this.inventory.removeFirst(ITEM_ID.ARROW, 1);
+
+    const charge = this.drawProgress;
+    const speed = bow.speed * (0.4 + charge * 0.6);
+    const damage = bow.minDamage + (bow.maxDamage - bow.minDamage) * charge * charge;
+
+    const eye = this.eyePosition;
+    const dir = this.getLookDirection();
+    const velocity = {
+      x: dir.x * speed + (Math.random() - 0.5) * speed * bow.spread,
+      y: dir.y * speed + (Math.random() - 0.5) * speed * bow.spread,
+      z: dir.z * speed + (Math.random() - 0.5) * speed * bow.spread,
+    };
+
+    ctx.entities.spawnArrow(
+      { x: eye.x + dir.x * 0.5, y: eye.y + dir.y * 0.5, z: eye.z + dir.z * 0.5 },
+      velocity,
+      this,
+      damage
+    );
+
+    audio.bow();
+    this.didSwing = true;
+    if (!this.creative) this.inventory.damageHeldTool(1);
   }
 
   /** Right-clicking a crafting table or furnace opens its interface. */
@@ -600,7 +656,16 @@ export class Player {
     // …or a mob.
     if (ctx.entities && ctx.entities.anyMobIntersectsBlock(x, y, z)) return false;
 
-    if (!this.world.setBlock(x, y, z, held)) return false;
+    // Doors are two blocks tall; refuse the placement unless both fit.
+    const def = getBlock(held);
+    if (def.name === 'door') {
+      const above = this.world.getBlock(x, y + 1, z);
+      if (above !== AIR && !isLiquid(above)) return false;
+      if (!this.world.setBlock(x, y, z, held)) return false;
+      this.world.setBlock(x, y + 1, z, held);
+    } else if (!this.world.setBlock(x, y, z, held)) {
+      return false;
+    }
 
     if (!this.creative) this.inventory.consumeSelected(1);
     audio.blockPlace(getSoundMaterial(held));

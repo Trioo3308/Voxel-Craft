@@ -125,6 +125,25 @@ export class Inventory {
     return removed;
   }
 
+  /**
+   * Remove items of a given id from wherever they are, hotbar first.
+   * Used for ammunition, which is spent from the inventory rather than the hand.
+   * @returns {number} how many were actually removed
+   */
+  removeFirst(id, count = 1) {
+    let remaining = count;
+    for (let i = 0; i < TOTAL_SLOTS && remaining > 0; i++) {
+      const slot = this.slots[i];
+      if (!slot || slot.id !== id) continue;
+      const taken = Math.min(slot.count, remaining);
+      slot.count -= taken;
+      remaining -= taken;
+      if (slot.count <= 0) this.slots[i] = null;
+    }
+    if (remaining !== count) this.touch();
+    return count - remaining;
+  }
+
   /** Consume from the held stack. */
   consumeSelected(count = 1) {
     return this.removeFrom(this.selected, count);

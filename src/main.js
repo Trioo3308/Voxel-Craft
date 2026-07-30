@@ -23,7 +23,7 @@ import { SaveManager, captureState, applyState, SAVE_FORMAT_VERSION } from './wo
 import { makeFurnaceState } from './player/crafting.js';
 import {
   isLiquid, GRASS, DIRT, SAND, SNOW, STONE, DRY_GRASS, PODZOL, SWAMP_GRASS,
-  CRAFTING_TABLE, isFurnaceBlock,
+  CRAFTING_TABLE, isFurnaceBlock, isDoor, DOOR_CLOSED, DOOR_OPEN, BED, CHEST,
 } from './world/blocks.js';
 import { audio } from './engine/audio.js';
 
@@ -145,6 +145,37 @@ export class Game {
         this._openContainer(() => this.hud.openCraftingTable());
         return true;
       }
+
+      // --- Doors: toggle open/closed ---------------------------------------
+      if (isDoor(blockId)) {
+        const opening = blockId === DOOR_CLOSED.id;
+        this.world.setBlock(x, y, z, opening ? DOOR_OPEN.id : DOOR_CLOSED.id);
+        // Doors are two blocks tall; keep both halves in step.
+        for (const dy of [-1, 1]) {
+          if (isDoor(this.world.getBlock(x, y + dy, z))) {
+            this.world.setBlock(x, y + dy, z, opening ? DOOR_OPEN.id : DOOR_CLOSED.id);
+          }
+        }
+        audio.door(opening);
+        return true;
+      }
+
+      // --- Chests -----------------------------------------------------------
+      if (blockId === CHEST.id) {
+        const entity = this.world.getBlockEntity(x, y, z, () => ({
+          type: 'chest',
+          state: { slots: new Array(27).fill(null) },
+        }));
+        audio.chest(true);
+        this._openContainer(() => this.hud.openChest(entity.state));
+        return true;
+      }
+
+      // --- Beds -------------------------------------------------------------
+      if (blockId === BED.id) {
+        this._useBed(x, y, z);
+        return true;
+      }
       if (isFurnaceBlock(blockId)) {
         const entity = this.world.getBlockEntity(x, y, z, () => ({
           type: 'furnace',
@@ -157,18 +188,63 @@ export class Game {
       return false;
     };
 
-    // Breaking a furnace spills its contents rather than deleting them.
+    // Breaking a container spills its contents rather than deleting them.
     this.player.onBlockBroken = (blockId, target) => {
-      if (!isFurnaceBlock(blockId) || !target) return;
+      if (!target) return;
       const key = `${target.x},${target.y},${target.z}`;
       const entity = this.world.blockEntities.get(key);
-      if (!entity) return;
-      for (const field of ['input', 'fuel', 'output']) {
-        const stack = entity.state[field];
-        if (stack) this.player.inventory.add(stack.id, stack.count);
+
+      if (entity && isFurnaceBlock(blockId)) {
+        for (const field of ['input', 'fuel', 'output']) {
+          const stack = entity.state[field];
+          if (stack) this.player.inventory.addExisting(stack);
+        }
+        this.world.blockEntities.delete(key);
+      } else if (entity && blockId === CHEST.id) {
+        for (const stack of entity.state.slots) {
+          if (stack) this.player.inventory.addExisting(stack);
+        }
+        this.world.blockEntities.delete(key);
       }
-      this.world.blockEntities.delete(key);
+
+      // A door is two blocks; breaking either half removes both.
+      if (isDoor(blockId)) {
+        for (const dy of [-1, 1]) {
+          if (isDoor(this.world.getBlock(target.x, target.y + dy, target.z))) {
+            this.world.setBlock(target.x, target.y + dy, target.z, 0);
+          }
+        }
+      }
     };
+  }
+
+  /**
+   * Sleeping. Sets your spawn point, and skips to dawn if it is actually night
+   * and nothing hostile is nearby — the same conditions Minecraft imposes, so a
+   * bed is not simply a "skip the danger" button.
+   */
+  _useBed(x, y, z) {
+    this.player.spawnPoint.set(x + 0.5, y + 1, z + 0.5);
+
+    if (!this.sky.isNight) {
+      this.hud.showToast('You can only sleep at night');
+      return;
+    }
+
+    const hostileNearby = this.entities.mobs.some(
+      (m) => !m.dead && m.type.brain && m.type.brain.hostile &&
+             m.horizontalDistanceTo(this.player.position) < 12
+    );
+    if (hostileNearby) {
+      this.hud.showToast('Monsters nearby!');
+      return;
+    }
+
+    // Wind forward to just after sunrise and restore a little health.
+    this.sky.setTime(0.02);
+    this.player.survival.heal(3);
+    this.hud.showToast('Spawn point set — good morning');
+    this.saveWorld();
   }
 
   // -------------------------------------------------------------------------
@@ -494,6 +570,7 @@ export class Game {
       starve: 'You starved to death.',
       void: 'You fell out of the world.',
       lava: 'You tried to swim in lava.',
+      explosion: 'A creeper got too close.',
     };
     el('deathCause').textContent = messages[cause] ?? 'You died.';
     this.hud.closeAllContainers();
@@ -559,6 +636,9 @@ export class Game {
       } else if (input.wasPressed('Escape') && this.state === 'container') {
         this._closeContainer();
       }
+
+      // A drawn bow must not survive the menu opening.
+      if (this.state === 'container') this.player.drawProgress = 0;
     }
 
     // --- Simulation --------------------------------------------------------

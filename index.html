@@ -68,6 +68,18 @@
   #breakBar.active { display: block; }
   #breakFill { height: 100%; width: 0%; background: #e8e8ea; }
 
+  /* Bow draw indicator, sits just under the crosshair. */
+  #drawBar {
+    position: absolute; left: 50%; top: calc(50% + 38px);
+    transform: translateX(-50%);
+    width: 90px; height: 5px;
+    background: rgba(0,0,0,0.55);
+    border: 1px solid rgba(255,255,255,0.35);
+    display: none;
+  }
+  #drawBar.active { display: block; }
+  #drawFill { height: 100%; width: 0%; background: #d8c070; }
+
   /* Red vignette when you take damage. */
   #damageFlash {
     position: absolute; inset: 0;
@@ -407,6 +419,7 @@
   <div id="damageFlash"></div>
   <div id="crosshair"></div>
   <div id="breakBar"><div id="breakFill"></div></div>
+  <div id="drawBar"><div id="drawFill"></div></div>
 
   <div id="hud">
     <div id="stats">
@@ -474,7 +487,8 @@
       <span class="key">Q</span><span>Drop one &middot; <b>Ctrl+Q</b> drops the stack</span>
       <span class="key">M</span><span>Mute sound</span>
       <span class="key">Left click</span><span>Hold to mine &middot; click to attack</span>
-      <span class="key">Right click</span><span>Place &middot; eat &middot; use crafting table / furnace</span>
+      <span class="key">Right click</span><span>Place &middot; eat &middot; open table/furnace/chest &middot; doors &middot; sleep</span>
+      <span class="key">Hold Right</span><span>Draw the bow, release to fire</span>
       <span class="key">Shift + Right</span><span>Place against a table instead of opening it</span>
       <span class="key">1 &ndash; 9 / Wheel</span><span>Select hotbar slot</span>
       <span class="key">E</span><span>Inventory &mdash; right click splits a stack / places one</span>
@@ -605,6 +619,26 @@
       <div class="invGrid" id="furnaceHotbarGrid"></div>
     </div>
     <p class="subtitle" style="margin:14px 0 0">Coal, planks and logs burn. Smelting keeps running while the menu is closed.</p>
+  </div>
+</div>
+
+<!-- Chest ------------------------------------------------------------------>
+<div id="chestScreen" class="overlay">
+  <div class="panel">
+    <h2 style="text-align:left">Chest</h2>
+    <div class="invSection">
+      <div class="invLabel">Contents</div>
+      <div class="invGrid" id="chestGrid"></div>
+    </div>
+    <div class="invSection">
+      <div class="invLabel">Backpack</div>
+      <div class="invGrid" id="chestStorageGrid"></div>
+    </div>
+    <div class="invSection" style="margin-bottom:0">
+      <div class="invLabel">Hotbar</div>
+      <div class="invGrid" id="chestHotbarGrid"></div>
+    </div>
+    <p class="subtitle" style="margin:14px 0 0">Press <b>E</b> or <b>Esc</b> to close. Contents stay in the chest.</p>
   </div>
 </div>
 

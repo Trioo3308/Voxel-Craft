@@ -16,6 +16,7 @@ import * as THREE from 'three';
 import {
   ITEM_ID, WOOL, GRASS, DIRT, SAND, SNOW, STONE, DRY_GRASS, PODZOL, SWAMP_GRASS,
 } from '../world/blocks.js';
+import { audio } from '../engine/audio.js';
 
 // ---------------------------------------------------------------------------
 // Model building helpers
@@ -66,7 +67,7 @@ export const ZOMBIE = {
   maxHealth: 20,
   speed: 2.6,
   armsForward: true,
-  voice: { name: 'zombie', voice: 'groan', pitch: 120, duration: 0.5 },
+  voice: { name: 'zombie', voice: 'groan', pitch: 78, duration: 0.55 },
   drops: [
     { id: ITEM_ID.ROTTEN_FLESH, min: 0, max: 2 },
   ],
@@ -125,7 +126,7 @@ export const SKELETON = {
   maxHealth: 20,
   speed: 2.9,
   armsForward: true,
-  voice: { name: 'skeleton', voice: 'rattle', pitch: 200, duration: 0.3 },
+  voice: { name: 'skeleton', voice: 'rattle', pitch: 150, duration: 0.3 },
   drops: [
     { id: ITEM_ID.BONE, min: 1, max: 2 },
     { id: ITEM_ID.ARROW, min: 0, max: 2 },
@@ -190,7 +191,7 @@ export const SPIDER = {
   height: 0.75,
   maxHealth: 16,
   speed: 3.6,
-  voice: { name: 'spider', voice: 'hiss', pitch: 300, duration: 0.35 },
+  voice: { name: 'spider', voice: 'hiss', pitch: 190, duration: 0.4 },
   drops: [
     { id: ITEM_ID.STRING, min: 0, max: 2 },
     { id: ITEM_ID.SPIDER_EYE, min: 0, max: 1 },
@@ -259,6 +260,112 @@ export const SPIDER = {
   },
 };
 
+export const CREEPER = {
+  name: 'creeper',
+  displayName: 'Creeper',
+  width: 0.6,
+  height: 1.7,
+  maxHealth: 20,
+  speed: 2.4,
+  voice: { name: 'creeper', voice: 'fuse', pitch: 200, duration: 0.5 },
+  drops: [{ id: ITEM_ID.GUNPOWDER, min: 0, max: 2 }],
+
+  brain: {
+    hostile: true,
+    sightRange: 18,
+    loseSightAfter: 5,
+    // No melee: the attack *is* the explosion, handled in ai() below.
+    attackRange: 0,
+    attackDamage: 0,
+    // Creepers do not burn — they are a daylight threat too, which is what makes
+    // them different from zombies.
+    burnsInSunlight: false,
+  },
+
+  /** Fuse settings. */
+  fuse: { triggerRange: 3.2, time: 1.5, radius: 3 },
+
+  spawn: {
+    atNight: true,
+    dayTimeAllowed: true,
+    maxCount: 3,
+    weight: 2,
+    groupSize: [1, 1],
+    canSpawnOn: (id) => ANY_GROUND.has(id),
+  },
+
+  /**
+   * Creepers approach in silence, then start hissing once close. Backing away
+   * during the fuse defuses it — which is the whole tension of the encounter.
+   */
+  ai(mob, dt, ctx) {
+    const fuse = this.fuse;
+    const distance = mob.horizontalDistanceTo(ctx.player.position);
+
+    if (mob.state !== 'chase' && mob.state !== 'attack') {
+      mob.fuseTimer = 0;
+      return;
+    }
+
+    if (distance <= fuse.triggerRange && mob.canSeeTarget) {
+      if (mob.fuseTimer === 0) audio.mobSound(this.voice, 'idle', mob._listenerDist ?? 0);
+      mob.fuseTimer = (mob.fuseTimer ?? 0) + dt;
+      // Stop dead while priming, so it does not chase you mid-fuse.
+      mob.moveX = 0;
+      mob.moveZ = 0;
+
+      if (mob.fuseTimer >= fuse.time) {
+        mob.fuseTimer = 0;
+        if (ctx.entities) {
+          ctx.entities.explode(mob.position.x, mob.position.y + 0.5, mob.position.z, fuse.radius, ctx);
+        }
+        // The creeper is consumed by its own blast.
+        mob.health = 0;
+        mob.die();
+        mob.removed = true;
+      }
+    } else if ((mob.fuseTimer ?? 0) > 0) {
+      // Backed off in time: wind the fuse back down.
+      mob.fuseTimer = Math.max(0, mob.fuseTimer - dt * 2);
+    }
+  },
+
+  buildModel() {
+    const group = new THREE.Group();
+    const body = 0x4f9e34;
+    const dark = 0x2f5f20;
+
+    // Four stubby legs, two front two back.
+    const legFrontLeft = limb(0.16, 0.4, 0.16, body, -0.12, 0.4, 0.18);
+    const legFrontRight = limb(0.16, 0.4, 0.16, body, 0.12, 0.4, 0.18);
+    const legBackLeft = limb(0.16, 0.4, 0.16, body, -0.12, 0.4, -0.18);
+    const legBackRight = limb(0.16, 0.4, 0.16, body, 0.12, 0.4, -0.18);
+
+    const torso = box(0.4, 0.85, 0.24, body, 0, 0.82, 0);
+    const head = box(0.5, 0.5, 0.5, body, 0, 1.42, 0);
+
+    // The face: two square eyes and the downturned mouth.
+    const eyeLeft = box(0.14, 0.14, 0.02, 0x101a10, -0.13, 1.5, 0.26);
+    const eyeRight = box(0.14, 0.14, 0.02, 0x101a10, 0.13, 1.5, 0.26);
+    const mouth = box(0.16, 0.18, 0.02, 0x101a10, 0, 1.32, 0.26);
+    const mouthLeft = box(0.09, 0.1, 0.02, 0x101a10, -0.12, 1.37, 0.26);
+    const mouthRight = box(0.09, 0.1, 0.02, 0x101a10, 0.12, 1.37, 0.26);
+
+    // Mottled patches so it is not a flat green block.
+    const patchA = box(0.42, 0.2, 0.02, dark, 0, 0.95, 0.13);
+    const patchB = box(0.2, 0.3, 0.02, dark, -0.08, 0.68, -0.13);
+
+    group.add(
+      legFrontLeft, legFrontRight, legBackLeft, legBackRight,
+      torso, head, eyeLeft, eyeRight, mouth, mouthLeft, mouthRight, patchA, patchB
+    );
+    return {
+      group,
+      parts: { legFrontLeft, legFrontRight, legBackLeft, legBackRight, head },
+    };
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Passives
 // ---------------------------------------------------------------------------
@@ -278,7 +385,7 @@ export const PIG = {
   height: 0.95,
   maxHealth: 10,
   speed: 1.7,
-  voice: { name: 'pig', voice: 'oink', pitch: 240, duration: 0.22 },
+  voice: { name: 'pig', voice: 'oink', pitch: 118, duration: 0.26 },
   drops: [{ id: ITEM_ID.PORKCHOP, min: 1, max: 3 }],
   brain: PASSIVE_BRAIN,
 
@@ -330,7 +437,7 @@ export const COW = {
   height: 1.35,
   maxHealth: 10,
   speed: 1.5,
-  voice: { name: 'cow', voice: 'moo', pitch: 150, duration: 0.5 },
+  voice: { name: 'cow', voice: 'moo', pitch: 74, duration: 0.6 },
   drops: [
     { id: ITEM_ID.BEEF, min: 1, max: 3 },
     { id: ITEM_ID.LEATHER, min: 0, max: 2 },
@@ -387,7 +494,7 @@ export const SHEEP = {
   height: 1.2,
   maxHealth: 8,
   speed: 1.6,
-  voice: { name: 'sheep', voice: 'baa', pitch: 340, duration: 0.35 },
+  voice: { name: 'sheep', voice: 'baa', pitch: 168, duration: 0.4 },
   drops: [
     { id: ITEM_ID.MUTTON, min: 1, max: 2 },
     { id: WOOL.id, min: 1, max: 1 },
@@ -440,7 +547,7 @@ export const CHICKEN = {
   height: 0.7,
   maxHealth: 4,
   speed: 1.4,
-  voice: { name: 'chicken', voice: 'cluck', pitch: 620, duration: 0.12 },
+  voice: { name: 'chicken', voice: 'cluck', pitch: 268, duration: 0.14 },
   drops: [
     { id: ITEM_ID.CHICKEN_RAW, min: 1, max: 1 },
     { id: ITEM_ID.FEATHER, min: 0, max: 2 },
@@ -490,4 +597,4 @@ export const CHICKEN = {
 };
 
 /** Every registered mob. Spawning iterates this list. */
-export const MOB_TYPES = [ZOMBIE, SKELETON, SPIDER, PIG, COW, SHEEP, CHICKEN];
+export const MOB_TYPES = [ZOMBIE, SKELETON, SPIDER, CREEPER, PIG, COW, SHEEP, CHICKEN];

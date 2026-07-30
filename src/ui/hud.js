@@ -48,6 +48,9 @@ export class HUD {
     this.inventoryScreen = el('inventoryScreen');
     this.craftingScreen = el('craftingScreen');
     this.furnaceScreen = el('furnaceScreen');
+    this.chestScreen = el('chestScreen');
+    this.drawBarEl = el('drawBar');
+    this.drawFillEl = el('drawFill');
     this.paletteSection = el('paletteSection');
     this.paletteGrid = el('paletteGrid');
     this.modeBadge = el('modeBadge');
@@ -62,6 +65,8 @@ export class HUD {
     this.tableCraftGrid = new Array(9).fill(null);
     /** Furnace state object currently open, or null. */
     this.activeFurnace = null;
+    /** Chest state object currently open, or null. */
+    this.activeChest = null;
 
     this._lastInventoryVersion = -1;
     this._lastSelected = -1;
@@ -77,6 +82,7 @@ export class HUD {
     this._buildInventoryScreen();
     this._buildCraftingScreen();
     this._buildFurnaceScreen();
+    this._buildChestScreen();
     this._bindEvents();
   }
 
@@ -273,6 +279,39 @@ export class HUD {
     }
   }
 
+  _buildChestScreen() {
+    // The chest's own 27 slots live on the block entity, so they are wired
+    // through a getter that reads whichever chest is currently open.
+    this.chestSlots = [];
+    for (let i = 0; i < 27; i++) {
+      const parts = this._makeSlot((button) => {
+        if (!this.activeChest) return;
+        this._slotAction(
+          button,
+          () => this.activeChest.slots[i],
+          (s) => { this.activeChest.slots[i] = s; }
+        );
+        this.refreshAll();
+      });
+      el('chestGrid').appendChild(parts.slot);
+      this.chestSlots.push(parts);
+    }
+
+    this.chestStorageSlots = [];
+    for (let i = 0; i < STORAGE_SIZE; i++) {
+      const index = HOTBAR_SIZE + i;
+      const parts = this._makeSlot((b) => this._inventorySlotAction(index, b));
+      el('chestStorageGrid').appendChild(parts.slot);
+      this.chestStorageSlots.push(parts);
+    }
+    this.chestHotbarSlots = [];
+    for (let i = 0; i < HOTBAR_SIZE; i++) {
+      const parts = this._makeSlot((b) => this._inventorySlotAction(i, b));
+      el('chestHotbarGrid').appendChild(parts.slot);
+      this.chestHotbarSlots.push(parts);
+    }
+  }
+
   _bindEvents() {
     document.addEventListener('mousemove', (e) => {
       if (!this.cursorStack) return;
@@ -281,7 +320,7 @@ export class HUD {
     });
 
     // Right-clicking inside any container UI is a game action, never a menu.
-    for (const screen of [this.inventoryScreen, this.craftingScreen, this.furnaceScreen]) {
+    for (const screen of [this.inventoryScreen, this.craftingScreen, this.furnaceScreen, this.chestScreen]) {
       screen.addEventListener('contextmenu', (e) => e.preventDefault());
     }
 
@@ -493,6 +532,16 @@ export class HUD {
     const active = progress > 0.001 && progress < 1;
     this.breakBarEl.classList.toggle('active', active);
     if (active) this.breakFillEl.style.width = (progress * 100).toFixed(1) + '%';
+
+    // Bow draw, shown just below.
+    const draw = this.player.drawProgress;
+    const drawing = draw > 0.001;
+    this.drawBarEl.classList.toggle('active', drawing);
+    if (drawing) {
+      this.drawFillEl.style.width = (draw * 100).toFixed(1) + '%';
+      // Turns green at full power so you know when to release.
+      this.drawFillEl.style.background = draw >= 0.999 ? '#7fd44a' : '#d8c070';
+    }
   }
 
   _updateOverlays() {
@@ -552,6 +601,7 @@ export class HUD {
       this._paintSlot(this.invHotbarSlots[i], slots[i]);
       this._paintSlot(this.tableHotbarSlots[i], slots[i]);
       this._paintSlot(this.furnaceHotbarSlots[i], slots[i]);
+      this._paintSlot(this.chestHotbarSlots[i], slots[i]);
       this.hotbarSlots[i].slot.classList.toggle('selected', i === inv.selected);
     }
 
@@ -560,6 +610,11 @@ export class HUD {
       this._paintSlot(this.storageSlots[i], stack);
       this._paintSlot(this.tableStorageSlots[i], stack);
       this._paintSlot(this.furnaceStorageSlots[i], stack);
+      this._paintSlot(this.chestStorageSlots[i], stack);
+    }
+
+    for (let i = 0; i < 27; i++) {
+      this._paintSlot(this.chestSlots[i], this.activeChest ? this.activeChest.slots[i] : null);
     }
 
     for (let i = 0; i < this.armorSlots.length; i++) {
@@ -673,18 +728,35 @@ export class HUD {
     this.refreshAll();
   }
 
+  /** @param state chest state object owned by the world's block entity */
+  openChest(state) {
+    this.activeChest = state;
+    this.refreshAll();
+    this.chestScreen.classList.add('show');
+  }
+
+  closeChest() {
+    this._returnCursor();
+    this.chestScreen.classList.remove('show');
+    // Contents stay in the chest.
+    this.activeChest = null;
+    this.refreshAll();
+  }
+
   /** Close whatever container is open. */
   closeAllContainers() {
     if (this.inventoryScreen.classList.contains('show')) this.closeInventory();
     if (this.craftingScreen.classList.contains('show')) this.closeCraftingTable();
     if (this.furnaceScreen.classList.contains('show')) this.closeFurnace();
+    if (this.chestScreen.classList.contains('show')) this.closeChest();
   }
 
   get anyContainerOpen() {
     return (
       this.inventoryScreen.classList.contains('show') ||
       this.craftingScreen.classList.contains('show') ||
-      this.furnaceScreen.classList.contains('show')
+      this.furnaceScreen.classList.contains('show') ||
+      this.chestScreen.classList.contains('show')
     );
   }
 
