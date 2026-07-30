@@ -48,6 +48,12 @@ export class Survival {
      */
     this.armorPoints = 0;
 
+    /**
+     * Creative players take no damage at all, as in Minecraft. Set by the
+     * player each frame from its game mode.
+     */
+    this.invulnerable = false;
+
     this._regenTimer = 0;
     this._starveTimer = 0;
 
@@ -92,7 +98,7 @@ export class Survival {
    * @returns {boolean} whether the damage was actually applied
    */
   damage(amount, cause = 'generic') {
-    if (this.dead || amount <= 0) return false;
+    if (this.dead || amount <= 0 || this.invulnerable) return false;
     // Ignore repeat hits during i-frames, except for continuous sources.
     if (this.invulnerableFor > 0 && cause !== 'starve' && cause !== 'drown') return false;
 

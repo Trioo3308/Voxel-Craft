@@ -120,6 +120,7 @@ export class Player {
   update(dt, ctx = {}) {
     this.didSwing = false;
     // Creative players are untouchable, so armour is irrelevant there.
+    this.survival.invulnerable = this.creative;
     this.survival.armorPoints = this.creative ? 0 : this.inventory.armorPoints;
     this._placeCooldown = Math.max(0, this._placeCooldown - dt);
     this._eatCooldown = Math.max(0, this._eatCooldown - dt);
