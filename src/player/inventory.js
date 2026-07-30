@@ -94,6 +94,26 @@ export class Inventory {
     return remaining;
   }
 
+  /**
+   * Insert an existing stack object, preserving its durability.
+   * Plain `add()` would mint a fresh full-durability tool, so a dropped and
+   * re-collected pickaxe would repair itself.
+   * @returns {number} how many could not fit
+   */
+  addExisting(stack) {
+    if (!stack) return 0;
+    if (stack.durability === undefined) return this.add(stack.id, stack.count);
+
+    for (let i = 0; i < TOTAL_SLOTS; i++) {
+      if (this.slots[i] === null) {
+        this.slots[i] = stack;
+        this.touch();
+        return 0;
+      }
+    }
+    return stack.count; // inventory full
+  }
+
   /** Consume from a slot, clearing it when empty. */
   removeFrom(index, count = 1) {
     const slot = this.slots[index];

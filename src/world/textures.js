@@ -163,6 +163,22 @@ function gemPainter(set, rnd, [r, g, b], rough = false) {
   }
 }
 
+/** A cut of meat: rounded body in `base`, marbled with `fat`. */
+function meatPainter(set, rnd, base, fat) {
+  for (let y = 3; y < 13; y++) {
+    for (let x = 3; x < 13; x++) {
+      // Squashed circle so it reads as a cut rather than a ball.
+      const dx = (x - 8) / 5;
+      const dy = (y - 8) / 4.6;
+      if (dx * dx + dy * dy > 1) continue;
+      const marble = rnd() < 0.18;
+      const c = marble ? fat : base;
+      const d = (rnd() - 0.5) * 20;
+      set(x, y, c[0] + d, c[1] + d, c[2] + d);
+    }
+  }
+}
+
 /** Ingot icon: a squat trapezoidal bar. */
 function ingotPainter(set, rnd, [r, g, b]) {
   for (let y = 6; y <= 10; y++) {
@@ -195,6 +211,49 @@ function drawSprite(set, rows, base) {
       if (c) set(x, y, c[0], c[1], c[2]);
     }
   }
+}
+
+/**
+ * The furnace's arched mouth, shared by the lit and unlit fronts so they line
+ * up exactly. `lit` null draws a cold cavity; true fills it with fire.
+ */
+function furnaceMouth(set, rnd, lit) {
+  // Half-width of the opening per row — narrower at the top makes the arch.
+  const rows = [
+    { y: 4, half: 3 },
+    { y: 5, half: 4 },
+    { y: 6, half: 5 },
+    { y: 7, half: 5 },
+    { y: 8, half: 5 },
+    { y: 9, half: 5 },
+    { y: 10, half: 5 },
+    { y: 11, half: 5 },
+    { y: 12, half: 5 },
+  ];
+
+  for (const { y, half } of rows) {
+    for (let x = 8 - half; x <= 7 + half; x++) {
+      if (!lit) {
+        // Dark cavity, slightly lighter at the very bottom (ash).
+        const d = (rnd() - 0.5) * 8;
+        const base = y >= 12 ? 44 : 22;
+        set(x, y, base + d, base - 2 + d, base - 4 + d);
+      } else {
+        // Fire is hottest low and toward the centre.
+        const heat = ((y - 3) / 9) * (1 - Math.abs(x - 7.5) / 8);
+        const d = (rnd() - 0.5) * 46;
+        set(x, y, 120 + heat * 150 + d, 44 + heat * 130 + d, 18 + heat * 40 + d);
+      }
+    }
+  }
+
+  // Bright metal lip around the arch so it reads as a frame, not a hole.
+  const lip = lit ? [176, 150, 128] : [122, 120, 126];
+  for (const { y, half } of rows) {
+    set(8 - half - 1, y, lip[0], lip[1], lip[2]);
+    set(8 + half, y, lip[0], lip[1], lip[2]);
+  }
+  for (let x = 4; x <= 11; x++) set(x, 3, lip[0], lip[1], lip[2]);
 }
 
 /** A solid metal/gem block: flat colour, bevelled highlight and shadow. */
@@ -485,34 +544,55 @@ const PAINTERS = {
     for (let i = 2; i < 14; i++) { set(2, i, 96, 72, 42); set(13, i, 96, 72, 42); }
   },
 
+  // A furnace should never be mistaken for stone: dark iron plating, visible
+  // rivets and banding, and a heavy arched mouth on every side face.
   [TILE.FURNACE_TOP]: (set, rnd) => {
-    noiseFill(set, rnd, [110, 110, 112], 14);
-    speckle(set, rnd, [92, 92, 94], 16, 2);
+    noiseFill(set, rnd, [66, 64, 68], 8);
+    // Recessed lid with a bevelled rim.
+    for (let i = 0; i < T; i++) {
+      set(i, 0, 104, 102, 106); set(0, i, 96, 94, 98);
+      set(i, T - 1, 40, 38, 42); set(T - 1, i, 46, 44, 48);
+    }
+    for (let y = 3; y < 13; y++) {
+      for (let x = 3; x < 13; x++) {
+        const d = (rnd() - 0.5) * 10;
+        set(x, y, 52 + d, 50 + d, 54 + d);
+      }
+    }
+    // Rivets at the lid corners.
+    for (const [rx, ry] of [[2, 2], [13, 2], [2, 13], [13, 13]]) {
+      set(rx, ry, 128, 126, 130);
+    }
   },
 
   [TILE.FURNACE_SIDE]: (set, rnd) => {
-    noiseFill(set, rnd, [110, 110, 112], 12);
-    for (let i = 0; i < T; i++) { set(i, 0, 132, 132, 134); set(i, T - 1, 84, 84, 86); }
+    noiseFill(set, rnd, [70, 68, 72], 9);
+    // Horizontal plate seams.
+    for (const y of [4, 9]) {
+      for (let x = 0; x < T; x++) { set(x, y, 40, 38, 42); set(x, y + 1, 92, 90, 94); }
+    }
+    for (let i = 0; i < T; i++) { set(i, 0, 106, 104, 108); set(i, T - 1, 38, 36, 40); }
+    // Rivet columns down both edges.
+    for (const y of [2, 7, 12]) { set(1, y, 126, 124, 128); set(14, y, 126, 124, 128); }
   },
 
   [TILE.FURNACE_FRONT]: (set, rnd) => {
-    noiseFill(set, rnd, [110, 110, 112], 12);
-    // Cold, dark mouth.
-    for (let y = 6; y < 13; y++) for (let x = 3; x < 13; x++) set(x, y, 46, 44, 44);
-    for (let x = 3; x < 13; x++) set(x, 5, 78, 78, 80);
+    noiseFill(set, rnd, [70, 68, 72], 9);
+    for (let i = 0; i < T; i++) { set(i, 0, 106, 104, 108); set(i, T - 1, 38, 36, 40); }
+
+    // Heavy arched opening, cold and empty.
+    furnaceMouth(set, rnd, null);
+    // Rivets flanking the mouth.
+    for (const y of [7, 11]) { set(1, y, 126, 124, 128); set(14, y, 126, 124, 128); }
   },
 
   [TILE.FURNACE_LIT]: (set, rnd) => {
-    noiseFill(set, rnd, [110, 110, 112], 12);
-    for (let y = 6; y < 13; y++) {
-      for (let x = 3; x < 13; x++) {
-        // Fire glows brighter toward the bottom of the opening.
-        const heat = (y - 5) / 7;
-        const d = (rnd() - 0.5) * 40;
-        set(x, y, 90 + heat * 170 + d, 40 + heat * 110 + d, 20 + heat * 20 + d);
-      }
-    }
-    for (let x = 3; x < 13; x++) set(x, 5, 78, 78, 80);
+    noiseFill(set, rnd, [78, 70, 66], 9);
+    for (let i = 0; i < T; i++) { set(i, 0, 112, 104, 100); set(i, T - 1, 42, 36, 34); }
+
+    // Same mouth, full of fire.
+    furnaceMouth(set, rnd, true);
+    for (const y of [7, 11]) { set(1, y, 138, 122, 112); set(14, y, 138, 122, 112); }
   },
 
   [TILE.IRON_BLOCK]:    (set, rnd) => solidBlockPainter(set, rnd, [214, 214, 214]),
@@ -593,6 +673,115 @@ const PAINTERS = {
     for (let x = 2; x < 6; x++) set(x, 8, 240, 238, 226);
     set(2, 7, 240, 238, 226);
     set(2, 9, 240, 238, 226);
+  },
+
+  [TILE.WOOL]: (set, rnd) => {
+    // Soft, fluffy: clumped light noise rather than per-pixel grain.
+    for (let y = 0; y < T; y += 2) {
+      for (let x = 0; x < T; x += 2) {
+        const d = (rnd() - 0.5) * 22;
+        for (let dy = 0; dy < 2; dy++) {
+          for (let dx = 0; dx < 2; dx++) set(x + dx, y + dy, 232 + d, 230 + d, 226 + d);
+        }
+      }
+    }
+    speckle(set, rnd, [210, 208, 202], 14, 2);
+  },
+
+  // --- Mob drops -----------------------------------------------------------
+  [TILE.BEEF]:           (set, rnd) => meatPainter(set, rnd, [196, 78, 78], [232, 150, 150]),
+  [TILE.COOKED_BEEF]:    (set, rnd) => meatPainter(set, rnd, [126, 74, 40], [176, 116, 68]),
+  [TILE.MUTTON]:         (set, rnd) => meatPainter(set, rnd, [214, 108, 110], [240, 168, 168]),
+  [TILE.COOKED_MUTTON]:  (set, rnd) => meatPainter(set, rnd, [146, 92, 54], [190, 132, 84]),
+  [TILE.CHICKEN_RAW]:    (set, rnd) => meatPainter(set, rnd, [232, 176, 160], [246, 212, 200]),
+  [TILE.CHICKEN_COOKED]: (set, rnd) => meatPainter(set, rnd, [188, 136, 74], [216, 176, 116]),
+
+  [TILE.LEATHER]: (set, rnd) => {
+    // A ragged hide.
+    for (let y = 3; y < 13; y++) {
+      for (let x = 2; x < 14; x++) {
+        if ((x === 2 || x === 13) && rnd() < 0.5) continue;
+        if ((y === 3 || y === 12) && rnd() < 0.4) continue;
+        const d = (rnd() - 0.5) * 22;
+        set(x, y, 158 + d, 108 + d, 66 + d);
+      }
+    }
+    speckle(set, rnd, [128, 84, 48], 8);
+  },
+
+  [TILE.FEATHER]: (set, rnd) => {
+    // Quill running diagonally with barbs either side.
+    for (let i = 0; i < 11; i++) {
+      const x = 4 + Math.floor(i * 0.65);
+      const y = 13 - i;
+      set(x, y, 208, 206, 202);
+      if (i > 1 && i < 9) {
+        const spread = Math.round(Math.sin(i / 9 * Math.PI) * 3);
+        for (let s = 1; s <= spread; s++) {
+          const d = (rnd() - 0.5) * 18;
+          set(x - s, y, 244 + d, 244 + d, 240 + d);
+          set(x + s, y - 1, 232 + d, 232 + d, 228 + d);
+        }
+      }
+    }
+  },
+
+  [TILE.BONE]: (set, rnd) => {
+    // Shaft with knobbed ends.
+    for (let x = 4; x < 12; x++) {
+      for (let y = 7; y < 10; y++) {
+        const d = (rnd() - 0.5) * 12;
+        set(x, y, 236 + d, 234 + d, 220 + d);
+      }
+    }
+    for (const bx of [3, 12]) {
+      for (const by of [5, 6, 10, 11]) {
+        set(bx, by, 240, 238, 224);
+        set(bx + (bx === 3 ? 1 : -1), by, 226, 224, 210);
+      }
+    }
+  },
+
+  [TILE.STRING]: (set, rnd) => {
+    // Loose coil.
+    for (let i = 0; i < 26; i++) {
+      const t = i / 25;
+      const x = Math.round(8 + Math.sin(t * Math.PI * 3) * 4);
+      const y = Math.round(3 + t * 10);
+      set(x, y, 236, 236, 232);
+      set(x + 1, y, 206, 206, 202);
+    }
+  },
+
+  [TILE.ARROW]: (set, rnd) => {
+    // Shaft bottom-left to top-right, flint head, feather fletching.
+    for (let i = 0; i < 12; i++) {
+      const x = 3 + i;
+      const y = 12 - i;
+      set(x, y, 142, 106, 62);
+    }
+    // Head.
+    for (const [dx, dy] of [[0, 0], [-1, 0], [0, 1], [-1, -1], [-2, 0], [0, 2]]) {
+      set(14 + dx, 1 - dy + 1, 186, 190, 196);
+    }
+    // Fletching.
+    for (let i = 0; i < 3; i++) {
+      set(3 + i, 12 - i + 1, 234, 234, 230);
+      set(3 + i + 1, 12 - i, 234, 234, 230);
+    }
+  },
+
+  [TILE.SPIDER_EYE]: (set, rnd) => {
+    for (let y = 4; y < 12; y++) {
+      for (let x = 4; x < 12; x++) {
+        if (Math.hypot(x - 7.5, y - 7.5) > 3.8) continue;
+        const d = (rnd() - 0.5) * 18;
+        set(x, y, 150 + d, 32 + d, 30 + d);
+      }
+    }
+    // Pupil and glint.
+    for (let y = 6; y < 10; y++) for (let x = 6; x < 10; x++) set(x, y, 40, 20, 22);
+    set(6, 6, 220, 180, 180);
   },
 
   [TILE.REDSTONE_DUST]: (set, rnd) => {

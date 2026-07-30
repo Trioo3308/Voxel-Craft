@@ -61,10 +61,12 @@ function getGeometry(id) {
 }
 
 export class ItemEntity {
-  constructor(world, position, id, count = 1) {
+  /** @param durability carried through so dropped tools keep their wear */
+  constructor(world, position, id, count = 1, durability) {
     this.world = world;
     this.id = id;
     this.count = count;
+    this.durability = durability;
 
     this.position = position.clone();
     this.velocity = new THREE.Vector3(
@@ -120,9 +122,14 @@ export class ItemEntity {
     const dz = player.position.z - this.position.z;
     if (Math.hypot(dx, dy, dz) > PICKUP_RADIUS) return;
 
-    const leftover = player.inventory.add(this.id, this.count);
+    const stack = this.durability === undefined
+      ? { id: this.id, count: this.count }
+      : { id: this.id, count: this.count, durability: this.durability };
+
+    const leftover = player.inventory.addExisting(stack);
     if (leftover === 0) {
       this.removed = true;
+      if (this.onPickup) this.onPickup(this);
     } else if (leftover < this.count) {
       this.count = leftover; // inventory filled up part-way
     }

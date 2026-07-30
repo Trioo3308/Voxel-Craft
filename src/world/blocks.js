@@ -84,6 +84,21 @@ export const TILE = {
   LAPIS_GEM: 58,
   EMERALD_GEM: 59,
   COOKED_PORKCHOP: 60,
+  WOOL: 61,
+
+  // --- Mob drop icons (after the reserved gear runs) -----------------------
+  BEEF: 116,
+  COOKED_BEEF: 117,
+  MUTTON: 118,
+  COOKED_MUTTON: 119,
+  CHICKEN_RAW: 120,
+  CHICKEN_COOKED: 121,
+  LEATHER: 122,
+  FEATHER: 123,
+  BONE: 124,
+  STRING: 125,
+  ARROW: 126,
+  SPIDER_EYE: 127,
 
   /**
    * Tool and armour icons are generated parametrically (shape x material), so
@@ -273,9 +288,22 @@ export const ITEM_ID = {
   LAPIS: 136,
   EMERALD: 137,
   COOKED_PORKCHOP: 138,
+  BEEF: 139,
+  COOKED_BEEF: 140,
+  MUTTON: 141,
+  COOKED_MUTTON: 142,
+  CHICKEN_RAW: 143,
   // Tools occupy 144..163 and armour 164..183, assigned in the gear section.
   TOOL_BASE: 144,
   ARMOR_BASE: 164,
+  // Remaining mob drops sit after the gear runs.
+  CHICKEN_COOKED: 184,
+  LEATHER: 185,
+  FEATHER: 186,
+  BONE: 187,
+  STRING: 188,
+  ARROW: 189,
+  SPIDER_EYE: 190,
 };
 
 // ---------------------------------------------------------------------------
@@ -337,8 +365,28 @@ export const CRAFTING_TABLE = defineBlock(33, 'crafting_table', {
 export const FURNACE = defineBlock(34, 'furnace', {
   displayName: 'Furnace', hardness: 1.8,
   toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
-  tiles: { top: TILE.FURNACE_TOP, bottom: TILE.FURNACE_TOP, side: TILE.FURNACE_SIDE },
+  tiles: { top: TILE.FURNACE_TOP, bottom: TILE.FURNACE_TOP, side: TILE.FURNACE_FRONT },
 });
+
+/**
+ * A burning furnace is a separate block id so the glow can be baked into the
+ * mesh like every other texture. The world swaps between the two while
+ * smelting; `isFurnaceBlock` keeps that swap from being treated as "the block
+ * was replaced", which would throw away the furnace's contents.
+ */
+export const FURNACE_LIT = defineBlock(47, 'furnace_lit', {
+  displayName: 'Furnace', hardness: 1.8,
+  toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
+  tiles: { top: TILE.FURNACE_TOP, bottom: TILE.FURNACE_TOP, side: TILE.FURNACE_LIT },
+  emissive: true,
+  // Mining a lit furnace still gives you a plain one.
+  drops: 34,
+  obtainable: false,
+});
+
+export function isFurnaceBlock(id) {
+  return id === FURNACE.id || id === FURNACE_LIT.id;
+}
 
 export const IRON_BLOCK = defineBlock(35, 'iron_block', {
   displayName: 'Block of Iron', tiles: TILE.IRON_BLOCK, hardness: 3.0,
@@ -398,6 +446,10 @@ export const CLAY = defineBlock(45, 'clay', {
   displayName: 'Clay', tiles: TILE.CLAY, hardness: 0.7, toolType: 'shovel',
 });
 
+export const WOOL = defineBlock(48, 'wool', {
+  displayName: 'Wool', tiles: TILE.WOOL, hardness: 0.5,
+});
+
 export const SANDSTONE = defineBlock(46, 'sandstone', {
   displayName: 'Sandstone', hardness: 1.2,
   toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
@@ -448,6 +500,20 @@ export const REDSTONE     = defineItem(ITEM_ID.REDSTONE,     'redstone',     { d
 export const LAPIS        = defineItem(ITEM_ID.LAPIS,        'lapis',        { displayName: 'Lapis Lazuli', tile: TILE.LAPIS_GEM });
 export const EMERALD      = defineItem(ITEM_ID.EMERALD,      'emerald',      { displayName: 'Emerald',      tile: TILE.EMERALD_GEM });
 export const COOKED_PORKCHOP = defineItem(ITEM_ID.COOKED_PORKCHOP, 'cooked_porkchop', { displayName: 'Cooked Porkchop', tile: TILE.COOKED_PORKCHOP, food: 8, saturation: 5 });
+
+// --- Mob drops --------------------------------------------------------------
+export const BEEF           = defineItem(ITEM_ID.BEEF,           'beef',           { displayName: 'Raw Beef',        tile: TILE.BEEF, food: 3, saturation: 2 });
+export const COOKED_BEEF    = defineItem(ITEM_ID.COOKED_BEEF,    'cooked_beef',    { displayName: 'Steak',           tile: TILE.COOKED_BEEF, food: 8, saturation: 6 });
+export const MUTTON         = defineItem(ITEM_ID.MUTTON,         'mutton',         { displayName: 'Raw Mutton',      tile: TILE.MUTTON, food: 2, saturation: 1 });
+export const COOKED_MUTTON  = defineItem(ITEM_ID.COOKED_MUTTON,  'cooked_mutton',  { displayName: 'Cooked Mutton',   tile: TILE.COOKED_MUTTON, food: 6, saturation: 5 });
+export const CHICKEN_RAW    = defineItem(ITEM_ID.CHICKEN_RAW,    'chicken',        { displayName: 'Raw Chicken',     tile: TILE.CHICKEN_RAW, food: 2, saturation: 1 });
+export const CHICKEN_COOKED = defineItem(ITEM_ID.CHICKEN_COOKED, 'cooked_chicken', { displayName: 'Cooked Chicken',  tile: TILE.CHICKEN_COOKED, food: 6, saturation: 4 });
+export const LEATHER        = defineItem(ITEM_ID.LEATHER,        'leather',        { displayName: 'Leather',         tile: TILE.LEATHER });
+export const FEATHER        = defineItem(ITEM_ID.FEATHER,        'feather',        { displayName: 'Feather',         tile: TILE.FEATHER });
+export const BONE           = defineItem(ITEM_ID.BONE,           'bone',           { displayName: 'Bone',            tile: TILE.BONE });
+export const STRING_ITEM    = defineItem(ITEM_ID.STRING,         'string',         { displayName: 'String',          tile: TILE.STRING });
+export const ARROW          = defineItem(ITEM_ID.ARROW,          'arrow',          { displayName: 'Arrow',           tile: TILE.ARROW });
+export const SPIDER_EYE     = defineItem(ITEM_ID.SPIDER_EYE,     'spider_eye',     { displayName: 'Spider Eye',      tile: TILE.SPIDER_EYE, food: 2, saturation: 1 });
 
 // ---------------------------------------------------------------------------
 // Tools & armour
@@ -602,6 +668,37 @@ export function sameFluidFamily(idA, idB) {
 export function isFluidFamily(id, family) {
   const f = getFluid(id);
   return !!f && f.family === family;
+}
+
+// ---------------------------------------------------------------------------
+// Sound materials
+// ---------------------------------------------------------------------------
+/**
+ * Which audio voice a block uses for footsteps, digging and breaking.
+ * Assigned in one pass by name rather than repeated on every definition, so
+ * adding a block only needs an entry here if it is not stone-like.
+ */
+const SOUND_BY_NAME = {
+  grass: 'grass', dry_grass: 'grass', swamp_grass: 'grass',
+  leaves: 'grass', acacia_leaves: 'grass', spruce_leaves: 'grass',
+  dirt: 'dirt', podzol: 'dirt', clay: 'dirt',
+  sand: 'sand', gravel: 'gravel',
+  log: 'wood', acacia_log: 'wood', spruce_log: 'wood',
+  planks: 'wood', crafting_table: 'wood',
+  glass: 'glass', snow: 'wool', wool: 'wool',
+  iron_block: 'metal', gold_block: 'metal', diamond_block: 'metal',
+  furnace: 'metal', furnace_lit: 'metal',
+};
+
+for (const block of BLOCKS) {
+  if (!block) continue;
+  block.sound = block.liquid ? 'liquid' : (SOUND_BY_NAME[block.name] ?? 'stone');
+}
+
+/** Sound material for a block id. */
+export function getSoundMaterial(id) {
+  const b = BLOCKS[id];
+  return b && b.sound ? b.sound : 'stone';
 }
 
 /** Every block a player can hold — used to build the creative palette. */

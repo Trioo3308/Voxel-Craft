@@ -8,11 +8,12 @@
 
 import * as THREE from 'three';
 import Settings from '../settings.js';
-import { moveWithCollision, isInLiquid, collidesWithWorld } from './physics.js';
+import { moveWithCollision, isInLiquid, collidesWithWorld, isSupported } from './physics.js';
 import { raycastVoxels } from './raycast.js';
 import { Inventory } from './inventory.js';
 import { Survival, EXHAUSTION } from './survival.js';
-import { AIR, getBlock, isLiquid } from '../world/blocks.js';
+import { AIR, getBlock, isLiquid, getSoundMaterial } from '../world/blocks.js';
+import { audio } from '../engine/audio.js';
 
 const P = Settings.player;
 const HALF_PI = Math.PI / 2;
@@ -39,9 +40,16 @@ export class Player {
     this.onGround = false;
     this.inLiquid = false;
     this.sprinting = false;
+    /** Shift is held (intent). */
     this.sneaking = false;
+    /** Actually crouched — may stay true after releasing Shift under a ceiling. */
+    this.crouching = false;
+    /** Set when sneak protection stopped you walking off an edge. */
+    this.blockedByLedge = false;
     this.flying = false;
     this.creative = false;
+    /** Eye height is lerped so crouching does not snap the camera. */
+    this._smoothedEyeHeight = P.eyeHeight;
 
     this.fallDistance = 0;
     this.bobPhase = 0;
@@ -50,6 +58,11 @@ export class Player {
     this.survival = new Survival();
     // Taking a hit wears down every worn piece, as in Minecraft.
     this.survival.onArmorHit = () => this.inventory.damageArmor(1);
+    this.survival.onDamage(() => audio.playerHurt());
+
+    /** Distance walked since the last footstep sound. */
+    this._stepDistance = 0;
+    this._wasInLiquid = false;
 
     /** Current block under the crosshair: {x,y,z,block,normal} or null. */
     this.targetBlock = null;
@@ -71,10 +84,20 @@ export class Player {
     this.onBlockPlaced = null;
   }
 
+  /** Collision height — shorter while crouching. */
+  get height() {
+    return this.crouching ? P.sneakHeight : P.height;
+  }
+
+  /** Target eye height for the current stance. */
+  get eyeHeight() {
+    return this.crouching ? P.sneakEyeHeight : P.eyeHeight;
+  }
+
   get eyePosition() {
     return new THREE.Vector3(
       this.position.x,
-      this.position.y + P.eyeHeight,
+      this.position.y + this.eyeHeight,
       this.position.z
     );
   }
@@ -140,9 +163,13 @@ export class Player {
       bobOffset = Math.sin(this.bobPhase * 2) * 0.035;
     }
 
+    // Ease the eye toward the stance's height so crouching is smooth.
+    const blend = 1 - Math.exp(-14 * dt);
+    this._smoothedEyeHeight += (this.eyeHeight - this._smoothedEyeHeight) * blend;
+
     this.camera.position.set(
       this.position.x,
-      this.position.y + P.eyeHeight + bobOffset,
+      this.position.y + this._smoothedEyeHeight + bobOffset,
       this.position.z
     );
     this.camera.rotation.x = this.pitch;
@@ -164,7 +191,8 @@ export class Player {
     if (!this.creative) this.flying = false;
 
     this.sneaking = input.isDown('ShiftLeft') || input.isDown('ShiftRight');
-    this.inLiquid = isInLiquid(this.world, this.position, P.width, P.height);
+    this._updateStance();
+    this.inLiquid = isInLiquid(this.world, this.position, P.width, this.height);
 
     // Desired horizontal direction in world space, from yaw.
     let wishX = 0;
@@ -216,6 +244,33 @@ export class Player {
     this._trackExhaustion(before);
   }
 
+  /**
+   * Resolve the crouch stance.
+   *
+   * Standing up is not always allowed: if there is a block just overhead, the
+   * taller hitbox would intersect it, so we stay crouched until there is room.
+   * That is what lets you crawl through a 2-block-high tunnel without being
+   * shoved into the ceiling the moment you release Shift.
+   *
+   * While flying, Shift means "descend", so it must not also crouch.
+   */
+  _updateStance() {
+    if (this.flying) {
+      this.crouching = false;
+      return;
+    }
+
+    if (this.sneaking) {
+      this.crouching = true;
+      return;
+    }
+
+    if (this.crouching) {
+      const fits = !collidesWithWorld(this.world, this.position, P.width, P.height);
+      if (fits) this.crouching = false;
+    }
+  }
+
   _currentSpeed() {
     if (this.flying) return this.input.isDown('ControlLeft') ? P.flySpeed * 2 : P.flySpeed;
     if (this.inLiquid) return P.walkSpeed * 0.55;
@@ -245,6 +300,7 @@ export class Player {
       if (wantsUp && this.onGround) {
         this.velocity.y = P.jumpVelocity;
         this.survival.addExhaustion(this.sprinting ? EXHAUSTION.sprintJump : EXHAUSTION.jump);
+        audio.jump();
       }
       this._applyGravity(dt);
     }
@@ -262,21 +318,35 @@ export class Player {
       this.world,
       this.position,
       this.velocity,
-      { width: P.width, height: P.height },
+      { width: P.width, height: this.height },
       dt,
-      { stepHeight: P.stepHeight }
+      {
+        stepHeight: P.stepHeight,
+        // Crouching stops you shuffling off a ledge, as in Minecraft.
+        preventFalling: this.crouching && !this.flying && !this.inLiquid,
+      }
     );
+    this.blockedByLedge = result.blockedByLedge;
 
     // --- Fall damage -------------------------------------------------------
     if (!result.onGround) {
       if (this.velocity.y < 0) this.fallDistance += -this.velocity.y * dt;
       else this.fallDistance = 0; // rising resets the counter
     } else if (wasAirborne || this.fallDistance > 0) {
-      if (!this.flying && !this.inLiquid && this.fallDistance > Settings.survival.fallDamageThreshold) {
-        const damage = Math.floor(this.fallDistance - Settings.survival.fallDamageThreshold);
-        if (damage > 0) this.survival.damage(damage, 'fall');
+      if (!this.flying && !this.inLiquid) {
+        if (this.fallDistance > 0.8) audio.fall(this.fallDistance);
+        if (this.fallDistance > Settings.survival.fallDamageThreshold) {
+          const damage = Math.floor(this.fallDistance - Settings.survival.fallDamageThreshold);
+          if (damage > 0) this.survival.damage(damage, 'fall');
+        }
       }
       this.fallDistance = 0;
+    }
+
+    // Entering or leaving water splashes.
+    if (this.inLiquid !== this._wasInLiquid) {
+      this._wasInLiquid = this.inLiquid;
+      if (this.inLiquid) audio.splash();
     }
 
     this.onGround = result.onGround;
@@ -308,16 +378,33 @@ export class Player {
     }
   }
 
-  /** Convert distance travelled into hunger exhaustion. */
+  /** Convert distance travelled into hunger exhaustion, and step sounds. */
   _trackExhaustion(previousPosition) {
-    if (this.creative) return;
     const dx = this.position.x - previousPosition.x;
     const dz = this.position.z - previousPosition.z;
     const distance = Math.hypot(dx, dz);
     if (distance <= 0) return;
+
+    // Footsteps are distance-based, so they stay in step at any speed.
+    if (this.onGround && !this.flying) {
+      this._stepDistance += distance;
+      const stride = this.crouching ? 1.4 : this.sprinting ? 1.9 : 2.2;
+      if (this._stepDistance >= stride) {
+        this._stepDistance = 0;
+        audio.footstep(this._groundMaterial());
+      }
+    }
+
+    if (this.creative) return;
     this.survival.addExhaustion(
       distance * (this.sprinting ? EXHAUSTION.perBlockSprinted : EXHAUSTION.perBlockWalked)
     );
+  }
+
+  /** Sound material of whatever we are standing on. */
+  _groundMaterial() {
+    const below = this.world.getBlock(this.position.x, this.position.y - 0.1, this.position.z);
+    return getSoundMaterial(below);
   }
 
   // -------------------------------------------------------------------------
@@ -386,6 +473,45 @@ export class Player {
     }
   }
 
+  /**
+   * Throw items out of the held stack into the world.
+   * Q drops one; Ctrl+Q drops the whole stack.
+   * @returns {boolean} whether anything was dropped
+   */
+  dropHeld(whole = false, ctx = {}) {
+    const slot = this.inventory.getSelected();
+    if (!slot || !ctx.entities) return false;
+
+    const count = whole ? slot.count : 1;
+    const id = slot.id;
+    const durability = slot.durability;
+
+    this.inventory.consumeSelected(count);
+    this.throwItem(id, count, ctx.entities, durability);
+    return true;
+  }
+
+  /** Spawn an item entity in front of the player's face, moving away. */
+  throwItem(id, count, entities, durability) {
+    const eye = this.eyePosition;
+    const dir = this.getLookDirection();
+
+    const item = entities.dropItem(
+      eye.x + dir.x * 0.4,
+      eye.y - 0.2 + dir.y * 0.4,
+      eye.z + dir.z * 0.4,
+      id,
+      count,
+      durability
+    );
+
+    // Toss it along the view direction rather than letting it drop straight down.
+    item.velocity.set(dir.x * 5, dir.y * 5 + 1.4, dir.z * 5);
+    // Brief pickup delay so it does not fly straight back into the inventory.
+    item.age = -0.6;
+    return item;
+  }
+
   /** Right-clicking a crafting table or furnace opens its interface. */
   _tryUseBlock() {
     const target = this.targetBlock;
@@ -413,6 +539,8 @@ export class Player {
     const tool = this.inventory.getHeldTool();
     const speed = tool && tool.kind === def.toolType ? tool.speed : 1;
 
+    audio.dig(getSoundMaterial(target.block));
+
     this.breakProgress += (dt * speed) / def.hardness;
     if (this.breakProgress >= 1) this._breakBlock(target);
   }
@@ -429,6 +557,7 @@ export class Player {
   _breakBlock(target) {
     const def = getBlock(target.block);
     this.world.setBlock(target.x, target.y, target.z, AIR);
+    audio.blockBreak(getSoundMaterial(def.id));
     this.breakProgress = 0;
     this._breakKey = null;
 
@@ -443,7 +572,7 @@ export class Player {
         this.lastHarvestFailure = def;
       }
 
-      if (this.inventory.getHeldTool()) this.inventory.damageHeldTool(1);
+      if (this.inventory.getHeldTool() && this.inventory.damageHeldTool(1)) audio.toolBreak();
       this.survival.addExhaustion(EXHAUSTION.mineBlock);
     }
 
@@ -474,6 +603,7 @@ export class Player {
     if (!this.world.setBlock(x, y, z, held)) return false;
 
     if (!this.creative) this.inventory.consumeSelected(1);
+    audio.blockPlace(getSoundMaterial(held));
     this.didSwing = true;
     if (this.onBlockPlaced) this.onBlockPlaced(held);
     return true;
@@ -484,6 +614,7 @@ export class Player {
     if (!food) return false;
     if (!this.survival.eat(food)) return false;
     if (!this.creative) this.inventory.consumeSelected(1);
+    audio.eat();
     return true;
   }
 
@@ -518,7 +649,7 @@ export class Player {
     const hw = P.width / 2;
     return (
       this.position.x - hw < x + 1 && this.position.x + hw > x &&
-      this.position.y < y + 1 && this.position.y + P.height > y &&
+      this.position.y < y + 1 && this.position.y + this.height > y &&
       this.position.z - hw < z + 1 && this.position.z + hw > z
     );
   }

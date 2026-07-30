@@ -13,7 +13,7 @@
 import {
   PLANKS, LOG, ACACIA_LOG, SPRUCE_LOG, COBBLE, STONE, SAND, GLASS,
   CRAFTING_TABLE, FURNACE, IRON_ORE, GOLD_ORE,
-  IRON_BLOCK, GOLD_BLOCK, DIAMOND_BLOCK,
+  IRON_BLOCK, GOLD_BLOCK, DIAMOND_BLOCK, WOOL,
   ITEM_ID, TOOL_KINDS, ARMOR_PIECES, ARMOR_MATERIAL_NAMES,
   toolItemId, armorItemId, getDisplayName,
 } from '../world/blocks.js';
@@ -96,6 +96,18 @@ for (const [ingot, block] of STORAGE) {
   shaped(['III', 'III', 'III'], { I: ingot }, { id: block, count: 1 });
   shapeless([block], { id: ingot, count: 9 });
 }
+
+// --- Mob-drop recipes -------------------------------------------------------
+
+// Arrows: flint would be more faithful, but cobblestone stands in for the head.
+shaped(['C', 'S', 'F'], { C: COBBLE.id, S: ITEM_ID.STICK, F: ITEM_ID.FEATHER },
+       { id: ITEM_ID.ARROW, count: 4 });
+
+// Bone meal is not implemented, but bones make useful sticks.
+shapeless([ITEM_ID.BONE], { id: ITEM_ID.STICK, count: 2 });
+
+// String into wool, as in Minecraft.
+shaped(['SS', 'SS'], { S: ITEM_ID.STRING }, { id: WOOL.id, count: 1 });
 
 // --- Tools & armour ---------------------------------------------------------
 
@@ -235,6 +247,9 @@ export const SMELTING = new Map([
   [SAND.id, { id: GLASS.id, count: 1 }],
   [COBBLE.id, { id: STONE.id, count: 1 }],
   [ITEM_ID.PORKCHOP, { id: ITEM_ID.COOKED_PORKCHOP, count: 1 }],
+  [ITEM_ID.BEEF, { id: ITEM_ID.COOKED_BEEF, count: 1 }],
+  [ITEM_ID.MUTTON, { id: ITEM_ID.COOKED_MUTTON, count: 1 }],
+  [ITEM_ID.CHICKEN_RAW, { id: ITEM_ID.CHICKEN_COOKED, count: 1 }],
 ]);
 
 /** Seconds of burn time each fuel provides. One smelt takes SMELT_SECONDS. */

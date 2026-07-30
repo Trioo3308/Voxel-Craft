@@ -57,6 +57,28 @@ export function isInLiquid(world, position, width, height) {
 }
 
 /**
+ * Is there solid ground directly beneath the box's footprint?
+ * Used for sneak edge protection — not the same as `onGround`, which only says
+ * whether we are currently *resting* on something.
+ */
+export function isSupported(world, position, width) {
+  const hw = width / 2;
+  const y = Math.floor(position.y - 0.02);
+
+  const minX = Math.floor(position.x - hw);
+  const maxX = Math.ceil(position.x + hw) - 1;
+  const minZ = Math.floor(position.z - hw);
+  const maxZ = Math.ceil(position.z + hw) - 1;
+
+  for (let z = minZ; z <= maxZ; z++) {
+    for (let x = minX; x <= maxX; x++) {
+      if (world.isSolid(x, y, z)) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Try to lift the box over a low obstacle (slabs, stairs — anything shorter
  * than `stepHeight`). Full blocks stay un-climbable, so jumping still matters.
  * Mutates `position.y` on success.
@@ -86,7 +108,12 @@ function tryStepUp(world, position, width, height, stepHeight) {
 export function moveWithCollision(world, position, velocity, size, dt, options = {}) {
   const { width, height } = size;
   const stepHeight = options.stepHeight ?? 0;
-  const result = { onGround: false, hitCeiling: false, hitWall: false };
+  const result = { onGround: false, hitCeiling: false, hitWall: false, blockedByLedge: false };
+
+  // Sneak edge protection: refuse horizontal motion that would leave the box
+  // hanging over nothing. Only meaningful if we start out standing on ground —
+  // it must never freeze someone who is already falling.
+  const preventFalling = options.preventFalling === true && isSupported(world, position, width);
 
   let dx = velocity.x * dt;
   let dy = velocity.y * dt;
@@ -135,6 +162,11 @@ export function moveWithCollision(world, position, velocity, size, dt, options =
           dx = 0;
           result.hitWall = true;
         }
+      } else if (preventFalling && !isSupported(world, position, width)) {
+        position.x = prevX;
+        velocity.x = 0;
+        dx = 0;
+        result.blockedByLedge = true;
       }
     }
 
@@ -153,6 +185,11 @@ export function moveWithCollision(world, position, velocity, size, dt, options =
           dz = 0;
           result.hitWall = true;
         }
+      } else if (preventFalling && !isSupported(world, position, width)) {
+        position.z = prevZ;
+        velocity.z = 0;
+        dz = 0;
+        result.blockedByLedge = true;
       }
     }
   }

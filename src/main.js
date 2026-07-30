@@ -13,6 +13,7 @@ import Settings from './settings.js';
 import { Renderer } from './engine/renderer.js';
 import { Input } from './engine/input.js';
 import { SkyCycle } from './engine/sky.js';
+import { ViewModel } from './engine/viewmodel.js';
 import { World } from './world/world.js';
 import { Player } from './player/player.js';
 import { EntityManager } from './entities/entityManager.js';
@@ -22,13 +23,15 @@ import { SaveManager, captureState, applyState, SAVE_FORMAT_VERSION } from './wo
 import { makeFurnaceState } from './player/crafting.js';
 import {
   isLiquid, GRASS, DIRT, SAND, SNOW, STONE, DRY_GRASS, PODZOL, SWAMP_GRASS,
-  CRAFTING_TABLE, FURNACE,
+  CRAFTING_TABLE, isFurnaceBlock,
 } from './world/blocks.js';
+import { audio } from './engine/audio.js';
 
 // Re-exported on `window.VoxelCraft` for console debugging.
 import * as Blocks from './world/blocks.js';
 import * as Crafting from './player/crafting.js';
 import * as Save from './world/save.js';
+import * as MobTypes from './entities/mobTypes.js';
 import { Inventory } from './player/inventory.js';
 
 const el = (id) => document.getElementById(id);
@@ -49,6 +52,9 @@ export class Game {
     this.renderer = new Renderer(this.canvas);
     this.input = new Input(this.canvas);
     this.sky = new SkyCycle(this.renderer, 0.08);
+    this.viewModel = new ViewModel(this.renderer);
+    window.addEventListener('resize', () => this.viewModel.resize(window.innerWidth / window.innerHeight));
+    this.viewModel.resize(window.innerWidth / window.innerHeight);
 
     // The world is built per session; the player outlives it.
     this.world = null;
@@ -56,6 +62,7 @@ export class Game {
 
     this.player = new Player(null, this.renderer.camera, this.input, { x: 0.5, y: 100, z: 0.5 });
     this.entities = new EntityManager(this.renderer.scene, null);
+    this.entities.onItemPickup = () => audio.pickup();
     this.hud = new HUD(this);
 
     this.state = 'worlds';
@@ -95,9 +102,29 @@ export class Game {
     el('importWorldButton').addEventListener('click', () => el('importFileInput').click());
     el('importFileInput').addEventListener('change', (e) => this._importWorld(e));
 
+    // Browsers refuse to start audio before a user gesture, so every button
+    // and the canvas double as the unlock.
+    const unlockAudio = () => audio.init();
+    document.addEventListener('mousedown', unlockAudio);
+    document.addEventListener('keydown', unlockAudio);
+
     this.canvas.addEventListener('click', () => {
       if (this.state === 'playing' && !this.input.locked) this.input.requestLock();
     });
+
+    // Clicking the dimmed area outside a container panel throws the held stack
+    // into the world, mirroring Minecraft.
+    for (const screen of ['inventoryScreen', 'craftingScreen', 'furnaceScreen']) {
+      el(screen).addEventListener('mousedown', (e) => {
+        // Only when the click misses the panel itself.
+        if (e.target !== e.currentTarget) return;
+        if (!this.hud.cursorStack) return;
+        const stack = this.hud.cursorStack;
+        this.hud.cursorStack = null;
+        this.player.throwItem(stack.id, stack.count, this.entities, stack.durability);
+        this.hud.refreshAll();
+      });
+    }
 
     this.input.onLockChange = (locked) => {
       if (locked) {
@@ -118,10 +145,11 @@ export class Game {
         this._openContainer(() => this.hud.openCraftingTable());
         return true;
       }
-      if (blockId === FURNACE.id) {
+      if (isFurnaceBlock(blockId)) {
         const entity = this.world.getBlockEntity(x, y, z, () => ({
           type: 'furnace',
           state: makeFurnaceState(),
+          wasLit: false,
         }));
         this._openContainer(() => this.hud.openFurnace(entity.state));
         return true;
@@ -131,7 +159,7 @@ export class Game {
 
     // Breaking a furnace spills its contents rather than deleting them.
     this.player.onBlockBroken = (blockId, target) => {
-      if (blockId !== FURNACE.id || !target) return;
+      if (!isFurnaceBlock(blockId) || !target) return;
       const key = `${target.x},${target.y},${target.z}`;
       const entity = this.world.blockEntities.get(key);
       if (!entity) return;
@@ -509,6 +537,16 @@ export class Game {
     if (playing || this.state === 'container') {
       if (input.wasPressed('F3')) this.hud.toggleDebug();
 
+      if (input.wasPressed('KeyM')) {
+        this.hud.showToast(audio.toggleMute() ? 'Sound off' : 'Sound on');
+      }
+
+      // Q throws one item; Ctrl+Q throws the whole stack.
+      if (playing && input.wasPressed('KeyQ')) {
+        const whole = input.isDown('ControlLeft') || input.isDown('ControlRight');
+        this.player.dropHeld(whole, { entities: this.entities });
+      }
+
       if (input.wasPressed('KeyG')) {
         const creative = this.player.toggleCreative();
         this.hud.showToast(creative ? 'Creative mode' : 'Survival mode');
@@ -556,6 +594,12 @@ export class Game {
     this.hud.update(dt);
     this.renderer.render();
 
+    // The hand is drawn last, over the world, so it cannot clip into blocks.
+    if (playing || this.state === 'container') {
+      this.viewModel.update(playing ? dt : 0, this.player);
+      this.viewModel.render();
+    }
+
     input.endFrame();
   }
 }
@@ -596,4 +640,7 @@ window.addEventListener('beforeunload', () => {
 //   game.world.setBlock(x, y, z, VoxelCraft.blocks.DIAMOND_BLOCK.id)
 //   game.player.inventory.add(VoxelCraft.blocks.toolItemId('pickaxe', 'diamond'))
 window.game = game;
-window.VoxelCraft = { blocks: Blocks, crafting: Crafting, save: Save, Inventory };
+window.VoxelCraft = {
+  blocks: Blocks, crafting: Crafting, save: Save, Inventory,
+  mobTypes: MobTypes, settings: Settings, audio,
+};

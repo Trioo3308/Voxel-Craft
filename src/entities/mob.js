@@ -11,8 +11,11 @@
  */
 
 import * as THREE from 'three';
-import { moveWithCollision, isInLiquid } from '../player/physics.js';
+import { moveWithCollision, isInLiquid, isSupported } from '../player/physics.js';
+import { raycastVoxels } from '../player/raycast.js';
 import { CHUNK_SY } from '../world/chunk.js';
+import { BLOCKS, AIR } from '../world/blocks.js';
+import { audio } from '../engine/audio.js';
 
 const GRAVITY = 28;
 const TERMINAL_VELOCITY = 55;
@@ -55,6 +58,30 @@ export class Mob {
     this.walkPhase = 0;
     this.age = 0;
 
+    // --- Brain state ------------------------------------------------------
+    /** 'idle' | 'wander' | 'chase' | 'attack' | 'flee' */
+    this.state = 'wander';
+    /** Whatever we are reacting to (currently always the player). */
+    this.target = null;
+    /** Refreshed on a timer rather than every frame — raycasts are not free. */
+    this.canSeeTarget = false;
+    this._losTimer = 0;
+    /** Seconds since we last actually saw the target. */
+    this.lostSightFor = 0;
+    this.fleeTimer = 0;
+    /** Countdown to the next idle vocalisation. */
+    this._voiceTimer = 2 + Math.random() * 8;
+    /** Ranged attack cooldown, separate from melee. */
+    this.rangedCooldown = 0;
+    /** Sideways bias while circling a target, flipped occasionally. */
+    this._strafeDir = Math.random() < 0.5 ? -1 : 1;
+    this._strafeTimer = 0;
+    this._leapCooldown = 0;
+    /** Set by ranged AI so facing is not overridden by travel direction. */
+    this._faceLocked = false;
+    /** Set for one frame when a melee swing lands, for animation. */
+    this.didAttack = false;
+
     // --- Render model ------------------------------------------------------
     const built = type.buildModel();
     this.object3D = built.group;
@@ -96,16 +123,301 @@ export class Mob {
       return;
     }
 
-    // Reset the AI's per-frame intent, then let the type fill it in.
+    // Reset the AI's per-frame intent, then let the brain fill it in.
     this.moveX = 0;
     this.moveZ = 0;
     this.moveSpeed = this.type.speed;
     this.wantsJump = false;
-    this.type.ai(this, dt, ctx);
+
+    if (this.attackCooldown > 0) this.attackCooldown -= dt;
+    if (this.rangedCooldown > 0) this.rangedCooldown -= dt;
+    if (this._leapCooldown > 0) this._leapCooldown -= dt;
+    this.didAttack = false;
+    this._faceLocked = false;
+
+    this._think(dt, ctx);
+    // Types may still add bespoke behaviour on top of the generic brain.
+    if (this.type.ai) this.type.ai(this, dt, ctx);
 
     this._applyPhysics(dt);
     this._animate(dt);
     this._syncObject();
+  }
+
+  // -------------------------------------------------------------------------
+  // Brain
+  // -------------------------------------------------------------------------
+
+  /**
+   * Generic state machine, configured per species by `type.brain`.
+   *
+   * States: wander -> chase -> attack, plus flee when hurt. Hostiles need
+   * *line of sight* to acquire you, and then keep hunting for a few seconds
+   * after losing it — so breaking eye contact matters but hiding behind one
+   * block does not instantly erase you.
+   */
+  _think(dt, ctx) {
+    const brain = this.type.brain;
+    if (!brain) return;
+
+    const player = ctx.player;
+    this.target = player;
+
+    this._updateSunlightBurn(dt, ctx, brain);
+    this._updateVoice(dt);
+
+    // Fleeing overrides everything else while it lasts.
+    if (this.fleeTimer > 0) {
+      this.fleeTimer -= dt;
+      this.state = 'flee';
+      this._steerAway(player.position, brain.fleeSpeed ?? 1.9);
+      this._jumpIfBlocked();
+      return;
+    }
+
+    const hunting = brain.hostile && !player.survival.dead && !(brain.dayTimid && ctx.isDay);
+    if (!hunting) {
+      this.state = 'wander';
+      this._wander(dt);
+      if (brain.avoidCliffs) this._avoidCliffs();
+      return;
+    }
+
+    const distance = this.horizontalDistanceTo(player.position);
+    const verticalGap = player.position.y - this.position.y;
+
+    // Refresh line of sight on a timer; raycasts are the expensive part.
+    this._losTimer -= dt;
+    if (this._losTimer <= 0) {
+      this._losTimer = 0.25;
+      this.canSeeTarget = distance <= brain.sightRange && this._hasLineOfSight(player);
+    }
+
+    if (this.canSeeTarget) {
+      this.lostSightFor = 0;
+      // Shout so nearby friends join in.
+      if (brain.packCall && this.state === 'wander' && ctx.entities) {
+        ctx.entities.alertNearby(this, brain.packRadius ?? 12);
+      }
+    } else if (this.state === 'chase' || this.state === 'attack') {
+      this.lostSightFor += dt;
+    }
+
+    const engaged =
+      (this.canSeeTarget || this.lostSightFor < (brain.loseSightAfter ?? 5)) &&
+      distance <= brain.sightRange * 1.4 &&
+      Math.abs(verticalGap) < (brain.maxVerticalChase ?? 12);
+
+    if (!engaged) {
+      this.state = 'wander';
+      this.lostSightFor = 0;
+      this._wander(dt);
+      if (brain.avoidCliffs) this._avoidCliffs();
+      return;
+    }
+
+    // Ranged attackers hold their distance and circle instead of closing in.
+    if (brain.ranged) {
+      this._rangedBehaviour(dt, ctx, brain, distance, verticalGap);
+      return;
+    }
+
+    if (distance <= brain.attackRange && Math.abs(verticalGap) < 2) {
+      this.state = 'attack';
+      // Ease off at contact range so mobs do not jitter against you.
+      this._steerToward(player.position, 0.35);
+      this._tryMelee(player, brain);
+    } else {
+      this.state = 'chase';
+      this._steerToward(player.position, brain.chaseSpeed ?? 1);
+    }
+
+    // Jump obstacles, and jump when the player is standing above.
+    if (this.onGround && (this.hitWall || (verticalGap > 0.9 && distance < 2.5))) {
+      this.wantsJump = true;
+    }
+    if (brain.leaps && this.onGround && distance < brain.leaps.range && this.canSeeTarget) {
+      this._tryLeap(player, brain.leaps);
+    }
+  }
+
+  /** Skeletons: keep range, strafe, and shoot when they have a clear line. */
+  _rangedBehaviour(dt, ctx, brain, distance, verticalGap) {
+    const r = brain.ranged;
+    const player = this.target;
+
+    this._strafeTimer -= dt;
+    if (this._strafeTimer <= 0) {
+      this._strafeTimer = 1.5 + Math.random() * 2;
+      this._strafeDir *= -1;
+    }
+
+    if (distance > r.range) {
+      this.state = 'chase';
+      this._steerToward(player.position, 1);
+    } else if (distance < r.minRange) {
+      this.state = 'chase';
+      this._steerAway(player.position, 1);
+    } else {
+      this.state = 'attack';
+      // Circle the player: perpendicular to the line between us.
+      const dx = player.position.x - this.position.x;
+      const dz = player.position.z - this.position.z;
+      const len = Math.hypot(dx, dz) || 1;
+      this.moveX = (-dz / len) * this._strafeDir;
+      this.moveZ = (dx / len) * this._strafeDir;
+      this.moveSpeed = this.type.speed * 0.6;
+      // Face the player even while strafing.
+      this.yaw = Math.atan2(dx, dz);
+      this._faceLocked = true;
+    }
+
+    if (this.canSeeTarget && this.rangedCooldown <= 0 && distance <= r.range && Math.abs(verticalGap) < 6) {
+      this.rangedCooldown = r.cooldown;
+      if (ctx.entities) {
+        ctx.entities.fireProjectile(this, player, r);
+        audio.bow();
+      }
+    }
+
+    if (this.onGround && this.hitWall) this.wantsJump = true;
+  }
+
+  _tryMelee(player, brain) {
+    if (this.attackCooldown > 0) return;
+    this.attackCooldown = brain.attackCooldown ?? 1;
+    this.didAttack = true;
+
+    if (!player.survival.damage(brain.attackDamage, 'mob')) return;
+
+    // Knock the player back and up a little.
+    const dx = player.position.x - this.position.x;
+    const dz = player.position.z - this.position.z;
+    const len = Math.hypot(dx, dz) || 1;
+    player.velocity.x += (dx / len) * 5.5;
+    player.velocity.z += (dz / len) * 5.5;
+    if (player.onGround) player.velocity.y = 4.2;
+  }
+
+  /** Spiders pounce rather than plodding all the way in. */
+  _tryLeap(player, leaps) {
+    if (this._leapCooldown > 0) return;
+    this._leapCooldown = leaps.cooldown;
+    const dx = player.position.x - this.position.x;
+    const dz = player.position.z - this.position.z;
+    const len = Math.hypot(dx, dz) || 1;
+    this.velocity.x = (dx / len) * leaps.power;
+    this.velocity.z = (dz / len) * leaps.power;
+    this.velocity.y = leaps.lift;
+  }
+
+  /** Clear line from this mob's eyes to the player's. */
+  _hasLineOfSight(player) {
+    const from = {
+      x: this.position.x,
+      y: this.position.y + this.height * 0.85,
+      z: this.position.z,
+    };
+    const to = player.eyePosition;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dz = to.z - from.z;
+    const distance = Math.hypot(dx, dy, dz);
+    if (distance < 0.001) return true;
+
+    const dir = { x: dx / distance, y: dy / distance, z: dz / distance };
+    // Only opaque blocks break line of sight — glass and leaves do not, so you
+    // cannot hide behind a window.
+    const hit = raycastVoxels(this.world, from, dir, distance, (id) => {
+      if (id === AIR) return false;
+      const block = BLOCKS[id];
+      return !!block && block.opaque;
+    });
+    return hit === null;
+  }
+
+  _updateSunlightBurn(dt, ctx, brain) {
+    if (!brain.burnsInSunlight || !ctx.isDay || this.inLiquid || !this.isExposedToSky()) {
+      this.burnTimer = 0;
+      return;
+    }
+    this.burnTimer += dt;
+    if (this.burnTimer >= 1) {
+      this.burnTimer = 0;
+      this.takeDamage(1);
+    }
+  }
+
+  /** Occasional idle noises so the world feels inhabited. */
+  _updateVoice(dt) {
+    if (!this.type.voice) return;
+    this._voiceTimer -= dt;
+    if (this._voiceTimer > 0) return;
+    this._voiceTimer = 6 + Math.random() * 12;
+    audio.mobSound(this.type.voice, 'idle');
+  }
+
+  // --- Steering helpers -----------------------------------------------------
+
+  _steerToward(point, speedScale = 1) {
+    const dx = point.x - this.position.x;
+    const dz = point.z - this.position.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.01) return;
+    this.moveX = dx / len;
+    this.moveZ = dz / len;
+    this.moveSpeed = this.type.speed * speedScale;
+  }
+
+  _steerAway(point, speedScale = 1) {
+    this._steerToward(point, speedScale);
+    this.moveX = -this.moveX;
+    this.moveZ = -this.moveZ;
+  }
+
+  _wander(dt) {
+    const m = this.memory;
+    m.wanderTimer = (m.wanderTimer ?? 0) - dt;
+
+    if (m.wanderTimer <= 0) {
+      m.wanderTimer = 3 + Math.random() * 5;
+      if (Math.random() < 0.35) {
+        m.wanderX = 0;
+        m.wanderZ = 0; // stand and graze
+      } else {
+        const angle = Math.random() * Math.PI * 2;
+        m.wanderX = Math.sin(angle);
+        m.wanderZ = Math.cos(angle);
+      }
+    }
+
+    this.moveX = m.wanderX ?? 0;
+    this.moveZ = m.wanderZ ?? 0;
+    this._jumpIfBlocked();
+  }
+
+  _jumpIfBlocked() {
+    if (this.hitWall && this.onGround) this.wantsJump = true;
+  }
+
+  /** Stop passive mobs strolling off cliffs. */
+  _avoidCliffs() {
+    if (!this.onGround || (this.moveX === 0 && this.moveZ === 0)) return;
+
+    const lookAhead = 0.9;
+    const probe = {
+      x: this.position.x + this.moveX * lookAhead,
+      y: this.position.y,
+      z: this.position.z + this.moveZ * lookAhead,
+    };
+
+    for (let drop = 1; drop <= 3; drop++) {
+      if (this.world.isSolid(probe.x, this.position.y - drop, probe.z)) return;
+    }
+
+    this.moveX = 0;
+    this.moveZ = 0;
+    this.memory.wanderTimer = 0; // pick a new heading next frame
   }
 
   _applyPhysics(dt) {
@@ -127,6 +439,8 @@ export class Mob {
     } else {
       this.velocity.y -= GRAVITY * dt;
       if (this.velocity.y < -TERMINAL_VELOCITY) this.velocity.y = -TERMINAL_VELOCITY;
+      // Chickens flap, so they drift down instead of plummeting.
+      if (this.type.slowFall && this.velocity.y < -3) this.velocity.y = -3;
     }
 
     const previousY = this.position.y;
@@ -151,8 +465,9 @@ export class Mob {
       this.memory._peakY = this.position.y;
     }
 
-    // Face the direction of travel.
-    if (Math.abs(this.velocity.x) > 0.05 || Math.abs(this.velocity.z) > 0.05) {
+    // Face the direction of travel — unless the AI is aiming somewhere else,
+    // as a strafing archer does.
+    if (!this._faceLocked && (Math.abs(this.velocity.x) > 0.05 || Math.abs(this.velocity.z) > 0.05)) {
       const targetYaw = Math.atan2(this.velocity.x, this.velocity.z);
       // Shortest-arc interpolation so mobs never spin the long way round.
       let delta = targetYaw - this.yaw;
@@ -215,6 +530,11 @@ export class Mob {
 
     this.health -= amount;
     this.hurtTimer = 0.4;
+    audio.mobSound(this.type.voice, this.health - amount <= 0 ? 'death' : 'hurt');
+
+    // Anything that gets hit panics for a moment; hostiles then re-engage.
+    const brain = this.type.brain;
+    if (brain && brain.fleeWhenHurt) this.fleeTimer = brain.fleeWhenHurt;
 
     if (knockback) {
       const strength = 6;
@@ -233,6 +553,17 @@ export class Mob {
     this.dead = true;
     this.deathTimer = 0;
     this.velocity.set(0, 0, 0);
+    audio.mobSound(this.type.voice, 'death');
+  }
+
+  /** Called by a pack-mate that spotted the player. */
+  alert(target) {
+    if (this.dead || this.state === 'chase' || this.state === 'attack') return;
+    this.target = target;
+    this.state = 'chase';
+    // Believe the shout briefly even without seeing anything ourselves.
+    this.lostSightFor = 0;
+    this.canSeeTarget = false;
   }
 
   /** Is this mob's box overlapping the unit cube at (x, y, z)? */

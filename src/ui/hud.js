@@ -285,7 +285,7 @@ export class HUD {
       screen.addEventListener('contextmenu', (e) => e.preventDefault());
     }
 
-    this.player.survival.onDamage = () => this.flashDamage();
+    this.player.survival.onDamage(() => this.flashDamage());
   }
 
   // -------------------------------------------------------------------------

@@ -21,7 +21,7 @@ import Settings from '../settings.js';
  * Saved worlds record the version they were created with, and the loader
  * refuses to silently regenerate them under different rules — see world/save.js.
  */
-export const TERRAIN_VERSION = 1;
+export const TERRAIN_VERSION = 2;
 
 export const BIOME = {
   OCEAN: 0,
@@ -91,6 +91,10 @@ export class TerrainGenerator {
     this.nCaveA = new Noise(seed + 7);
     this.nCaveB = new Noise(seed + 8);
     this.nWeird = new Noise(seed + 20); // secondary climate axis, separates savanna/swamp
+    // v2: where the ground turns broken and cliffy, and the fine detail that
+    // shapes it once it does.
+    this.nRugged = new Noise(seed + 21);
+    this.nCliff = new Noise(seed + 22);
 
     // One independent field per ore so their veins do not correlate.
     this.nCoal = new Noise(seed + 9);
@@ -131,12 +135,52 @@ export class TerrainGenerator {
     let h = 46 + continent * 26 + hills * 9 * (0.35 + mountainMask) + detail * 2.2;
     h += mountainMask * mountainMask * 46;
 
+    // ---- v2: occasional rough ground ------------------------------------
+    // Gated on version so v1 worlds keep exactly the landscape they were
+    // generated with. Never edit the v1 path above — that is what silently
+    // reshapes terrain someone has already built in.
+    if (this.version >= 2) {
+      h += this._ruggedOffset(wx, wz, mountainMask);
+    }
+
     const height = clamp(Math.round(h), 3, CHUNK_SY - 12);
 
     // Bounded cache: terrain generation is bursty, so a simple size cap is fine.
     if (this._heightCache.size > 200000) this._heightCache.clear();
     this._heightCache.set(key, height);
     return height;
+  }
+
+  /**
+   * Extra height for broken, cliffy ground (terrain v2 only).
+   *
+   * Two ingredients:
+   *   - a large, sparse "ruggedness" mask, so rough country appears in patches
+   *     rather than everywhere — most of the world stays walkable
+   *   - inside those patches, high-frequency noise pushed through a *terracing*
+   *     step, which is what produces flat shelves separated by sudden drops
+   *     instead of merely bumpier hills
+   */
+  _ruggedOffset(wx, wz, mountainMask) {
+    // Both fields are amplified before thresholding. Raw fBm output clusters
+    // near zero, so an un-amplified smoothstep here fired on ~1% of the map and
+    // the whole feature was invisible.
+    const ruggedRaw = clamp(this.nRugged.fbm2(wx * 0.0013, wz * 0.0013, 3) * 2.4, -1, 1);
+    const rugged = smoothstep(0.02, 0.55, ruggedRaw);
+    if (rugged <= 0) return 0;
+
+    // Mountains are already dramatic; let them break up more readily.
+    const strength = rugged * (0.6 + mountainMask * 0.9);
+
+    // Terracing is what makes this read as cliffs rather than just bumpier
+    // hills: quantise to shelves, then add back a little of the raw signal so
+    // the shelf tops are not billiard-table flat.
+    const raw = clamp(this.nCliff.fbm2(wx * 0.021, wz * 0.021, 4) * 2.2, -1, 1);
+    const STEP = 0.3;
+    const terraced = Math.round(raw / STEP) * STEP;
+    const shaped = terraced * 0.85 + raw * 0.15;
+
+    return shaped * 12 * strength;
   }
 
   /**

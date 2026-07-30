@@ -53,8 +53,22 @@ export class Survival {
 
     /** @type {((cause:string)=>void)|null} */
     this.onDeath = null;
-    /** @type {((amount:number, cause:string)=>void)|null} */
-    this.onDamage = null;
+    /**
+     * Damage listeners. A list rather than a single callback because several
+     * systems care independently — the HUD flashes the screen, audio plays a
+     * hurt sound, and armour takes wear.
+     * @type {Array<(amount:number, cause:string)=>void>}
+     */
+    this.damageListeners = [];
+  }
+
+  /** Subscribe to damage events. */
+  onDamage(listener) {
+    this.damageListeners.push(listener);
+    return () => {
+      const i = this.damageListeners.indexOf(listener);
+      if (i >= 0) this.damageListeners.splice(i, 1);
+    };
   }
 
   get healthFraction() {
@@ -96,7 +110,7 @@ export class Survival {
     this.invulnerableFor = 0.5;
     this.addExhaustion(EXHAUSTION.damageTaken);
 
-    if (this.onDamage) this.onDamage(applied, cause);
+    for (const listener of this.damageListeners) listener(applied, cause);
 
     if (this.health <= 0) {
       this.dead = true;

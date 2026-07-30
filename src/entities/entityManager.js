@@ -10,6 +10,7 @@ import Settings from '../settings.js';
 import { Mob } from './mob.js';
 import { MOB_TYPES } from './mobTypes.js';
 import { ItemEntity } from './itemEntity.js';
+import { Arrow } from './projectile.js';
 import { AIR } from '../world/blocks.js';
 
 const M = Settings.mobs;
@@ -27,6 +28,8 @@ export class EntityManager {
     this.mobs = [];
     /** @type {ItemEntity[]} */
     this.items = [];
+    /** @type {Arrow[]} */
+    this.projectiles = [];
 
     this._spawnTimer = 0;
     this._tmpVec = new THREE.Vector3();
@@ -41,14 +44,164 @@ export class EntityManager {
    * @param {{player: object, isDay: boolean, isNight: boolean}} ctx
    */
   update(dt, ctx) {
-    this._updateMobs(dt, ctx);
-    this._updateItems(dt, ctx);
+    // Give the AI a handle on the manager so it can shout to pack-mates and
+    // spawn projectiles.
+    const context = { ...ctx, entities: this };
+
+    this._updateMobs(dt, context);
+    this._separateEntities(context.player);
+    this._updateProjectiles(dt, context);
+    this._updateItems(dt, context);
 
     this._spawnTimer -= dt;
     if (this._spawnTimer <= 0) {
       this._spawnTimer = M.spawnInterval;
-      this._trySpawnWave(ctx);
-      this._despawnDistant(ctx.player);
+      this._trySpawnWave(context);
+      this._despawnDistant(context.player);
+    }
+  }
+
+  /**
+   * Push overlapping entities apart.
+   *
+   * Without this, mobs chasing the same target converge on one point and end up
+   * standing inside each other. Positions are nudged directly (so the fix is
+   * immediate) and a little velocity is added (so they keep drifting apart
+   * rather than re-overlapping next frame).
+   *
+   * O(n^2), but n is capped in the tens by the spawn limits.
+   */
+  _separateEntities(player) {
+    const mobs = this.mobs;
+
+    for (let i = 0; i < mobs.length; i++) {
+      const a = mobs[i];
+      if (a.dead) continue;
+
+      for (let j = i + 1; j < mobs.length; j++) {
+        const b = mobs[j];
+        if (b.dead) continue;
+
+        // Ignore pairs on clearly different levels — one standing on the other's
+        // head is a legitimate stack, not an overlap to resolve.
+        const verticalGap = Math.abs(a.position.y - b.position.y);
+        if (verticalGap > Math.max(a.height, b.height) * 0.8) continue;
+
+        const dx = b.position.x - a.position.x;
+        const dz = b.position.z - a.position.z;
+        const distance = Math.hypot(dx, dz);
+        const minDistance = (a.width + b.width) * 0.5;
+        if (distance >= minDistance) continue;
+
+        // Exactly coincident: pick an arbitrary direction so they still split.
+        let nx, nz;
+        if (distance < 1e-4) {
+          const angle = Math.random() * Math.PI * 2;
+          nx = Math.cos(angle);
+          nz = Math.sin(angle);
+        } else {
+          nx = dx / distance;
+          nz = dz / distance;
+        }
+
+        const overlap = (minDistance - distance) * 0.5;
+        a.position.x -= nx * overlap;
+        a.position.z -= nz * overlap;
+        b.position.x += nx * overlap;
+        b.position.z += nz * overlap;
+
+        const push = Math.min(2.5, overlap * 12);
+        a.velocity.x -= nx * push;
+        a.velocity.z -= nz * push;
+        b.velocity.x += nx * push;
+        b.velocity.z += nz * push;
+      }
+
+      // --- Against the player ---------------------------------------------
+      // The player is a solid body too, so mobs cannot stand inside you.
+      const verticalGap = Math.abs(a.position.y - player.position.y);
+      if (verticalGap > Math.max(a.height, player.height) * 0.8) continue;
+
+      const dx = player.position.x - a.position.x;
+      const dz = player.position.z - a.position.z;
+      const distance = Math.hypot(dx, dz);
+      const minDistance = (a.width + 0.6) * 0.5;
+      if (distance >= minDistance) continue;
+
+      // Exactly coincident (a mob spawned or teleported onto the player): pick
+      // an arbitrary direction, otherwise they would stay merged forever.
+      let nx, nz;
+      if (distance < 1e-4) {
+        const angle = Math.random() * Math.PI * 2;
+        nx = Math.cos(angle);
+        nz = Math.sin(angle);
+      } else {
+        nx = dx / distance;
+        nz = dz / distance;
+      }
+      const overlap = minDistance - distance;
+
+      // The mob yields most of the ground; the player only gets nudged, via
+      // velocity so normal collision keeps them out of walls.
+      a.position.x -= nx * overlap * 0.8;
+      a.position.z -= nz * overlap * 0.8;
+      player.velocity.x += nx * Math.min(2.0, overlap * 8);
+      player.velocity.z += nz * Math.min(2.0, overlap * 8);
+    }
+  }
+
+  _updateProjectiles(dt, ctx) {
+    for (let i = this.projectiles.length - 1; i >= 0; i--) {
+      const arrow = this.projectiles[i];
+      arrow.update(dt, ctx);
+      if (!arrow.removed) continue;
+
+      this.scene.remove(arrow.mesh);
+      arrow.dispose();
+      this.projectiles.splice(i, 1);
+    }
+  }
+
+  /** Fire a projectile from `mob` toward `target`, leading the shot slightly. */
+  fireProjectile(mob, target, config) {
+    const from = new THREE.Vector3(
+      mob.position.x,
+      mob.position.y + mob.height * 0.8,
+      mob.position.z
+    );
+
+    // Aim at the target's chest, plus a lob so gravity is compensated for.
+    const to = new THREE.Vector3(
+      target.position.x,
+      target.position.y + target.height * 0.6,
+      target.position.z
+    );
+    const delta = to.clone().sub(from);
+    const horizontal = Math.hypot(delta.x, delta.z);
+    const travelTime = horizontal / config.speed;
+    delta.y += 0.5 * 12 * travelTime * travelTime; // counter gravity over the flight
+
+    const velocity = delta.normalize().multiplyScalar(config.speed);
+    // A little scatter so skeletons are not perfect marksmen.
+    velocity.x += (Math.random() - 0.5) * config.speed * config.spread;
+    velocity.y += (Math.random() - 0.5) * config.speed * config.spread;
+    velocity.z += (Math.random() - 0.5) * config.speed * config.spread;
+
+    const arrow = new Arrow(this.world, from, velocity, mob, config.damage);
+    this.projectiles.push(arrow);
+    this.scene.add(arrow.mesh);
+    return arrow;
+  }
+
+  /** A mob that spotted the player tells its neighbours of the same species. */
+  alertNearby(source, radius) {
+    const radiusSq = radius * radius;
+    for (const mob of this.mobs) {
+      if (mob === source || mob.dead || mob.type !== source.type) continue;
+      const dx = mob.position.x - source.position.x;
+      const dz = mob.position.z - source.position.z;
+      if (dx * dx + dz * dz > radiusSq) continue;
+      mob.alert(source.target);
     }
   }
 
@@ -83,21 +236,40 @@ export class EntityManager {
   // Spawning
   // -------------------------------------------------------------------------
 
+  /**
+   * Attempt one spawn per wave, choosing the species by weight.
+   *
+   * Only one type per wave (rather than looping every type) is what actually
+   * keeps night-time populations down — previously every eligible hostile got a
+   * chance every few seconds, which stacked up fast.
+   */
   _trySpawnWave(ctx) {
     const { player, isNight } = ctx;
     if (player.survival.dead) return;
 
+    // Global cap, and a local one so mobs do not pile up around the player.
+    if (this.mobs.length >= M.maxTotalMobs) return;
+    if (this._countWithin(player.position, 24) >= M.maxNearbyMobs) return;
+
+    const candidates = [];
     for (const type of MOB_TYPES) {
       const rules = type.spawn;
       // Time-of-day gate: hostiles at night, passives during the day.
-      const allowedNow = isNight ? rules.atNight : rules.dayTimeAllowed;
-      if (!allowedNow) continue;
+      if (!(isNight ? rules.atNight : rules.dayTimeAllowed)) continue;
 
       const current = this.mobs.reduce((n, m) => n + (m.type === type && !m.dead ? 1 : 0), 0);
       if (current >= rules.maxCount) continue;
+      candidates.push({ type, weight: rules.weight ?? 1 });
+    }
+    if (candidates.length === 0) return;
+
+    const type = pickWeighted(candidates);
+    {
+      const rules = type.spawn;
+      const current = this.mobs.reduce((n, m) => n + (m.type === type && !m.dead ? 1 : 0), 0);
 
       const spot = this._findSpawnSpot(player, type);
-      if (!spot) continue;
+      if (!spot) return;
 
       // Spawn a small group so the world does not feel evenly sprinkled.
       const [minGroup, maxGroup] = rules.groupSize;
@@ -182,8 +354,9 @@ export class EntityManager {
     }
   }
 
-  dropItem(x, y, z, id, count = 1) {
-    const item = new ItemEntity(this.world, this._tmpVec.set(x, y, z), id, count);
+  dropItem(x, y, z, id, count = 1, durability) {
+    const item = new ItemEntity(this.world, this._tmpVec.set(x, y, z), id, count, durability);
+    if (this.onItemPickup) item.onPickup = this.onItemPickup;
     this.items.push(item);
     this.scene.add(item.mesh);
     return item;
@@ -220,6 +393,19 @@ export class EntityManager {
     return this.mobs.some((mob) => !mob.dead && mob.intersectsBlock(x, y, z));
   }
 
+  /** How many living mobs are within `radius` of a point. */
+  _countWithin(point, radius) {
+    const radiusSq = radius * radius;
+    let count = 0;
+    for (const mob of this.mobs) {
+      if (mob.dead) continue;
+      const dx = mob.position.x - point.x;
+      const dz = mob.position.z - point.z;
+      if (dx * dx + dz * dz <= radiusSq) count++;
+    }
+    return count;
+  }
+
   get mobCount() {
     return this.mobs.length;
   }
@@ -230,9 +416,23 @@ export class EntityManager {
       mob.dispose();
     }
     for (const item of this.items) this.scene.remove(item.mesh);
+    for (const arrow of this.projectiles) this.scene.remove(arrow.mesh);
     this.mobs.length = 0;
     this.items.length = 0;
+    this.projectiles.length = 0;
   }
+}
+
+/** Pick one `{type, weight}` entry proportionally to its weight. */
+function pickWeighted(candidates) {
+  let total = 0;
+  for (const c of candidates) total += c.weight;
+  let roll = Math.random() * total;
+  for (const c of candidates) {
+    roll -= c.weight;
+    if (roll <= 0) return c.type;
+  }
+  return candidates[candidates.length - 1].type;
 }
 
 /**

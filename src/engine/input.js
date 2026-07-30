@@ -6,6 +6,18 @@
  * which keeps input handling free of scattered one-shot booleans.
  */
 
+/**
+ * Keys whose browser default we swallow while playing — space and the arrows
+ * would otherwise scroll the page behind the canvas, and Tab would move focus.
+ */
+const SUPPRESSED_KEYS = new Set([
+  'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab',
+  'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyQ', 'KeyF', 'KeyG',
+  'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight',
+  'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9',
+  'F3',
+]);
+
 export class Input {
   /** @param {HTMLElement} domElement element that captures the pointer */
   constructor(domElement) {
@@ -33,12 +45,20 @@ export class Input {
 
   _bind() {
     window.addEventListener('keydown', (e) => {
-      // Let the browser keep its own shortcuts (reload, devtools, ...).
-      if (e.ctrlKey && e.code !== 'ControlLeft' && e.code !== 'ControlRight') return;
+      // Record the key regardless of modifiers.
+      //
+      // This used to bail out whenever e.ctrlKey was set, to avoid stealing
+      // browser shortcuts — but Ctrl is the sprint key, so holding it silently
+      // swallowed WASD and Space and made sprinting-while-jumping impossible.
+      // Modifier state is irrelevant to us; we simply never preventDefault on
+      // keys the game does not own, so real browser shortcuts still work.
       if (!this.keysDown.has(e.code)) this.keysPressed.add(e.code);
       this.keysDown.add(e.code);
-      // Stop space/arrows from scrolling the page behind the canvas.
-      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) {
+
+      // Only suppress the browser's default for keys we actually use, and only
+      // while the pointer is locked (i.e. actively playing) so menus and text
+      // fields keep normal behaviour.
+      if (this.locked && SUPPRESSED_KEYS.has(e.code) && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
       }
     });

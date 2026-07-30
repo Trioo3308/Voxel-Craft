@@ -16,7 +16,10 @@ import {
   CHUNK_SX, CHUNK_SY, CHUNK_SZ,
   chunkKey, voxelIndex, toChunkCoord, toLocalCoord,
 } from './chunk.js';
-import { AIR, BLOCKS, isSolid as blockIsSolid, isLiquid as blockIsLiquid, isFluidFamily } from './blocks.js';
+import {
+  AIR, BLOCKS, isSolid as blockIsSolid, isLiquid as blockIsLiquid, isFluidFamily,
+  isFurnaceBlock, FURNACE, FURNACE_LIT,
+} from './blocks.js';
 import { getAtlasTexture } from './textures.js';
 import { FluidSimulator } from './fluids.js';
 import { TERRAIN_VERSION } from './terrain.js';
@@ -382,8 +385,12 @@ export class World {
     const previous = chunk.voxels[voxelIndex(toLocalCoord(wx), wy, toLocalCoord(wz))];
     chunk.voxels[voxelIndex(toLocalCoord(wx), wy, toLocalCoord(wz))] = id;
 
-    // Replacing a block discards whatever it was holding.
-    if (previous !== id) this.blockEntities.delete(wx + ',' + wy + ',' + wz);
+    // Replacing a block discards whatever it was holding — but a furnace
+    // lighting up or going out is the *same* furnace, so keep its contents.
+    const sameStation = isFurnaceBlock(previous) && isFurnaceBlock(id);
+    if (previous !== id && !sameStation) {
+      this.blockEntities.delete(wx + ',' + wy + ',' + wz);
+    }
 
     if (deferSync) this._pendingSync.push({ x: wx, y: wy, z: wz, id });
     else this.worker.postMessage({ type: 'setBlock', x: wx, y: wy, z: wz, id });
@@ -411,8 +418,22 @@ export class World {
   /** Advance every furnace, whether or not its UI is open. */
   _tickBlockEntities(dt) {
     if (dt <= 0 || this.blockEntities.size === 0) return;
-    for (const entity of this.blockEntities.values()) {
-      if (entity.type === 'furnace') tickFurnace(entity.state, dt);
+
+    for (const [key, entity] of this.blockEntities) {
+      if (entity.type !== 'furnace') continue;
+      tickFurnace(entity.state, dt);
+
+      // Swap the block between lit and unlit so the glow shows in the world.
+      // Only on an actual transition, since each swap costs a chunk remesh.
+      const lit = entity.state.burnRemaining > 0;
+      if (lit === entity.wasLit) continue;
+      entity.wasLit = lit;
+
+      const [x, y, z] = key.split(',').map(Number);
+      const current = this.getBlock(x, y, z);
+      if (!isFurnaceBlock(current)) continue;
+      const wanted = lit ? FURNACE_LIT.id : FURNACE.id;
+      if (current !== wanted) this.setBlock(x, y, z, wanted);
     }
   }
 

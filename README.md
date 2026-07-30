@@ -106,8 +106,10 @@ that broadcast would go.
 | `W` `A` `S` `D` | Move |
 | Mouse | Look |
 | `Space` | Jump / swim up / fly up |
-| `Shift` | Sneak (descend while flying) |
-| `Ctrl` | Sprint |
+| `Shift` | Crouch — shorter hitbox, and you cannot walk off a ledge |
+| `Ctrl` | Sprint (works while jumping) |
+| `Q` / `Ctrl+Q` | Drop one item / the whole stack |
+| `M` | Mute sound |
 | Left click | Hold to mine · click to attack a mob |
 | Right click | Place block · eat held food |
 | `1`–`9`, mouse wheel | Select hotbar slot |
@@ -139,11 +141,37 @@ destroying it.
   burn *exhaustion*, which drains saturation, then hunger. A full hunger bar
   regenerates health; an empty one starves you.
 - **Fall damage** past ~3.5 blocks. Water breaks a fall.
-- **Pigs** spawn on grass in daylight and drop raw porkchops — right-click to eat.
-- **Zombies** spawn at night, chase you within 22 blocks, hit for 3 damage with
-  knockback, and **burn in direct sunlight** — so surviving the night is the
-  actual challenge, and daylight is genuinely safe.
 - Death drops your inventory and respawns you at your spawn point.
+
+### Creatures
+
+| | Behaviour | Drops |
+| --- | --- | --- |
+| **Zombie** | Melee, burns in sunlight, **calls nearby zombies** when it spots you | Rotten flesh |
+| **Skeleton** | **Ranged** — keeps its distance, circles, and shoots arrows | Bones, arrows |
+| **Spider** | Fast, **pounces** from range; goes timid in daylight rather than burning | String, spider eye |
+| **Pig** | Grazes, flees when hit | Porkchop |
+| **Cow** | Grazes, flees when hit | Beef, leather |
+| **Sheep** | Grazes, flees when hit | Mutton, wool |
+| **Chicken** | Grazes, **flaps** so it never takes fall damage | Chicken, feathers |
+
+All seven share one state machine (`idle → wander → chase → attack`, plus
+`flee`). Behaviour is *declared* per species in `mobTypes.js` rather than coded,
+so the brain handles line of sight, target memory, melee, ranged fire, leaping,
+cliff avoidance and sunlight burning generically.
+
+Two details worth knowing:
+
+- **Line of sight is real.** Hostiles need to actually see you to acquire you —
+  and then keep hunting for a few seconds after losing sight, so breaking eye
+  contact matters but ducking behind one block does not erase you. Glass and
+  leaves do not block sight.
+- **Entities are solid.** Mobs push each other apart and cannot stand inside you
+  or each other, so a crowd spreads out instead of merging into one spot.
+
+Night is deliberately not a swarm: one species spawns per wave (chosen by
+weight) every 6 seconds, with a global cap of 26 and a cap of 9 within 24 blocks
+of you.
 
 Mining drops the right block (stone → cobblestone, grass → dirt) as a physical
 item entity you walk over to collect.
@@ -221,6 +249,19 @@ with an explanation, rather than being loaded and mangled.
 edit v1 behaviour in place — that is exactly what silently reshapes existing
 worlds.
 
+This has already been exercised once. Terrain is at **v2**, which added the
+occasional rough/cliffy ground; the v1 code path is untouched and verified
+byte-identical, so a world created before that change still generates exactly the
+landscape it always did.
+
+### Sound
+
+All audio is synthesised at runtime from Web Audio oscillators and noise buffers
+— there are no sound files, matching how the textures are painted rather than
+shipped. Footsteps, digging and block breaks are **material-aware** (stone rings,
+sand hisses, wool thuds), each species has its own voice, and glass gets a
+shatter tail. `M` mutes.
+
 ---
 
 ## Progression
@@ -265,6 +306,8 @@ src/
 ├─ engine/
 │  ├─ renderer.js          Three.js scene, camera, lights, block highlight
 │  ├─ input.js             Keyboard/mouse state + edges, pointer lock
+│  ├─ audio.js             Procedural Web Audio synthesis (no sound files)
+│  ├─ viewmodel.js         First-person hand + held item overlay pass
 │  └─ sky.js               Day/night cycle; authority on isDay/isNight
 ├─ world/
 │  ├─ blocks.js            Block + item registry  ← add content here
@@ -285,10 +328,11 @@ src/
 │  ├─ crafting.js          Recipes, grid matching, furnace smelting
 │  └─ survival.js          Health, hunger, armour mitigation, death
 ├─ entities/
-│  ├─ mob.js               Base mob: physics, health, animation
+│  ├─ mob.js               Base mob: physics, health, animation, AI brain
 │  ├─ mobTypes.js          Mob registry  ← add creatures here
 │  ├─ itemEntity.js        Dropped items
-│  └─ entityManager.js     Spawning, despawning, ray picking
+│  ├─ projectile.js        Arrows
+│  └─ entityManager.js     Spawning, separation, despawning, ray picking
 └─ ui/
    └─ hud.js               All DOM UI
 ```
@@ -447,6 +491,24 @@ wooden pickaxe cannot harvest diamond but an iron one can; tools wear down and
 break; a diamond pickaxe mines ~8× faster than fists; furnaces smelt, keep
 running with the menu closed, and return their contents when broken; full
 diamond armour blocks 80% of damage but none of starvation.
+
+**Movement & controls** — sprinting works while jumping (this was a real bug:
+`input.js` bailed out of keydown whenever Ctrl was held, so the sprint key
+silently swallowed WASD and Space); crouching shrinks the hitbox and lowers the
+eye; crouching at a ledge stops you walking off while walking normally still
+falls; standing up is refused when a ceiling overlaps the taller box; Q drops one
+item and Ctrl+Q the stack.
+
+**Mobs** — all seven species build models and brains; stacked mobs push apart to
+zero residual overlap; a mob coincident with the player is ejected; a wall blocks
+line of sight but open ground does not; skeletons hold range and land arrows for
+damage; zombies land melee; a zombie alerts its pack; spiders hunt at night and
+go timid by day; struck animals flee; sheep drop mutton and wool.
+
+**Terrain v2** — v1 chunks remain byte-identical across generators, v2 differs
+from v1 in 13/36 sampled chunks, roughness affects 14% of columns with up to 10
+blocks of relief, local relief measurably increases, and the bedrock floor and
+height limits still hold.
 
 **Persistence** — a full round trip through a page reload restores position,
 health, hunger, time of day, every inventory slot in place, tool durability,

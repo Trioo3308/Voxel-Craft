@@ -31,6 +31,9 @@ export const Settings = {
     width: 0.6,
     height: 1.8,
     eyeHeight: 1.62,
+    /** Crouching shrinks the hitbox, letting you fit under 2-block gaps. */
+    sneakHeight: 1.5,
+    sneakEyeHeight: 1.27,
     reach: 5,
     walkSpeed: 4.3,
     sprintSpeed: 5.8,
@@ -58,8 +61,15 @@ export const Settings = {
 
   // ---- Mobs ----------------------------------------------------------------
   mobs: {
-    /** Attempt a spawn wave this often (seconds). */
-    spawnInterval: 3,
+    /**
+     * Attempt a spawn wave this often (seconds). One species per wave, chosen
+     * by weight — raising this is the main dial for a calmer night.
+     */
+    spawnInterval: 6,
+    /** Hard cap across all species. */
+    maxTotalMobs: 26,
+    /** Cap within 24 blocks of the player, so they cannot swarm you. */
+    maxNearbyMobs: 9,
     /** Mobs further than this from the player are removed. */
     despawnDistance: 72,
     /** Spawn ring around the player. */
