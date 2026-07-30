@@ -153,6 +153,31 @@ destroying it.
 
 ---
 
+## Game mode is chosen once
+
+You pick **Survival** or **Creative** when creating a world, and that choice is
+permanent. A survival world can never be switched to creative — the mode key does
+nothing, the creative palette stays hidden, and flight is unavailable. A creative
+world can switch freely between the two.
+
+The lock is enforced in three places rather than one, because a single check is
+easy to route around later:
+
+- the hotkey refuses and says so
+- `toggleCreative()` takes the world's permission and refuses without it
+- **loading** forces survival regardless of what the save file claims, so a
+  stale or hand-edited save cannot promote a world
+
+Saving takes the mode from the world's metadata rather than the live player, so a
+bug elsewhere cannot quietly change it either.
+
+This was a save-format change, so `SAVE_FORMAT_VERSION` went to 2 with a
+migration. Worlds created before the choice existed are **grandfathered in as
+creative-capable** — they always could toggle, and retroactively locking them into
+survival would take away something people already had.
+
+---
+
 ## The survival loop
 
 - **Health** (20) and **hunger** (20). Moving, sprinting, jumping and fighting
@@ -252,7 +277,7 @@ are three separate defences:
 
 | Hazard | Defence |
 | --- | --- |
-| The save layout changes | Every save records `formatVersion`. `MIGRATIONS` in `world/save.js` holds one function per version step, applied in order on load. Old saves are upgraded, never rejected. |
+| The save layout changes | Every save records `formatVersion`. `MIGRATIONS` in `world/save.js` holds one function per version step, applied in order on load. Old saves are upgraded, never rejected. Already used once, for the v1→v2 game-mode field. |
 | Terrain generation changes | Every save records `terrainVersion`, and the generator is built with **that** version, not the newest. A world keeps the landscape rules it was born with, so newly explored chunks still match the ones you already walked through. |
 | Block or item ids get renumbered | Saves store a **palette** mapping id → stable name, and loading remaps by name. Ids can be reshuffled freely; only *renaming* or *deleting* a block loses data, and that is reported to the console rather than applied silently. |
 
@@ -597,6 +622,13 @@ contents across close/reopen and spill when broken; beds set spawn, skip to dawn
 at night, and refuse with monsters within 12 blocks; explosions crater terrain
 (49 → 28 solid blocks), hurt the player with falloff, and leave bedrock intact;
 creepers start their fuse on approach.
+
+**Game mode** — a survival world refuses the mode key, refuses a direct
+`toggleCreative()`, hides the creative palette, and still refuses after a full
+page reload; a creative world toggles both ways; a save claiming `creative: true`
+loads as survival anyway if the world is survival; saving reads the mode from the
+world rather than the player; and a v1 save migrates to v2 grandfathered as
+creative-capable with everything else intact.
 
 **Persistence** — a full round trip through a page reload restores position,
 health, hunger, time of day, every inventory slot in place, tool durability,

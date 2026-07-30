@@ -358,6 +358,17 @@
   }
   .field input:focus { outline: none; border-color: var(--accent); }
 
+  .modePick { display: flex; gap: 6px; flex: 1; }
+  .modeOption {
+    flex: 1; margin: 0; padding: 8px 10px; font-size: 13px;
+    background: rgba(0,0,0,0.4);
+    border: 2px solid var(--panel-dark);
+  }
+  .modeOption.selected {
+    background: var(--accent); color: #10240a;
+    border-color: #b6f08a; font-weight: 700;
+  }
+
   /* ---------------------------------------------------------------------
      Crafting & furnace
      --------------------------------------------------------------------- */
@@ -474,6 +485,16 @@
         <label for="newWorldSeed">Seed</label>
         <input id="newWorldSeed" type="text" maxlength="20" placeholder="leave blank for random">
       </div>
+      <div class="field">
+        <label>Mode</label>
+        <div class="modePick">
+          <button type="button" id="modeSurvival" class="modeOption selected">Survival</button>
+          <button type="button" id="modeCreative" class="modeOption">Creative</button>
+        </div>
+      </div>
+      <p class="subtitle" id="modeNote" style="margin:2px 0 10px; text-align:left">
+        Survival is permanent &mdash; this world can never be switched to creative.
+      </p>
       <button id="confirmCreateButton">Create</button>
       <button id="cancelCreateButton">Cancel</button>
     </div>

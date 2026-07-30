@@ -775,7 +775,19 @@ export class Player {
     }
   }
 
-  toggleCreative() {
+  /**
+   * Switch game mode.
+   *
+   * `allowCreative` is a property of the *world*, decided when it was created,
+   * so the caller gates this. The guard here is a second line of defence: it
+   * means no future call site can accidentally promote a survival world.
+   */
+  toggleCreative(allowCreative = true) {
+    if (!allowCreative) {
+      this.creative = false;
+      this.flying = false;
+      return false;
+    }
     this.creative = !this.creative;
     if (!this.creative) this.flying = false;
     return this.creative;

@@ -100,6 +100,8 @@ export class Game {
     el('respawnButton').addEventListener('click', () => this._respawn());
 
     el('newWorldButton').addEventListener('click', () => this._showCreateForm(true));
+    el('modeSurvival').addEventListener('click', () => this._setCreateMode(false));
+    el('modeCreative').addEventListener('click', () => this._setCreateMode(true));
     el('cancelCreateButton').addEventListener('click', () => this._showCreateForm(false));
     el('confirmCreateButton').addEventListener('click', () => this._createWorld());
     el('newWorldName').addEventListener('keydown', (e) => { if (e.key === 'Enter') this._createWorld(); });
@@ -302,6 +304,7 @@ export class Game {
       info.className = 'info';
       info.innerHTML =
         `<div class="wname">${escapeHtml(world.name)}` +
+        (world.allowCreative ? '<span class="badge">Creative</span>' : '') +
         (world.tooNew ? '<span class="badge warn">Newer version</span>' : '') +
         '</div>' +
         `<div class="wmeta">seed ${world.seed} &middot; ${played}m played &middot; ` +
@@ -340,9 +343,24 @@ export class Game {
     if (show) {
       el('newWorldName').value = 'New World';
       el('newWorldSeed').value = '';
+      this._setCreateMode(false);
       el('newWorldName').focus();
       el('newWorldName').select();
     }
+  }
+
+  /**
+   * Game mode is chosen once, at creation, and fixed for the world's lifetime.
+   * A survival world can never be switched to creative — that is the whole
+   * point of picking survival.
+   */
+  _setCreateMode(creative) {
+    this._createCreative = creative;
+    el('modeSurvival').classList.toggle('selected', !creative);
+    el('modeCreative').classList.toggle('selected', creative);
+    el('modeNote').textContent = creative
+      ? 'Creative worlds can switch between creative and survival at any time.'
+      : 'Survival is permanent — this world can never be switched to creative.';
   }
 
   /**
@@ -361,7 +379,7 @@ export class Game {
   async _createWorld() {
     const name = el('newWorldName').value.trim() || 'New World';
     const seed = this._parseSeed(el('newWorldSeed').value);
-    const save = SaveManager.createNew(name, seed);
+    const save = SaveManager.createNew(name, seed, this._createCreative === true);
     try {
       if (SaveManager.available) await SaveManager.put(save);
     } catch (error) {
@@ -428,11 +446,15 @@ export class Game {
     this.entities.world = this.world;
     this.terrainInfo = new TerrainGenerator(save.seed, save.terrainVersion);
 
+    // Whether this world may use creative at all, fixed when it was created.
+    this.allowCreative = save.allowCreative === true;
+
     this.saveMeta = {
       id: save.id,
       name: save.name,
       createdAt: save.createdAt,
       playTimeSeconds: save.playTimeSeconds ?? 0,
+      allowCreative: this.allowCreative,
     };
     this.worldName = save.name;
     this._playTime = save.playTimeSeconds ?? 0;
@@ -442,7 +464,8 @@ export class Game {
       this.player.survival.respawn();
       this.player.inventory.clear();
       this.player.inventory.armor.fill(null);
-      this.player.creative = false;
+      // Creative worlds start in creative; survival worlds can never leave it.
+      this.player.creative = this.allowCreative;
       this.sky.setTime(save.time ?? 0.08);
       await this._preloadAround(0, 0);
       const spawn = this._findSpawnColumn();
@@ -658,9 +681,13 @@ export class Game {
       }
 
       if (input.actionWasPressed('creative')) {
-        const creative = this.player.toggleCreative();
-        this.hud.showToast(creative ? 'Creative mode' : 'Survival mode');
-        if (this.state === 'container') this.hud.openInventory();
+        if (!this.allowCreative) {
+          this.hud.showToast('This is a survival world');
+        } else {
+          const creative = this.player.toggleCreative(this.allowCreative);
+          this.hud.showToast(creative ? 'Creative mode' : 'Survival mode');
+          if (this.state === 'container') this.hud.openInventory();
+        }
       }
 
       if (input.actionWasPressed('inventory')) {

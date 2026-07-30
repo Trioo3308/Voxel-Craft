@@ -573,7 +573,8 @@ export class HUD {
       `Mobs    ${this.game.entities.mobs.length}   Items ${this.game.entities.items.length}`,
       `Fluid   ${world.fluids.stats.pending} queued`,
       '',
-      `Mode    ${p.creative ? 'Creative' : 'Survival'}${p.flying ? ' (flying)' : ''}`,
+      `Mode    ${p.creative ? 'Creative' : 'Survival'}${p.flying ? ' (flying)' : ''}` +
+        `${this.game.allowCreative ? '' : '  [survival world]'}`,
       `Held    ${held ? getDisplayName(held.id) : 'nothing'}${tool ? ` (tier ${tool.tier}, ${held.durability}/${tool.durability})` : ''}`,
       p.targetBlock
         ? `Target  ${getDisplayName(p.targetBlock.block)} @ ${p.targetBlock.x},${p.targetBlock.y},${p.targetBlock.z}`
@@ -689,7 +690,11 @@ export class HUD {
 
   openInventory() {
     this.paletteSection.style.display = this.player.creative ? '' : 'none';
-    this.modeBadge.textContent = this.player.creative ? 'Creative' : 'Survival';
+    // A survival world says so plainly, since the mode key will not work there.
+    const locked = this.game.allowCreative === false;
+    this.modeBadge.textContent = this.player.creative ? 'Creative'
+      : locked ? 'Survival (locked)' : 'Survival';
+    this.modeBadge.classList.toggle('warn', locked);
     this.refreshAll();
     this.inventoryScreen.classList.add('show');
   }

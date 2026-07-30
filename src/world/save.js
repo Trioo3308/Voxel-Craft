@@ -36,14 +36,22 @@ const DB_VERSION = 1;
 const STORE = 'worlds';
 
 /** Bump when the shape of a save record changes, and add a migration. */
-export const SAVE_FORMAT_VERSION = 1;
+export const SAVE_FORMAT_VERSION = 2;
 
 /**
  * Migrations from version N to N+1. Add entries; never edit existing ones.
  * @type {Record<number, (save: object) => object>}
  */
 const MIGRATIONS = {
-  // 1: (save) => { ...save, formatVersion: 2, newField: default };
+  /**
+   * v1 -> v2: worlds gained a fixed game mode chosen at creation.
+   *
+   * Worlds made before the choice existed could always toggle creative, so they
+   * are grandfathered in as creative-capable. Retroactively locking them into
+   * survival would take away something people already had, which is a far worse
+   * outcome than an old world being slightly more permissive than a new one.
+   */
+  1: (save) => ({ ...save, formatVersion: 2, allowCreative: true }),
 };
 
 // ---------------------------------------------------------------------------
@@ -143,6 +151,9 @@ export async function captureState(game, meta = {}) {
     createdAt: meta.createdAt ?? Date.now(),
     updatedAt: Date.now(),
     playTimeSeconds: Math.round(meta.playTimeSeconds ?? 0),
+    // Fixed at creation; never taken from the live player state, so a bug
+    // elsewhere cannot quietly promote a survival world.
+    allowCreative: meta.allowCreative === true,
 
     palette: buildPalette(),
 
@@ -197,7 +208,8 @@ export async function applyState(game, save) {
   player.velocity.set(0, 0, 0);
   player.yaw = p.yaw;
   player.pitch = p.pitch;
-  player.creative = !!p.creative;
+  // A survival world can never come back as creative, whatever the save says.
+  player.creative = save.allowCreative === true && !!p.creative;
   player.spawnPoint.fromArray(p.spawn);
   player.survival.health = p.health;
   player.survival.hunger = p.hunger;
@@ -310,6 +322,7 @@ export const SaveManager = {
         playTimeSeconds: w.playTimeSeconds ?? 0,
         formatVersion: w.formatVersion,
         terrainVersion: w.terrainVersion,
+        allowCreative: w.allowCreative === true,
         editedBlocks: (w.edits ?? []).reduce((n, c) => n + c.ids.length, 0),
         /** Set when this build is too old to open it. */
         tooNew: w.formatVersion > SAVE_FORMAT_VERSION || w.terrainVersion > TERRAIN_VERSION,
@@ -339,8 +352,12 @@ export const SaveManager = {
     await tx(STORE, 'readwrite', (store) => store.put(save));
   },
 
-  /** A blank save record for a brand-new world. */
-  createNew(name, seed) {
+  /**
+   * A blank save record for a brand-new world.
+   * @param allowCreative chosen at creation and fixed for the world's lifetime —
+   *   a survival world can never be switched to creative.
+   */
+  createNew(name, seed, allowCreative = false) {
     return {
       formatVersion: SAVE_FORMAT_VERSION,
       terrainVersion: TERRAIN_VERSION,
@@ -350,6 +367,7 @@ export const SaveManager = {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       playTimeSeconds: 0,
+      allowCreative,
       palette: buildPalette(),
       player: null, // filled in on first save
       inventory: null,
