@@ -271,6 +271,10 @@
     opacity: 0.6; margin-bottom: 6px; text-align: left;
   }
   .invGrid { display: grid; grid-template-columns: repeat(9, 46px); gap: 2px; }
+  /* Containers holding a single slot. Reusing .invGrid for these made them
+     nine columns wide (~430px), so a row of three furnace columns overflowed
+     the panel and the fuel and output slots were clipped out of view. */
+  .slotCell { display: grid; grid-template-columns: 46px; }
   .invGrid .slot { cursor: pointer; }
   .invGrid .slot:hover { background: rgba(200, 200, 210, 0.7); }
 
@@ -601,7 +605,7 @@
         <div class="craftRow">
           <div class="craftGrid g2" id="invCraftGrid"></div>
           <div class="craftArrow">&rarr;</div>
-          <div class="invGrid" id="invCraftResult"></div>
+          <div class="slotCell" id="invCraftResult"></div>
         </div>
       </div>
     </div>
@@ -631,7 +635,7 @@
     <div class="craftRow invSection">
       <div class="craftGrid g3" id="tableCraftGrid"></div>
       <div class="craftArrow">&rarr;</div>
-      <div class="invGrid" id="tableCraftResult"></div>
+      <div class="slotCell" id="tableCraftResult"></div>
     </div>
     <div class="invSection">
       <div class="invLabel">Backpack</div>
@@ -652,10 +656,10 @@
     <div class="craftRow invSection" style="justify-content:center">
       <div class="furnaceCol">
         <div class="invLabel" style="margin:0">Smelt</div>
-        <div class="invGrid" id="furnaceInput"></div>
+        <div class="slotCell" id="furnaceInput"></div>
         <div class="flameBar"><i id="furnaceFlame"></i></div>
         <div class="invLabel" style="margin:0">Fuel</div>
-        <div class="invGrid" id="furnaceFuel"></div>
+        <div class="slotCell" id="furnaceFuel"></div>
       </div>
       <div class="furnaceCol">
         <div class="cookBar"><i id="furnaceCook"></i></div>
@@ -663,7 +667,7 @@
       </div>
       <div class="furnaceCol">
         <div class="invLabel" style="margin:0">Output</div>
-        <div class="invGrid" id="furnaceOutput"></div>
+        <div class="slotCell" id="furnaceOutput"></div>
       </div>
     </div>
     <div class="invSection">

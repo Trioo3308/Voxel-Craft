@@ -18,7 +18,7 @@
  * Runs inside the worker, so no Three.js here.
  */
 
-import { CHUNK_SX, CHUNK_SY, CHUNK_SZ, voxelIndex } from './chunk.js';
+import { CHUNK_SX, CHUNK_SY, CHUNK_SZ, PAD_VOLUME, padIndex } from './chunk.js';
 import { BLOCKS, AIR } from './blocks.js';
 
 export const MAX_LIGHT = 15;
@@ -171,7 +171,11 @@ export const LIGHT_MARGIN = MAX_LIGHT + 1;
 export function computeChunkLight(cx, cz, sampleBlock, emitters) {
   if (!emitters || emitters.length === 0) return null;
 
-  const light = new Uint8Array(CHUNK_SX * CHUNK_SY * CHUNK_SZ);
+  // Padded by one voxel in every direction. The mesher samples light on the
+  // *air* side of each face, which for a face on a chunk border lies in the
+  // neighbouring chunk — clamping that sample back inside produced visible
+  // seams wherever a torch sat near an edge.
+  const light = new Uint8Array(PAD_VOLUME);
   const baseX = cx * CHUNK_SX;
   const baseZ = cz * CHUNK_SZ;
 
@@ -180,20 +184,25 @@ export function computeChunkLight(cx, cz, sampleBlock, emitters) {
     x >= baseX - LIGHT_MARGIN && x < baseX + CHUNK_SX + LIGHT_MARGIN &&
     z >= baseZ - LIGHT_MARGIN && z < baseZ + CHUNK_SZ + LIGHT_MARGIN;
 
-  const insideChunk = (x, z) =>
-    x >= baseX && x < baseX + CHUNK_SX && z >= baseZ && z < baseZ + CHUNK_SZ;
+  /** Is this world position inside the padded volume we return? */
+  const inPadded = (x, y, z) =>
+    x >= baseX - 1 && x <= baseX + CHUNK_SX &&
+    z >= baseZ - 1 && z <= baseZ + CHUNK_SZ &&
+    y >= -1 && y <= CHUNK_SY;
 
-  // Light outside the chunk still has to be tracked while flooding — a torch
-  // two blocks past the border needs somewhere to hold its falloff — but it is
-  // thrown away afterwards.
+  // Light beyond the padded region still has to be tracked while flooding — a
+  // torch ten blocks past the border needs somewhere to hold its falloff — but
+  // it is thrown away afterwards.
   const outside = new Map();
   const okey = (x, y, z) => x + ',' + y + ',' + z;
 
   const getLight = (x, y, z) =>
-    insideChunk(x, z) ? light[voxelIndex(x - baseX, y, z - baseZ)] : (outside.get(okey(x, y, z)) ?? 0);
+    inPadded(x, y, z)
+      ? light[padIndex(x - baseX, y, z - baseZ)]
+      : (outside.get(okey(x, y, z)) ?? 0);
 
   const setLight = (x, y, z, level) => {
-    if (insideChunk(x, z)) light[voxelIndex(x - baseX, y, z - baseZ)] = level;
+    if (inPadded(x, y, z)) light[padIndex(x - baseX, y, z - baseZ)] = level;
     else outside.set(okey(x, y, z), level);
   };
 

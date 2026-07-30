@@ -15,7 +15,10 @@
  * Runs inside the worker — no Three.js imports allowed here.
  */
 
-import { CHUNK_SX, CHUNK_SY, CHUNK_SZ } from './chunk.js';
+import {
+  CHUNK_SX, CHUNK_SY, CHUNK_SZ,
+  PAD_SX, PAD_SY, PAD_SZ, PAD_VOLUME, padIndex,
+} from './chunk.js';
 import { BLOCKS, AIR, ATLAS_COLS, FACE_PY, FACE_NY } from './blocks.js';
 
 // ---------------------------------------------------------------------------
@@ -44,6 +47,11 @@ const CORNERS = [
 /** AO level -> brightness multiplier. Index 0 = fully occluded corner. */
 const AO_LEVELS = [0.45, 0.62, 0.80, 1.0];
 
+/** Neighbours a partial block samples for light, since its own cell reads dark. */
+const SHAPE_LIGHT_PROBES = [
+  [0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1],
+];
+
 // ---------------------------------------------------------------------------
 // Padded voxel snapshot
 // ---------------------------------------------------------------------------
@@ -52,15 +60,8 @@ const AO_LEVELS = [0.45, 0.62, 0.80, 1.0];
 // lookup, we copy the chunk plus a 1-voxel skirt into a flat padded array once,
 // then mesh from that with plain integer indexing.
 
-const PAD_SX = CHUNK_SX + 2;
-const PAD_SZ = CHUNK_SZ + 2;
-const PAD_SY = CHUNK_SY + 2;
-const PAD_VOLUME = PAD_SX * PAD_SY * PAD_SZ;
-
-/** Index into the padded array. Local coords may range from -1 to SIZE. */
-function padIndex(x, y, z) {
-  return (x + 1) + PAD_SX * ((z + 1) + PAD_SZ * (y + 1));
-}
+// Padded addressing is shared with the light engine via chunk.js so the two
+// index the same volume identically.
 
 // Reused across calls so we are not allocating ~42 KB per chunk mesh.
 const padded = new Uint8Array(PAD_VOLUME);
@@ -114,25 +115,26 @@ function skyExposure(x, y, z) {
   return light < 0.10 ? 0.10 : light;
 }
 
-/** Block-light array for the chunk being meshed, or null if nothing lights it. */
+/** Padded block-light volume for the chunk being meshed, or null if unlit. */
 let chunkLight = null;
+
+const MAX_BLOCK_LIGHT = 15;
 
 /**
  * Combined lighting: the brighter of daylight reaching this cell and any
  * torchlight falling on it.
+ *
+ * The light volume is padded, so border samples are exact rather than clamped
+ * back inside the chunk — clamping produced a visible seam wherever a torch sat
+ * near a chunk edge.
  */
 function lightAt(x, y, z) {
   const sky = skyExposure(x, y, z);
   if (!chunkLight) return sky;
+  if (y < -1 || y > CHUNK_SY) return sky;
+  if (x < -1 || x > CHUNK_SX || z < -1 || z > CHUNK_SZ) return sky;
 
-  // Block light is only stored for this chunk, so border samples clamp inward.
-  // A one-voxel inaccuracy at a chunk seam is invisible next to the cost of
-  // carrying a padded light volume around.
-  const cx = x < 0 ? 0 : x >= CHUNK_SX ? CHUNK_SX - 1 : x;
-  const cz = z < 0 ? 0 : z >= CHUNK_SZ ? CHUNK_SZ - 1 : z;
-  if (y < 0 || y >= CHUNK_SY) return sky;
-
-  const level = chunkLight[cx + CHUNK_SX * (cz + CHUNK_SZ * y)];
+  const level = chunkLight[padIndex(x, y, z)];
   if (level === 0) return sky;
 
   // Level 15 is not quite daylight — torchlight is warm and local, and letting
@@ -140,8 +142,6 @@ function lightAt(x, y, z) {
   const block = 0.12 + (level / MAX_BLOCK_LIGHT) * 0.82;
   return sky > block ? sky : block;
 }
-
-const MAX_BLOCK_LIGHT = 15;
 
 /**
  * Classic Minecraft-style vertex AO from the three voxels surrounding a corner.
@@ -293,7 +293,18 @@ export function buildChunkMesh(sampleBlock, cx, cz, blockLight = null) {
  * do not line up with the voxel grid, so grid-based AO would look wrong.
  */
 function emitShape(buf, block, x, y, z, tileSpan, inset) {
-  const sky = lightAt(x, y, z);
+  // A partial block sits inside its own cell, and that cell reads as buried
+  // because the height map counts it as ground. Sampling only there made slabs
+  // and stairs noticeably darker than the full blocks beside them, so take the
+  // brightest of the cell itself and its open neighbours instead.
+  let sky = lightAt(x, y, z);
+  for (const [dx, dy, dz] of SHAPE_LIGHT_PROBES) {
+    const neighbour = padded[padIndex(x + dx, y + dy, z + dz)];
+    const def = BLOCKS[neighbour];
+    if (def && def.opaque) continue;
+    const value = lightAt(x + dx, y + dy, z + dz);
+    if (value > sky) sky = value;
+  }
 
   for (const box of block.shape) {
     const [x0, y0, z0, x1, y1, z1] = box;
@@ -385,8 +396,7 @@ function emitFace(buf, block, face, faceIndex, x, y, z, nx, ny, nz, tileSpan, in
 
   // Light is sampled on the *air* side of the face — that is the side the light
   // would actually arrive from.
-  const sky = lightAt(nx, ny, nz);
-  const base = face.tint * sky;
+  const faceLight = lightAt(nx, ny, nz);
 
   const [ax, ay, az] = face.n;
   const [ux, uy, uz] = face.u;
@@ -418,8 +428,24 @@ function emitFace(buf, block, face, faceIndex, x, y, z, nx, ny, nz, tileSpan, in
 
     const level = vertexAO(s1, s2, cn);
     ao[c] = level;
-    // Emissive blocks (lava) ignore sky light and occlusion entirely.
-    const shade = block.emissive ? 1 : base * AO_LEVELS[level];
+
+    // Smooth lighting: average the light of the four cells meeting at this
+    // corner rather than using one value for the whole quad. A single per-face
+    // value makes every block a flat tile and torchlight fall off in visible
+    // steps; averaging turns it into a gradient. Occluded cells are skipped so
+    // light does not bleed through solid corners.
+    let sum = faceLight;
+    let count = 1;
+    if (!s1) { sum += lightAt(nx + su * ux, ny + su * uy, nz + su * uz); count++; }
+    if (!s2) { sum += lightAt(nx + sv * vx, ny + sv * vy, nz + sv * vz); count++; }
+    if (!cn && !(s1 && s2)) {
+      sum += lightAt(nx + su * ux + sv * vx, ny + su * uy + sv * vy, nz + su * uz + sv * vz);
+      count++;
+    }
+    const cornerLight = sum / count;
+
+    // Emissive blocks (lava, torches) ignore lighting and occlusion entirely.
+    const shade = block.emissive ? 1 : face.tint * cornerLight * AO_LEVELS[level];
     buf.colors.push(shade, shade, shade);
 
     // UV: (su,sv) in [-1,1] -> [0,1], then mapped into the atlas tile.

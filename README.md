@@ -381,6 +381,25 @@ because everything it lit must be un-lit and then re-lit from any *other* source
 still in range. That runs as its own BFS which erases the affected region and
 collects surviving neighbours as seeds for a refill.
 
+Three things had to be fixed before it looked right:
+
+- **Light stopped dead at chunk edges.** Edits only marked neighbouring chunks
+  dirty when the block sat *on* a border, but a torch reaches 15 blocks in every
+  direction from anywhere in a chunk. Changing an emitter now dirties every chunk
+  its glow can touch.
+- **Chunk seams.** The light volume was chunk-sized, so a face on a border
+  sampled the neighbouring cell by clamping back inside — visibly wrong wherever
+  a torch sat near an edge. It is now padded by one voxel, sharing its addressing
+  with the mesher via `chunk.js`.
+- **Slabs and stairs rendered too dark.** A partial block sampled its own cell,
+  which the height map counts as buried ground. It now takes the brightest of
+  its own cell and its open neighbours.
+
+Lighting is also **smoothed per vertex** rather than per face: each corner
+averages the four cells meeting there, skipping occluded ones so light does not
+bleed through solid corners. A single value per quad made every block a flat tile
+and torchlight fall off in visible steps.
+
 ---
 
 ## Architecture

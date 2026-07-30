@@ -22,6 +22,24 @@ export function voxelIndex(x, y, z) {
   return x + CHUNK_SX * (z + CHUNK_SZ * y);
 }
 
+// ---------------------------------------------------------------------------
+// Padded addressing
+// ---------------------------------------------------------------------------
+// Several passes need to read one voxel *outside* the chunk in every direction
+// — the mesher for face culling and ambient occlusion, the light engine so a
+// torch just over the border still lights the seam correctly. They must agree
+// on the layout, so it lives here rather than being redefined in each.
+
+export const PAD_SX = CHUNK_SX + 2;
+export const PAD_SY = CHUNK_SY + 2;
+export const PAD_SZ = CHUNK_SZ + 2;
+export const PAD_VOLUME = PAD_SX * PAD_SY * PAD_SZ;
+
+/** Index into a padded volume. Local coords may range from -1 to SIZE. */
+export function padIndex(x, y, z) {
+  return (x + 1) + PAD_SX * ((z + 1) + PAD_SZ * (y + 1));
+}
+
 /** Map key for a chunk column. */
 export function chunkKey(cx, cz) {
   return cx + ',' + cz;

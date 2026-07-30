@@ -46,12 +46,19 @@ const MIGRATIONS = {
   /**
    * v1 -> v2: worlds gained a fixed game mode chosen at creation.
    *
-   * Worlds made before the choice existed could always toggle creative, so they
-   * are grandfathered in as creative-capable. Retroactively locking them into
-   * survival would take away something people already had, which is a far worse
-   * outcome than an old world being slightly more permissive than a new one.
+   * Older worlds have no recorded mode, so it is inferred from how the world was
+   * last actually played: a world left in creative stays creative-capable, and
+   * one left in survival becomes a survival world for good.
+   *
+   * Blanket-granting creative here was the first attempt and was wrong — it
+   * meant every pre-existing world ignored the lock, which is precisely the
+   * behaviour the mode was added to prevent.
    */
-  1: (save) => ({ ...save, formatVersion: 2, allowCreative: true }),
+  1: (save) => ({
+    ...save,
+    formatVersion: 2,
+    allowCreative: save.player ? save.player.creative === true : false,
+  }),
 };
 
 // ---------------------------------------------------------------------------

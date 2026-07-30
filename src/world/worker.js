@@ -222,7 +222,12 @@ function recordEdit(wx, wy, wz, id, dirty) {
 
   const voxels = chunks.get(key);
   if (voxels) voxels[index] = id;
+
+  const previousEmission = emitters.get(wx + ',' + wy + ',' + wz) ?? 0;
   updateEmitter(wx, wy, wz, id);
+  const newEmission = emissionOf(id);
+
+  dirty.add(chunkKey(cx, cz));
 
   // The owning chunk, plus any neighbour whose 1-voxel skirt just changed.
   const touchesNegX = lx === 0;
@@ -230,7 +235,6 @@ function recordEdit(wx, wy, wz, id, dirty) {
   const touchesNegZ = lz === 0;
   const touchesPosZ = lz === CHUNK_SZ - 1;
 
-  dirty.add(chunkKey(cx, cz));
   if (touchesNegX) dirty.add(chunkKey(cx - 1, cz));
   if (touchesPosX) dirty.add(chunkKey(cx + 1, cz));
   if (touchesNegZ) dirty.add(chunkKey(cx, cz - 1));
@@ -240,6 +244,21 @@ function recordEdit(wx, wy, wz, id, dirty) {
   if (touchesNegX && touchesPosZ) dirty.add(chunkKey(cx - 1, cz + 1));
   if (touchesPosX && touchesNegZ) dirty.add(chunkKey(cx + 1, cz - 1));
   if (touchesPosX && touchesPosZ) dirty.add(chunkKey(cx + 1, cz + 1));
+
+  // A light source reaches far beyond its own cell, so changing one has to
+  // dirty every chunk its glow can touch — not just the border neighbours.
+  // Without this a torch placed mid-chunk lit its own chunk and stopped dead
+  // in a straight line at the boundary until something else forced a remesh.
+  if (previousEmission > 0 || newEmission > 0) {
+    const reach = Math.max(previousEmission, newEmission);
+    const minCX = toChunkCoord(wx - reach);
+    const maxCX = toChunkCoord(wx + reach);
+    const minCZ = toChunkCoord(wz - reach);
+    const maxCZ = toChunkCoord(wz + reach);
+    for (let ncz = minCZ; ncz <= maxCZ; ncz++) {
+      for (let ncx = minCX; ncx <= maxCX; ncx++) dirty.add(chunkKey(ncx, ncz));
+    }
+  }
 }
 
 /** Remesh every chunk in a dirty set exactly once. */
