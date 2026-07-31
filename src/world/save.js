@@ -30,13 +30,14 @@
 
 import { BLOCKS, ITEMS, AIR, getThing, isBlockId } from './blocks.js';
 import { TERRAIN_VERSION } from './terrain.js';
+import { DIMENSIONS } from './dimensions.js';
 
 const DB_NAME = 'voxelcraft';
 const DB_VERSION = 1;
 const STORE = 'worlds';
 
 /** Bump when the shape of a save record changes, and add a migration. */
-export const SAVE_FORMAT_VERSION = 2;
+export const SAVE_FORMAT_VERSION = 3;
 
 /**
  * Migrations from version N to N+1. Add entries; never edit existing ones.
@@ -58,6 +59,25 @@ const MIGRATIONS = {
     ...save,
     formatVersion: 2,
     allowCreative: save.player ? save.player.creative === true : false,
+  }),
+
+  /**
+   * v2 -> v3: dimensions.
+   *
+   * `edits` went from one flat chunk list to a map keyed by dimension, and
+   * block-entity keys gained a dimension prefix. Everything a v2 world contains
+   * was necessarily in the overworld, so both are simply filed under it.
+   */
+  2: (save) => ({
+    ...save,
+    formatVersion: 3,
+    dimension: DIMENSIONS.OVERWORLD,
+    edits: { [DIMENSIONS.OVERWORLD]: save.edits ?? [] },
+    blockEntities: (save.blockEntities ?? []).map((e) => ({
+      ...e,
+      key: `${DIMENSIONS.OVERWORLD}:${e.key}`,
+    })),
+    shrines: [],
   }),
 };
 
@@ -134,6 +154,12 @@ function buildRemap(palette) {
   return { map, missing };
 }
 
+/** Every chunk-edit record in a save, whichever layout it uses. */
+function editChunks(edits) {
+  if (!edits) return [];
+  return Array.isArray(edits) ? edits : Object.values(edits).flat();
+}
+
 /** True when nothing moved — lets loading skip the remap work entirely. */
 function isIdentityRemap(map) {
   for (const [from, to] of map) if (from !== to) return false;
@@ -189,7 +215,12 @@ export async function captureState(game, meta = {}) {
     },
 
     time: game.sky.time,
+    /** Which dimension the player logged out in. */
+    dimension: game.world.dimension,
+    /** `{ [dimensionId]: chunkEditList }` — see World.exportEdits. */
     edits,
+    /** Shrines already stocked, so returning does not re-roll their loot. */
+    shrines: [...game._shrinesDone],
 
     // Furnace contents, keyed by position.
     blockEntities: [...game.world.blockEntities.entries()].map(([key, entity]) => ({
@@ -240,12 +271,18 @@ export async function applyState(game, save) {
 
   game.sky.setTime(save.time ?? 0.1);
 
-  // Remap the block edits before handing them to the worker.
-  const edits = (save.edits ?? []).map((chunk) => {
-    const ids = new Uint8Array(chunk.ids.length);
-    for (let i = 0; i < ids.length; i++) ids[i] = translate(chunk.ids[i]);
-    return { key: chunk.key, indices: chunk.indices, ids };
-  });
+  // Remap the block edits before handing them to the worker. Every dimension's
+  // edits go through the same palette, since ids are global.
+  const edits = {};
+  for (const [dimension, chunks] of Object.entries(save.edits ?? {})) {
+    edits[dimension] = chunks.map((chunk) => {
+      const ids = new Uint8Array(chunk.ids.length);
+      for (let i = 0; i < ids.length; i++) ids[i] = translate(chunk.ids[i]);
+      return { key: chunk.key, indices: chunk.indices, ids };
+    });
+  }
+
+  game._shrinesDone = new Set(save.shrines ?? []);
 
   // Container contents go through the same id remap as everything else.
   game.world.blockEntities.clear();
@@ -273,7 +310,10 @@ export async function applyState(game, save) {
     game.world.blockEntities.set(entity.key, { type: entity.type, state, wasLit: false });
   }
 
+  // Switch first so the import streams the dimension the player logged out in.
+  await game.world.setDimension(save.dimension ?? DIMENSIONS.OVERWORLD);
   await game.world.importEdits(edits);
+  game._applyDimensionLook();
 
   return { missing };
 }
@@ -330,7 +370,9 @@ export const SaveManager = {
         formatVersion: w.formatVersion,
         terrainVersion: w.terrainVersion,
         allowCreative: w.allowCreative === true,
-        editedBlocks: (w.edits ?? []).reduce((n, c) => n + c.ids.length, 0),
+        // `list()` reads raw records without migrating, so it sees both the v2
+        // flat array and the v3 per-dimension map.
+        editedBlocks: editChunks(w.edits).reduce((n, c) => n + c.ids.length, 0),
         /** Set when this build is too old to open it. */
         tooNew: w.formatVersion > SAVE_FORMAT_VERSION || w.terrainVersion > TERRAIN_VERSION,
       }))
@@ -379,7 +421,9 @@ export const SaveManager = {
       player: null, // filled in on first save
       inventory: null,
       time: 0.08,
-      edits: [],
+      dimension: DIMENSIONS.OVERWORLD,
+      edits: {},
+      shrines: [],
     };
   },
 
@@ -387,28 +431,42 @@ export const SaveManager = {
   async exportJSON(id) {
     const save = await this.get(id);
     if (!save) return null;
-    return JSON.stringify({
-      ...save,
-      edits: (save.edits ?? []).map((c) => ({
+    // Typed arrays do not survive JSON, so widen them per dimension.
+    const edits = {};
+    for (const [dimension, chunks] of Object.entries(save.edits ?? {})) {
+      edits[dimension] = chunks.map((c) => ({
         key: c.key,
         indices: Array.from(c.indices),
         ids: Array.from(c.ids),
-      })),
-    });
+      }));
+    }
+    return JSON.stringify({ ...save, edits });
   },
 
   /** Import a world previously produced by exportJSON. */
   async importJSON(text) {
     const parsed = JSON.parse(text);
+    const narrow = (c) => ({
+      key: c.key,
+      indices: Uint32Array.from(c.indices),
+      ids: Uint8Array.from(c.ids),
+    });
+
+    // A v2 export is still a flat array here; `migrate` files it under the
+    // overworld afterwards, so only the typed arrays need restoring now.
+    let edits;
+    if (Array.isArray(parsed.edits)) {
+      edits = parsed.edits.map(narrow);
+    } else {
+      edits = {};
+      for (const [dim, chunks] of Object.entries(parsed.edits ?? {})) edits[dim] = chunks.map(narrow);
+    }
+
     const save = migrate({
       ...parsed,
       // Give the import a fresh id so it never clobbers an existing world.
       id: 'w' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-      edits: (parsed.edits ?? []).map((c) => ({
-        key: c.key,
-        indices: Uint32Array.from(c.indices),
-        ids: Uint8Array.from(c.ids),
-      })),
+      edits,
     });
     await this.put(save);
     return save;

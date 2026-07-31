@@ -94,25 +94,46 @@ export const TILE = {
   BOW: 132,
   GUNPOWDER: 133,
 
-  // --- Mob drop icons (after the reserved gear runs) -----------------------
-  BEEF: 116,
-  COOKED_BEEF: 117,
-  MUTTON: 118,
-  COOKED_MUTTON: 119,
-  CHICKEN_RAW: 120,
-  CHICKEN_COOKED: 121,
-  LEATHER: 122,
-  FEATHER: 123,
-  BONE: 124,
-  STRING: 125,
-  ARROW: 126,
-  SPIDER_EYE: 127,
+  // --- Mob drop icons ------------------------------------------------------
+  // These sit above the reserved gear runs. They used to start at 116, which
+  // collided once a sixth gear material widened the armour run to 96..119.
+  BEEF: 134,
+  COOKED_BEEF: 135,
+  MUTTON: 136,
+  COOKED_MUTTON: 137,
+  CHICKEN_RAW: 138,
+  CHICKEN_COOKED: 139,
+  LEATHER: 140,
+  FEATHER: 141,
+  BONE: 142,
+  STRING: 143,
+  ARROW: 144,
+  SPIDER_EYE: 145,
+
+  // --- Combium and the Comb dimension --------------------------------------
+  COMBIUM_ORE: 146,
+  COMBIUM_BLOCK: 147,
+  COMBIUM_INGOT: 148,
+  COMB_STONE: 149,
+  COMB_SOIL: 150,
+  COMB_CRYSTAL: 151,
+  COMB_GROWTH: 152,
+  COMB_BRICK: 153,
+  PORTAL: 154,
+  BUCKET: 155,
+  BUCKET_WATER: 156,
+  BUCKET_LAVA: 157,
+  BUCKET_MILK: 158,
+  COMB_HEART: 159,
+  COMB_SHARD: 160,
+  THRONE_TOP: 161,
+  THRONE_SIDE: 162,
 
   /**
    * Tool and armour icons are generated parametrically (shape x material), so
    * they occupy reserved runs rather than individual named entries.
-   * Tools:  TOOL_BASE + toolIndex * 5 + materialIndex
-   * Armour: ARMOR_BASE + pieceIndex * 5 + materialIndex
+   * Tools:  TOOL_BASE + toolIndex * GEAR_STRIDE + materialIndex
+   * Armour: ARMOR_BASE + pieceIndex * GEAR_STRIDE + materialIndex
    */
   TOOL_BASE: 64,
   ARMOR_BASE: 96,
@@ -121,14 +142,20 @@ export const TILE = {
 /** Order used for the parametric tool/armour tile runs. */
 export const TOOL_KINDS = ['pickaxe', 'axe', 'shovel', 'sword'];
 export const ARMOR_PIECES = ['helmet', 'chestplate', 'leggings', 'boots'];
-export const GEAR_MATERIALS = ['wood', 'stone', 'iron', 'gold', 'diamond'];
+export const GEAR_MATERIALS = ['wood', 'stone', 'iron', 'gold', 'diamond', 'combium'];
+
+/**
+ * Width of one tool/armour row. Derived rather than hard-coded, because adding
+ * a material silently shifted every icon and id when it was a literal 5.
+ */
+export const GEAR_STRIDE = GEAR_MATERIALS.length;
 
 export function toolTile(kind, material) {
-  return TILE.TOOL_BASE + TOOL_KINDS.indexOf(kind) * 5 + GEAR_MATERIALS.indexOf(material);
+  return TILE.TOOL_BASE + TOOL_KINDS.indexOf(kind) * GEAR_STRIDE + GEAR_MATERIALS.indexOf(material);
 }
 
 export function armorTile(piece, material) {
-  return TILE.ARMOR_BASE + ARMOR_PIECES.indexOf(piece) * 5 + GEAR_MATERIALS.indexOf(material);
+  return TILE.ARMOR_BASE + ARMOR_PIECES.indexOf(piece) * GEAR_STRIDE + GEAR_MATERIALS.indexOf(material);
 }
 
 export const ATLAS_COLS = 16; // 16x16 tiles
@@ -354,19 +381,29 @@ export const ITEM_ID = {
   MUTTON: 141,
   COOKED_MUTTON: 142,
   CHICKEN_RAW: 143,
-  // Tools occupy 144..163 and armour 164..183, assigned in the gear section.
-  TOOL_BASE: 144,
-  ARMOR_BASE: 164,
-  // Remaining mob drops sit after the gear runs.
-  CHICKEN_COOKED: 184,
-  LEATHER: 185,
-  FEATHER: 186,
-  BONE: 187,
-  STRING: 188,
-  ARROW: 189,
-  SPIDER_EYE: 190,
-  BOW: 191,
-  GUNPOWDER: 192,
+  CHICKEN_COOKED: 144,
+  LEATHER: 145,
+  FEATHER: 146,
+  BONE: 147,
+  STRING: 148,
+  ARROW: 149,
+  SPIDER_EYE: 150,
+  BOW: 151,
+  GUNPOWDER: 152,
+
+  // --- Combium & buckets ---------------------------------------------------
+  COMBIUM_INGOT: 153,
+  BUCKET: 154,
+  BUCKET_WATER: 155,
+  BUCKET_LAVA: 156,
+  BUCKET_MILK: 157,
+  COMB_HEART: 158,
+  COMB_SHARD: 159,
+
+  // Gear runs are 24 wide each now that there are six materials. Ids moved to
+  // make room; saves remap by *name*, so renumbering is safe.
+  TOOL_BASE: 160,   // 160..183
+  ARMOR_BASE: 184,  // 184..207
 };
 
 // ---------------------------------------------------------------------------
@@ -612,6 +649,72 @@ export const CHEST = defineBlock(65, 'chest', {
   shape: SHAPES.CHEST,
 });
 
+// ---------------------------------------------------------------------------
+// Combium & the Comb dimension
+// ---------------------------------------------------------------------------
+
+export const COMBIUM_ORE = defineBlock(66, 'combium_ore', {
+  displayName: 'Combium Ore', tiles: TILE.COMBIUM_ORE, hardness: 4.5,
+  toolType: 'pickaxe', harvestLevel: 3, requiresTool: true,
+  // Drops the ore block, which smelts 1:1 into an ingot. A portal frame needs
+  // ten combium blocks, so one ore per block would make the gate a grind out of
+  // all proportion to the rest of the game — hence 2-3 per vein block.
+  dropCount: [2, 3],
+});
+
+export const COMBIUM_BLOCK = defineBlock(67, 'combium_block', {
+  displayName: 'Block of Combium', tiles: TILE.COMBIUM_BLOCK, hardness: 5.0,
+  toolType: 'pickaxe', harvestLevel: 3, requiresTool: true,
+  // Faintly luminous, which is what makes a built portal frame read as special.
+  lightEmission: 4,
+});
+
+/** Pale bedrock of the Comb dimension. */
+export const COMB_STONE = defineBlock(68, 'comb_stone', {
+  displayName: 'Comb Stone', tiles: TILE.COMB_STONE, hardness: 1.6,
+  toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
+});
+
+export const COMB_SOIL = defineBlock(69, 'comb_soil', {
+  displayName: 'Comb Soil', tiles: TILE.COMB_SOIL, hardness: 0.6, toolType: 'shovel',
+});
+
+/** The red highlight running through the dimension. Glows softly. */
+export const COMB_CRYSTAL = defineBlock(70, 'comb_crystal', {
+  displayName: 'Comb Crystal', tiles: TILE.COMB_CRYSTAL, hardness: 2.4,
+  toolType: 'pickaxe', harvestLevel: 1, requiresTool: true,
+  drops: ITEM_ID.COMB_SHARD, dropCount: [2, 4],
+  lightEmission: 9,
+});
+
+export const COMB_GROWTH = defineBlock(71, 'comb_growth', {
+  displayName: 'Comb Growth', tiles: TILE.COMB_GROWTH, hardness: 0.3,
+  opaque: false, cullSameType: false,
+});
+
+export const COMB_BRICK = defineBlock(72, 'comb_brick', {
+  displayName: 'Comb Brick', tiles: TILE.COMB_BRICK, hardness: 3.0,
+  toolType: 'pickaxe', harvestLevel: 1, requiresTool: true,
+});
+
+export const THRONE = defineBlock(73, 'comb_throne', {
+  displayName: 'Comb Throne', hardness: 6.0,
+  tiles: { top: TILE.THRONE_TOP, bottom: TILE.COMB_BRICK, side: TILE.THRONE_SIDE },
+  toolType: 'pickaxe', harvestLevel: 2, requiresTool: true,
+  lightEmission: 7,
+});
+
+/**
+ * The portal surface itself. Non-solid so you can walk in, translucent, and
+ * bright enough to be unmistakable in a dark room.
+ */
+export const PORTAL = defineBlock(74, 'combium_portal', {
+  displayName: 'Combium Portal', tiles: TILE.PORTAL,
+  solid: false, opaque: false, translucent: true,
+  hardness: Infinity, obtainable: false,
+  lightEmission: 11,
+});
+
 /** Every log/leaf pair, so terrain can pick a tree style per biome. */
 export const TREE_WOODS = {
   oak: { log: LOG.id, leaves: LEAVES.id },
@@ -642,6 +745,8 @@ function defineItem(id, name, options = {}) {
     armor: options.armor ?? null,
     /** {drawTime, speed, maxDamage, ...} for ranged weapons. */
     ranged: options.ranged ?? null,
+    /** {fluid, igniter?} for buckets. */
+    bucket: options.bucket ?? null,
   };
   ITEMS[id - ITEM_ID_BASE] = item;
   return item;
@@ -673,6 +778,44 @@ export const STRING_ITEM    = defineItem(ITEM_ID.STRING,         'string',      
 export const ARROW          = defineItem(ITEM_ID.ARROW,          'arrow',          { displayName: 'Arrow',           tile: TILE.ARROW });
 export const SPIDER_EYE     = defineItem(ITEM_ID.SPIDER_EYE,     'spider_eye',     { displayName: 'Spider Eye',      tile: TILE.SPIDER_EYE, food: 2, saturation: 1 });
 export const GUNPOWDER      = defineItem(ITEM_ID.GUNPOWDER,      'gunpowder',      { displayName: 'Gunpowder',       tile: TILE.GUNPOWDER });
+
+// --- Combium & the Comb dimension -------------------------------------------
+export const COMBIUM_INGOT = defineItem(ITEM_ID.COMBIUM_INGOT, 'combium_ingot', { displayName: 'Combium Ingot', tile: TILE.COMBIUM_INGOT });
+export const COMB_SHARD    = defineItem(ITEM_ID.COMB_SHARD,    'comb_shard',    { displayName: 'Comb Shard',    tile: TILE.COMB_SHARD });
+export const COMB_HEART    = defineItem(ITEM_ID.COMB_HEART,    'comb_heart',    { displayName: 'Comb Heart',    tile: TILE.COMB_HEART, maxStack: 1 });
+
+// --- Buckets ----------------------------------------------------------------
+/**
+ * Buckets carry one of three fluids. Each fill state is its own item rather
+ * than metadata on a single one, matching how the rest of the game encodes
+ * state — and it keeps stack rules honest, since a full bucket must not stack
+ * with an empty one.
+ */
+export const BUCKET = defineItem(ITEM_ID.BUCKET, 'bucket', {
+  displayName: 'Bucket', tile: TILE.BUCKET, maxStack: 16,
+});
+
+export const BUCKET_WATER = defineItem(ITEM_ID.BUCKET_WATER, 'water_bucket', {
+  displayName: 'Water Bucket', tile: TILE.BUCKET_WATER, maxStack: 1,
+  bucket: { fluid: 'water' },
+});
+
+export const BUCKET_LAVA = defineItem(ITEM_ID.BUCKET_LAVA, 'lava_bucket', {
+  displayName: 'Lava Bucket', tile: TILE.BUCKET_LAVA, maxStack: 1,
+  bucket: { fluid: 'lava' },
+});
+
+export const BUCKET_MILK = defineItem(ITEM_ID.BUCKET_MILK, 'milk_bucket', {
+  displayName: 'Milk Bucket', tile: TILE.BUCKET_MILK, maxStack: 1,
+  // Milk places no block — it is the portal igniter.
+  bucket: { fluid: 'milk', igniter: true },
+});
+
+/** Bucket descriptor for an item id, or null. */
+export function getBucket(id) {
+  const item = getItem(id);
+  return item && item.bucket ? item.bucket : null;
+}
 
 /**
  * The bow is a tool so it gets durability and a non-stacking slot, but it has
@@ -719,13 +862,15 @@ export const TOOL_MATERIALS = {
   iron:    { label: 'Iron',    tier: 2, speed: 6,  durability: 250,  swordDamage: 6, color: 0xd8d8d8 },
   gold:    { label: 'Golden',  tier: 0, speed: 12, durability: 32,   swordDamage: 4, color: 0xf2d24b },
   diamond: { label: 'Diamond', tier: 3, speed: 8,  durability: 1561, swordDamage: 7, color: 0x4de0d6 },
+  // Combium sits above diamond: the reward for reaching the Comb dimension.
+  combium: { label: 'Combium', tier: 4, speed: 11, durability: 2400, swordDamage: 9, color: 0xf2f0ea },
 };
 
 const TOOL_LABELS = { pickaxe: 'Pickaxe', axe: 'Axe', shovel: 'Shovel', sword: 'Sword' };
 
-/** id = TOOL_BASE + kindIndex * 5 + materialIndex, matching the tile layout. */
+/** id = TOOL_BASE + kindIndex * GEAR_STRIDE + materialIndex, matching the tiles. */
 export function toolItemId(kind, material) {
-  return ITEM_ID.TOOL_BASE + TOOL_KINDS.indexOf(kind) * 5 + GEAR_MATERIALS.indexOf(material);
+  return ITEM_ID.TOOL_BASE + TOOL_KINDS.indexOf(kind) * GEAR_STRIDE + GEAR_MATERIALS.indexOf(material);
 }
 
 for (const kind of TOOL_KINDS) {
@@ -757,14 +902,16 @@ export const ARMOR_MATERIALS = {
   iron:    { label: 'Iron',    defense: { helmet: 2, chestplate: 6, leggings: 5, boots: 2 }, durability: { helmet: 165, chestplate: 240, leggings: 225, boots: 195 } },
   gold:    { label: 'Golden',  defense: { helmet: 2, chestplate: 5, leggings: 3, boots: 1 }, durability: { helmet: 77,  chestplate: 112, leggings: 105, boots: 91 } },
   diamond: { label: 'Diamond', defense: { helmet: 3, chestplate: 8, leggings: 6, boots: 3 }, durability: { helmet: 363, chestplate: 528, leggings: 495, boots: 429 } },
+  // Combium caps the armour bar (20 points) but with far more durability.
+  combium: { label: 'Combium', defense: { helmet: 3, chestplate: 8, leggings: 6, boots: 3 }, durability: { helmet: 600, chestplate: 880, leggings: 810, boots: 700 } },
 };
 
-export const ARMOR_MATERIAL_NAMES = ['iron', 'gold', 'diamond'];
+export const ARMOR_MATERIAL_NAMES = ['iron', 'gold', 'diamond', 'combium'];
 
 const ARMOR_LABELS = { helmet: 'Helmet', chestplate: 'Chestplate', leggings: 'Leggings', boots: 'Boots' };
 
 export function armorItemId(piece, material) {
-  return ITEM_ID.ARMOR_BASE + ARMOR_PIECES.indexOf(piece) * 5 + GEAR_MATERIALS.indexOf(material);
+  return ITEM_ID.ARMOR_BASE + ARMOR_PIECES.indexOf(piece) * GEAR_STRIDE + GEAR_MATERIALS.indexOf(material);
 }
 
 for (const piece of ARMOR_PIECES) {

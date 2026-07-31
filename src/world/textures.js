@@ -179,6 +179,28 @@ function meatPainter(set, rnd, base, fat) {
   }
 }
 
+/** Bucket icon. `fill` null draws it empty; otherwise it holds that colour. */
+function bucketPainter(set, rnd, fill) {
+  const metal = [176, 178, 184];
+  // Tapered pail: wider at the rim.
+  for (let y = 4; y < 14; y++) {
+    const inset = 3 + Math.floor((y - 4) / 5);
+    for (let x = inset; x < T - inset; x++) {
+      const edge = x === inset || x === T - inset - 1 || y === 13;
+      const d = (rnd() - 0.5) * 14;
+      if (edge) set(x, y, metal[0] - 40 + d, metal[1] - 40 + d, metal[2] - 40 + d);
+      else if (fill && y > 6) set(x, y, fill[0] + d, fill[1] + d, fill[2] + d);
+      else set(x, y, metal[0] + d, metal[1] + d, metal[2] + d);
+    }
+  }
+  // Rim and handle.
+  for (let x = 3; x < T - 3; x++) set(x, 4, 214, 216, 222);
+  if (fill) for (let x = 4; x < T - 4; x++) set(x, 6, fill[0] + 24, fill[1] + 24, fill[2] + 24);
+  set(3, 3, 200, 202, 208);
+  set(12, 3, 200, 202, 208);
+  for (let x = 4; x < 12; x++) set(x, 2, 200, 202, 208);
+}
+
 /** Ingot icon: a squat trapezoidal bar. */
 function ingotPainter(set, rnd, [r, g, b]) {
   for (let y = 6; y <= 10; y++) {
@@ -888,6 +910,163 @@ const PAINTERS = {
       const d = (rnd() - 0.5) * 34;
       set(x, y, 96 + d, 96 + d, 100 + d);
     }
+  },
+
+  // --- Combium & the Comb dimension ---------------------------------------
+  // The dimension's palette is bone-white with crimson highlights, so these
+  // deliberately share one narrow colour range.
+
+  [TILE.COMBIUM_ORE]: (set, rnd) => {
+    // Stone matrix with bright white crystalline inclusions.
+    noiseFill(set, rnd, STONE_GREY, 14);
+    for (let i = 0; i < 5; i++) {
+      const cx = 2 + ((rnd() * 11) | 0);
+      const cy = 2 + ((rnd() * 11) | 0);
+      // Small angular clusters rather than round blobs.
+      for (const [dx, dy] of [[0,0],[1,0],[0,1],[1,1],[2,0],[0,2]]) {
+        if (rnd() < 0.25) continue;
+        const d = (rnd() - 0.5) * 22;
+        set(cx + dx, cy + dy, 244 + d, 242 + d, 236 + d);
+      }
+      set(cx, cy, 255, 255, 252);
+    }
+  },
+
+  [TILE.COMBIUM_BLOCK]: (set, rnd) => {
+    noiseFill(set, rnd, [238, 236, 230], 8);
+    // Hex-ish comb cell impressed into the face.
+    const cells = [[3,3],[9,3],[6,8],[3,12],[9,12]];
+    for (const [cx, cy] of cells) {
+      for (const [dx, dy] of [[1,0],[2,0],[3,0],[0,1],[4,1],[0,2],[4,2],[1,3],[2,3],[3,3]]) {
+        set(cx + dx, cy + dy, 208, 205, 198);
+      }
+    }
+    for (let i = 0; i < T; i++) { set(i, 0, 252, 250, 246); set(i, T - 1, 214, 211, 204); }
+  },
+
+  [TILE.COMBIUM_INGOT]: (set, rnd) => ingotPainter(set, rnd, [246, 244, 238]),
+
+  [TILE.COMB_STONE]: (set, rnd) => {
+    noiseFill(set, rnd, [226, 223, 216], 11);
+    speckle(set, rnd, [206, 202, 195], 18, 2);
+    // Occasional faint red fleck so it never reads as plain white.
+    for (let i = 0; i < 3; i++) {
+      set((rnd() * T) | 0, (rnd() * T) | 0, 186, 108, 108);
+    }
+  },
+
+  [TILE.COMB_SOIL]: (set, rnd) => {
+    noiseFill(set, rnd, [206, 200, 192], 14);
+    speckle(set, rnd, [182, 174, 166], 22);
+    speckle(set, rnd, [228, 222, 214], 10);
+  },
+
+  [TILE.COMB_CRYSTAL]: (set, rnd) => {
+    // Crimson crystal in a pale matrix — the dimension's accent colour.
+    noiseFill(set, rnd, [220, 214, 208], 9);
+    for (let i = 0; i < 4; i++) {
+      const cx = 2 + ((rnd() * 11) | 0);
+      const cy = 2 + ((rnd() * 11) | 0);
+      for (let dy = 0; dy < 3; dy++) {
+        for (let dx = 0; dx < 3; dx++) {
+          if (dx === 2 && dy === 2) continue;
+          const d = (rnd() - 0.5) * 40;
+          set(cx + dx, cy + dy, 196 + d, 38 + d * 0.4, 44 + d * 0.4);
+        }
+      }
+      set(cx, cy, 255, 128, 128); // glint
+    }
+  },
+
+  [TILE.COMB_GROWTH]: (set, rnd) => {
+    // Sparse upright fronds; transparent background for the cutout material.
+    for (let i = 0; i < 5; i++) {
+      const x = 2 + ((rnd() * 12) | 0);
+      const h = 5 + ((rnd() * 8) | 0);
+      for (let y = T - 1; y > T - 1 - h; y--) {
+        const d = (rnd() - 0.5) * 24;
+        const red = (T - y) / h;
+        set(x, y, 210 + d, 90 + red * 90 + d, 96 + d);
+      }
+      set(x, T - h, 240, 150, 150);
+    }
+  },
+
+  [TILE.COMB_BRICK]: (set, rnd) => {
+    noiseFill(set, rnd, [212, 208, 200], 7);
+    // Running-bond brick in pale stone with red mortar.
+    for (let row = 0; row < 4; row++) {
+      const offset = row % 2 === 0 ? 0 : 4;
+      for (let brick = -1; brick < 2; brick++) {
+        const bx = offset + brick * 8;
+        for (let y = row * 4; y < row * 4 + 3; y++) {
+          for (let x = bx; x < bx + 7; x++) {
+            if (x < 0 || x >= T) continue;
+            const d = (rnd() - 0.5) * 16;
+            set(x, y, 234 + d, 230 + d, 222 + d);
+          }
+        }
+      }
+    }
+    for (let x = 0; x < T; x++) for (const y of [3, 7, 11, 15]) set(x, y, 150, 76, 78);
+  },
+
+  [TILE.THRONE_TOP]: (set, rnd) => {
+    noiseFill(set, rnd, [236, 232, 224], 8);
+    // Inlaid red comb sigil.
+    for (const [dx, dy] of [[7,3],[8,3],[5,5],[6,4],[9,4],[10,5],[5,9],[10,9],[6,11],[9,11],[7,12],[8,12]]) {
+      set(dx, dy, 190, 40, 46);
+      set(dx, dy + 1, 150, 30, 36);
+    }
+    for (let i = 0; i < T; i++) { set(i, 0, 250, 247, 240); set(i, T - 1, 206, 202, 194); }
+  },
+
+  [TILE.THRONE_SIDE]: (set, rnd) => {
+    noiseFill(set, rnd, [224, 220, 212], 9);
+    for (let y = 4; y < 12; y++) {
+      for (let x = 5; x < 11; x++) {
+        const d = (rnd() - 0.5) * 26;
+        set(x, y, 178 + d, 40 + d * 0.4, 46 + d * 0.4);
+      }
+    }
+    for (let i = 0; i < T; i++) { set(i, 0, 246, 243, 236); set(i, T - 1, 198, 194, 186); }
+  },
+
+  [TILE.PORTAL]: (set, rnd) => {
+    // Milky white sheet shot through with red filaments.
+    for (let y = 0; y < T; y++) {
+      for (let x = 0; x < T; x++) {
+        const swirl = Math.sin((x * 0.6 + y * 0.9)) * 14 + Math.sin(y * 0.4) * 10;
+        const d = swirl + (rnd() - 0.5) * 18;
+        set(x, y, 240 + d, 226 + d, 226 + d, 205);
+      }
+    }
+    for (let i = 0; i < 26; i++) {
+      const x = (rnd() * T) | 0, y = (rnd() * T) | 0;
+      set(x, y, 226, 96, 104, 230);
+    }
+  },
+
+  // --- Buckets --------------------------------------------------------------
+
+  [TILE.BUCKET]:       (set, rnd) => bucketPainter(set, rnd, null),
+  [TILE.BUCKET_WATER]: (set, rnd) => bucketPainter(set, rnd, [58, 112, 200]),
+  [TILE.BUCKET_LAVA]:  (set, rnd) => bucketPainter(set, rnd, [226, 96, 26]),
+  [TILE.BUCKET_MILK]:  (set, rnd) => bucketPainter(set, rnd, [246, 246, 242]),
+
+  [TILE.COMB_SHARD]:  (set, rnd) => gemPainter(set, rnd, [206, 52, 58]),
+  [TILE.COMB_HEART]:  (set, rnd) => {
+    // A pulsing core: white shell with a red centre.
+    for (let y = 3; y < 13; y++) {
+      for (let x = 3; x < 13; x++) {
+        const dist = Math.hypot(x - 8, y - 8);
+        if (dist > 4.8) continue;
+        const d = (rnd() - 0.5) * 18;
+        if (dist < 2.2) set(x, y, 224 + d, 48 + d, 56 + d);
+        else set(x, y, 242 + d, 238 + d, 232 + d);
+      }
+    }
+    set(7, 6, 255, 200, 200);
   },
 
   [TILE.REDSTONE_DUST]: (set, rnd) => {

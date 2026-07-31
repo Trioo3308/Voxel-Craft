@@ -23,6 +23,7 @@ import {
 import { getAtlasTexture } from './textures.js';
 import { FluidSimulator } from './fluids.js';
 import { TERRAIN_VERSION } from './terrain.js';
+import { DIMENSIONS } from './dimensions.js';
 import { tickFurnace } from '../player/crafting.js';
 
 /** Per-chunk render + data record. */
@@ -52,6 +53,8 @@ export class World {
     this.seed = options.seed ?? Settings.seed;
     /** Generation rules this world uses — from its save, not from the build. */
     this.terrainVersion = options.terrainVersion ?? TERRAIN_VERSION;
+    /** Which dimension is currently streamed. */
+    this.dimension = options.dimension ?? DIMENSIONS.OVERWORLD;
     this.renderDistance = options.renderDistance ?? Settings.renderDistance;
 
     /** @type {Map<string, Chunk>} */
@@ -121,6 +124,29 @@ export class World {
       type: 'init',
       seed: this.seed,
       terrainVersion: this.terrainVersion,
+      dimension: this.dimension,
+    });
+  }
+
+  /**
+   * Move the world to another dimension.
+   *
+   * Every loaded chunk is discarded and re-streamed from the new dimension's
+   * generator. The worker keeps both dimensions' chunks and edits in memory, so
+   * coming back is fast and anything built is still there.
+   */
+  setDimension(dimension) {
+    if (dimension === this.dimension) return Promise.resolve();
+    this.dimension = dimension;
+
+    return new Promise((resolve) => {
+      this._dimensionResolve = resolve;
+      this.unloadAll();
+      // Block entities are deliberately NOT cleared: their keys are dimension-
+      // scoped, so the other dimension's chests and furnaces must survive the
+      // trip. Clearing here emptied every overworld container the moment you
+      // stepped through a portal, and wiped what a load had just restored.
+      this.worker.postMessage({ type: 'setDimension', dimension });
     });
   }
 
@@ -193,6 +219,10 @@ export class World {
 
       case 'editsImported':
         if (this._importResolve) { this._importResolve(); this._importResolve = null; }
+        break;
+
+      case 'dimensionReady':
+        if (this._dimensionResolve) { this._dimensionResolve(); this._dimensionResolve = null; }
         break;
     }
   }
@@ -389,7 +419,7 @@ export class World {
     // lighting up or going out is the *same* furnace, so keep its contents.
     const sameStation = isFurnaceBlock(previous) && isFurnaceBlock(id);
     if (previous !== id && !sameStation) {
-      this.blockEntities.delete(wx + ',' + wy + ',' + wz);
+      this.blockEntities.delete(this.blockEntityKey(wx, wy, wz));
     }
 
     if (deferSync) this._pendingSync.push({ x: wx, y: wy, z: wz, id });
@@ -404,9 +434,20 @@ export class World {
   // Block entities
   // -------------------------------------------------------------------------
 
+  /**
+   * Key for a block-entity position.
+   *
+   * Dimension-scoped, because the same coordinates exist in every dimension —
+   * without the prefix a shrine chest in the Comb would share state with
+   * whatever happens to sit at those coordinates in the overworld.
+   */
+  blockEntityKey(wx, wy, wz, dimension = this.dimension) {
+    return `${dimension}:${Math.floor(wx)},${Math.floor(wy)},${Math.floor(wz)}`;
+  }
+
   /** Fetch (or lazily create) the state attached to a block position. */
   getBlockEntity(wx, wy, wz, factory) {
-    const key = `${Math.floor(wx)},${Math.floor(wy)},${Math.floor(wz)}`;
+    const key = this.blockEntityKey(wx, wy, wz);
     let entity = this.blockEntities.get(key);
     if (!entity && factory) {
       entity = factory();
@@ -419,6 +460,8 @@ export class World {
   _tickBlockEntities(dt) {
     if (dt <= 0 || this.blockEntities.size === 0) return;
 
+    const prefix = `${this.dimension}:`;
+
     for (const [key, entity] of this.blockEntities) {
       if (entity.type !== 'furnace') continue;
       tickFurnace(entity.state, dt);
@@ -429,7 +472,10 @@ export class World {
       if (lit === entity.wasLit) continue;
       entity.wasLit = lit;
 
-      const [x, y, z] = key.split(',').map(Number);
+      // Blocks in another dimension are not streamed, so leave them alone —
+      // the swap happens when the player returns and the furnace ticks again.
+      if (!key.startsWith(prefix)) continue;
+      const [x, y, z] = key.slice(prefix.length).split(',').map(Number);
       const current = this.getBlock(x, y, z);
       if (!isFurnaceBlock(current)) continue;
       const wanted = lit ? FURNACE_LIT.id : FURNACE.id;

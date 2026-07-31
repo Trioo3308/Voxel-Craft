@@ -12,7 +12,10 @@ import { moveWithCollision, isInLiquid, collidesWithWorld, isSupported } from '.
 import { raycastVoxels } from './raycast.js';
 import { Inventory } from './inventory.js';
 import { Survival, EXHAUSTION } from './survival.js';
-import { AIR, getBlock, isLiquid, getSoundMaterial, getRanged, ITEM_ID } from '../world/blocks.js';
+import {
+  AIR, getBlock, isLiquid, getSoundMaterial, getRanged, getBucket, getFluid,
+  ITEM_ID, WATER, LAVA, PORTAL,
+} from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
 
 const P = Settings.player;
@@ -76,6 +79,12 @@ export class Player {
     this.didSwing = false;
     /** Bow draw, 0..1. Drives arrow power and the viewmodel pose. */
     this.drawProgress = 0;
+    /** Portal transit: 0..1 while standing in one, then travel. */
+    this.portalCharge = 0;
+    this.inPortal = false;
+    this._portalCooldown = 0;
+    /** Cleared on travel, re-armed by stepping out — see _updatePortal. */
+    this._portalArmed = true;
 
     this.camera.rotation.order = 'YXZ';
 
@@ -132,6 +141,7 @@ export class Player {
     if (!this.survival.dead) {
       this._updateMovement(dt);
       this._updateEnvironment(dt);
+      this._updatePortal(dt);
       this._updateTarget();
       this._updateInteraction(dt, ctx);
     } else {
@@ -385,6 +395,41 @@ export class Player {
     }
   }
 
+  /**
+   * Standing inside a portal for long enough travels.
+   *
+   * The delay stops you bouncing straight back the instant you arrive, and the
+   * cooldown after a trip means the portal you land in does not immediately
+   * send you home again.
+   */
+  _updatePortal(dt) {
+    if (this._portalCooldown > 0) this._portalCooldown -= dt;
+
+    const inside =
+      this.world.getBlock(this.position.x, this.position.y + 0.4, this.position.z) === PORTAL.id ||
+      this.world.getBlock(this.position.x, this.position.y + 1.2, this.position.z) === PORTAL.id;
+
+    this.inPortal = inside;
+    if (!inside) {
+      this.portalCharge = 0;
+      // Stepping out is what re-arms the portal. Without this, arriving inside
+      // one and standing still sends you straight back as soon as the cooldown
+      // lapses — an inescapable loop between the two dimensions.
+      this._portalArmed = true;
+      return;
+    }
+
+    if (this._portalCooldown > 0) return;
+    if (!this._portalArmed) return;
+    this.portalCharge = Math.min(1, this.portalCharge + dt / 1.2);
+    if (this.portalCharge >= 1 && this.onPortalTravel) {
+      this.portalCharge = 0;
+      this._portalCooldown = 4;
+      this._portalArmed = false;
+      this.onPortalTravel();
+    }
+  }
+
   /** Environmental hazards. Currently just lava; extend here for drowning etc. */
   _updateEnvironment(dt) {
     this.inLava =
@@ -506,6 +551,8 @@ export class Player {
       // Sneaking suppresses station UIs so you can still build against them.
       if (!this.sneaking && this._tryUseBlock()) {
         this._placeCooldown = 0.4;
+      } else if (this._tryBucket(ctx)) {
+        this._placeCooldown = 0.4;
       } else if (this._tryEat()) {
         this._eatCooldown = 0.8;
         this._placeCooldown = 0.8;
@@ -593,6 +640,93 @@ export class Player {
     if (!this.creative) this.inventory.damageHeldTool(1);
   }
 
+  /**
+   * Bucket use: fill from a fluid source, empty into the world, milk a cow, or
+   * light a combium portal.
+   * @returns {boolean} whether the bucket did something
+   */
+  _tryBucket(ctx) {
+    const slot = this.inventory.getSelected();
+    if (!slot) return false;
+    const bucket = getBucket(slot.id);
+
+    // --- Empty bucket: milk a cow, or scoop a fluid ------------------------
+    if (slot.id === ITEM_ID.BUCKET) {
+      if (this._tryMilkCow(ctx)) return true;
+
+      const target = this.targetFluid();
+      if (!target) return false;
+      const filled = target.family === 'water' ? ITEM_ID.BUCKET_WATER : ITEM_ID.BUCKET_LAVA;
+      // Only a full source block can be picked up, not a thinning flow.
+      if (target.level !== 0) return false;
+
+      this.world.setBlock(target.x, target.y, target.z, AIR);
+      this.inventory.consumeSelected(1);
+      this.inventory.add(filled, 1);
+      audio.splash();
+      return true;
+    }
+
+    if (!bucket) return false;
+
+    // --- Milk: light a portal ---------------------------------------------
+    if (bucket.igniter) {
+      const target = this.targetBlock;
+      if (!target || !this.onIgnitePortal) return false;
+      if (!this.onIgnitePortal(target.x, target.y, target.z)) return false;
+      if (!this.creative) {
+        this.inventory.consumeSelected(1);
+        this.inventory.add(ITEM_ID.BUCKET, 1);
+      }
+      return true;
+    }
+
+    // --- Water or lava: pour it out ---------------------------------------
+    const target = this.targetBlock;
+    if (!target) return false;
+    const x = target.x + target.normal.x;
+    const y = target.y + target.normal.y;
+    const z = target.z + target.normal.z;
+
+    const existing = this.world.getBlock(x, y, z);
+    if (existing !== AIR && !isLiquid(existing)) return false;
+
+    const source = bucket.fluid === 'water' ? WATER.id : LAVA.id;
+    if (!this.world.setBlock(x, y, z, source)) return false;
+
+    if (!this.creative) {
+      this.inventory.consumeSelected(1);
+      this.inventory.add(ITEM_ID.BUCKET, 1);
+    }
+    audio.splash();
+    return true;
+  }
+
+  /** Right-click a cow with an empty bucket for milk. */
+  _tryMilkCow(ctx) {
+    if (!ctx.entities) return false;
+    const hit = ctx.entities.raycast(this.eyePosition, this.getLookDirection(), P.reach);
+    if (!hit || hit.mob.type.name !== 'cow' || hit.mob.dead) return false;
+
+    this.inventory.consumeSelected(1);
+    this.inventory.add(ITEM_ID.BUCKET_MILK, 1);
+    audio.mobSound(hit.mob.type.voice, 'idle', 0);
+    return true;
+  }
+
+  /** The fluid block under the crosshair, or null. Buckets ignore solid blocks. */
+  targetFluid() {
+    const origin = this.eyePosition;
+    const direction = this.getLookDirection();
+    // Unlike normal targeting, this ray stops on fluids too.
+    const hit = raycastVoxels(this.world, origin, direction, P.reach, (id) => id !== AIR);
+    if (!hit) return null;
+
+    const fluid = getFluid(hit.block);
+    if (!fluid) return null;
+    return { x: hit.x, y: hit.y, z: hit.z, family: fluid.family, level: fluid.level };
+  }
+
   /** Right-clicking a crafting table or furnace opens its interface. */
   _tryUseBlock() {
     const target = this.targetBlock;
@@ -637,6 +771,10 @@ export class Player {
 
   _breakBlock(target) {
     const def = getBlock(target.block);
+    // Grab any container state *before* clearing the block: setBlock discards
+    // the block entity, so looking it up afterwards finds nothing and a broken
+    // chest silently eats everything inside it.
+    const entity = this.world.getBlockEntity(target.x, target.y, target.z);
     this.world.setBlock(target.x, target.y, target.z, AIR);
     audio.blockBreak(getSoundMaterial(def.id));
     this.breakProgress = 0;
@@ -657,7 +795,7 @@ export class Player {
       this.survival.addExhaustion(EXHAUSTION.mineBlock);
     }
 
-    if (this.onBlockBroken) this.onBlockBroken(def.id, target);
+    if (this.onBlockBroken) this.onBlockBroken(def.id, target, entity);
   }
 
   _tryPlace(ctx) {

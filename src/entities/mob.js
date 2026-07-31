@@ -52,6 +52,9 @@ export class Mob {
     this.memory = {};
 
     this.attackCooldown = 0;
+    /** Per-instance melee overrides; null falls back to `type.brain`. */
+    this.attackDamage = null;
+    this.attackInterval = null;
     this.hurtTimer = 0;
     this.burnTimer = 0;
     this.deathTimer = 0;
@@ -290,10 +293,13 @@ export class Mob {
 
   _tryMelee(player, brain) {
     if (this.attackCooldown > 0) return;
-    this.attackCooldown = brain.attackCooldown ?? 1;
+    // `brain` is shared by every mob of a species, so per-instance tuning (the
+    // Warden's phases) goes through these overrides rather than mutating it.
+    this.attackCooldown = this.attackInterval ?? brain.attackCooldown ?? 1;
     this.didAttack = true;
 
-    if (!player.survival.damage(brain.attackDamage, 'mob')) return;
+    // Pass who is hitting, not just "a mob" — the death screen names the killer.
+    if (!player.survival.damage(this.attackDamage ?? brain.attackDamage, 'mob', this.type)) return;
 
     // Knock the player back and up a little.
     const dx = player.position.x - this.position.x;

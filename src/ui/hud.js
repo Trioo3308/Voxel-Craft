@@ -51,6 +51,10 @@ export class HUD {
     this.chestScreen = el('chestScreen');
     this.drawBarEl = el('drawBar');
     this.drawFillEl = el('drawFill');
+    this.bossBarEl = el('bossBar');
+    this.bossNameEl = el('bossName');
+    this.bossFillEl = el('bossFill');
+    this.portalOverlayEl = el('portalOverlay');
     this.paletteSection = el('paletteSection');
     this.paletteGrid = el('paletteGrid');
     this.modeBadge = el('modeBadge');
@@ -489,6 +493,7 @@ export class HUD {
 
     this._updateStats();
     this._updateBreakBar();
+    this._updateBossBar();
     this._updateOverlays();
 
     // The furnace runs on its own; keep its panel live while open.
@@ -544,9 +549,38 @@ export class HUD {
     }
   }
 
+  /**
+   * Boss health, shown only while one is actually nearby.
+   *
+   * Picks the closest living boss rather than the first, so the bar always
+   * describes the fight you are in.
+   */
+  _updateBossBar() {
+    const BOSS_BAR_RANGE = 48;
+    let nearest = null;
+    let nearestDist = BOSS_BAR_RANGE;
+
+    for (const mob of this.game.entities.mobs) {
+      if (!mob.type.boss || mob.dead) continue;
+      const d = mob.horizontalDistanceTo(this.player.position);
+      if (d >= nearestDist) continue;
+      nearest = mob;
+      nearestDist = d;
+    }
+
+    this.bossBarEl.classList.toggle('active', !!nearest);
+    if (!nearest) return;
+
+    this.bossNameEl.textContent = nearest.type.displayName ?? nearest.type.name;
+    const fraction = Math.max(0, nearest.health / nearest.type.maxHealth);
+    this.bossFillEl.style.width = (fraction * 100).toFixed(1) + '%';
+  }
+
   _updateOverlays() {
     this.waterOverlayEl.classList.toggle('active', this.game.cameraInWater);
     this.lavaOverlayEl.classList.toggle('active', this.game.cameraInLava);
+    // Portal transit whites out the screen as the charge builds.
+    this.portalOverlayEl.style.opacity = (this.player.portalCharge * 0.85).toFixed(3);
   }
 
   _updateDebug() {

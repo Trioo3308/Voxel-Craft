@@ -10,6 +10,8 @@ import Settings from '../settings.js';
 import { Mob } from './mob.js';
 import { MOB_TYPES } from './mobTypes.js';
 import { ItemEntity } from './itemEntity.js';
+import { rollLoot } from './loot.js';
+import { dimensionInfo } from '../world/dimensions.js';
 import { Arrow } from './projectile.js';
 import { AIR, BLOCKS } from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
@@ -329,6 +331,8 @@ export class EntityManager {
   _trySpawnWave(ctx) {
     const { player, isNight } = ctx;
     if (player.survival.dead) return;
+    // The Comb has no natural wildlife — only its shrine guardians.
+    if (ctx.dimension && !dimensionInfo(ctx.dimension).spawnsOverworldMobs) return;
 
     // Global cap, and a local one so mobs do not pile up around the player.
     if (this.mobs.length >= M.maxTotalMobs) return;
@@ -419,6 +423,7 @@ export class EntityManager {
       const dz = mob.position.z - player.position.z;
       if (dx * dx + dz * dz <= limitSq) continue;
 
+      if (this.onMobDespawn) this.onMobDespawn(mob);
       this.scene.remove(mob.object3D);
       mob.dispose();
       this.mobs.splice(i, 1);
@@ -430,6 +435,15 @@ export class EntityManager {
   // -------------------------------------------------------------------------
 
   _dropLoot(mob) {
+    // A `lootTable` (bosses) rolls weighted rewards; a plain `drops` list is the
+    // fixed everyday case. Either may be present.
+    if (mob.type.lootTable) {
+      for (const stack of rollLoot(mob.type.lootTable)) {
+        this.dropItem(mob.position.x, mob.position.y + 0.6, mob.position.z, stack.id, stack.count);
+      }
+      if (this.onBossDefeated && mob.type.boss) this.onBossDefeated(mob);
+    }
+
     if (!mob.type.drops) return;
     for (const drop of mob.type.drops) {
       const count = drop.min + Math.floor(Math.random() * (drop.max - drop.min + 1));

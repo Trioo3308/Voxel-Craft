@@ -15,6 +15,7 @@ import {
   CRAFTING_TABLE, FURNACE, IRON_ORE, GOLD_ORE,
   IRON_BLOCK, GOLD_BLOCK, DIAMOND_BLOCK, WOOL,
   BUILDING_FAMILIES, DOOR_CLOSED, BED, TORCH, CHEST,
+  COMBIUM_ORE, COMBIUM_BLOCK, COMB_BRICK,
   ITEM_ID, TOOL_KINDS, ARMOR_PIECES, ARMOR_MATERIAL_NAMES,
   toolItemId, armorItemId, getDisplayName,
 } from '../world/blocks.js';
@@ -116,6 +117,15 @@ shaped(['WWW', 'PPP'], { W: WOOL.id, P: PLANKS.id }, { id: BED.id, count: 1 });
 shaped(['C', 'S'], { C: ITEM_ID.COAL, S: ITEM_ID.STICK }, { id: TORCH.id, count: 4 });
 shaped(['PPP', 'P.P', 'PPP'], { P: PLANKS.id }, { id: CHEST.id, count: 1 });
 
+// --- Combium & buckets ------------------------------------------------------
+
+shaped(['I.I', '.I.'], { I: ITEM_ID.IRON_INGOT }, { id: ITEM_ID.BUCKET, count: 1 });
+// Four ingots, not nine: this is portal masonry, not a storage block, and a
+// ten-block frame at nine ingots each would cost 90 ingots.
+shaped(['CC', 'CC'], { C: ITEM_ID.COMBIUM_INGOT }, { id: COMBIUM_BLOCK.id, count: 1 });
+shapeless([COMBIUM_BLOCK.id], { id: ITEM_ID.COMBIUM_INGOT, count: 4 });
+shaped(['SS', 'SS'], { S: ITEM_ID.COMB_SHARD }, { id: COMB_BRICK.id, count: 4 });
+
 // --- Bow --------------------------------------------------------------------
 shaped(['.SG', 'S.G', '.SG'], { S: ITEM_ID.STICK, G: ITEM_ID.STRING }, { id: ITEM_ID.BOW, count: 1 });
 
@@ -140,6 +150,7 @@ const GEAR_TIERS = {
   iron: ITEM_ID.IRON_INGOT,
   gold: ITEM_ID.GOLD_INGOT,
   diamond: ITEM_ID.DIAMOND,
+  combium: ITEM_ID.COMBIUM_INGOT,
 };
 
 /** M = material, S = stick. Axes get a mirrored variant, as in Minecraft. */
@@ -272,6 +283,7 @@ export const SMELTING = new Map([
   [ITEM_ID.BEEF, { id: ITEM_ID.COOKED_BEEF, count: 1 }],
   [ITEM_ID.MUTTON, { id: ITEM_ID.COOKED_MUTTON, count: 1 }],
   [ITEM_ID.CHICKEN_RAW, { id: ITEM_ID.CHICKEN_COOKED, count: 1 }],
+  [COMBIUM_ORE.id, { id: ITEM_ID.COMBIUM_INGOT, count: 1 }],
 ]);
 
 /** Seconds of burn time each fuel provides. One smelt takes SMELT_SECONDS. */

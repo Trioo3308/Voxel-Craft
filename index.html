@@ -80,6 +80,41 @@
   #drawBar.active { display: block; }
   #drawFill { height: 100%; width: 0%; background: #d8c070; }
 
+  /* Boss health, across the top — only while a boss is engaged and in range. */
+  #bossBar {
+    position: absolute; left: 50%; top: 18px;
+    transform: translateX(-50%);
+    width: min(46vw, 460px);
+    display: none;
+    text-align: center;
+    pointer-events: none;
+  }
+  #bossBar.active { display: block; }
+  #bossName {
+    font-size: 13px; letter-spacing: 1px;
+    color: #f2efe9;
+    text-shadow: 0 0 6px rgba(160, 20, 30, 0.9), 0 1px 2px #000;
+    margin-bottom: 4px;
+  }
+  #bossTrack {
+    height: 9px;
+    background: rgba(0,0,0,0.6);
+    border: 1px solid rgba(242, 240, 234, 0.55);
+  }
+  #bossFill {
+    height: 100%; width: 100%;
+    background: linear-gradient(90deg, #b5121b, #e8434c);
+    transition: width 0.15s linear;
+  }
+
+  /* Bone-white bloom while a portal is pulling you through. */
+  #portalOverlay {
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse at center, rgba(255,255,255,0.05) 10%, rgba(232,227,220,0.95) 100%);
+    opacity: 0;
+    pointer-events: none;
+  }
+
   /* Red vignette when you take damage. */
   #damageFlash {
     position: absolute; inset: 0;
@@ -459,6 +494,8 @@
   <div id="crosshair"></div>
   <div id="breakBar"><div id="breakFill"></div></div>
   <div id="drawBar"><div id="drawFill"></div></div>
+  <div id="bossBar"><div id="bossName"></div><div id="bossTrack"><div id="bossFill"></div></div></div>
+  <div id="portalOverlay"></div>
 
   <div id="hud">
     <div id="stats">

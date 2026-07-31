@@ -25,39 +25,59 @@
  */
 
 import { TerrainGenerator } from './terrain.js';
+import { CombTerrainGenerator } from './combTerrain.js';
 import { buildChunkMesh } from './mesher.js';
 import { computeChunkLight, emissionOf, LIGHT_MARGIN } from './light.js';
+import { DIMENSIONS } from './dimensions.js';
 import { CHUNK_SX, CHUNK_SY, CHUNK_SZ, chunkKey, voxelIndex, toLocalCoord, toChunkCoord } from './chunk.js';
 import { AIR } from './blocks.js';
 
-/** @type {TerrainGenerator} */
-let terrain = null;
-
-/** Generated voxel data, keyed by "cx,cz". */
-const chunks = new Map();
-
 /**
- * Player edits, keyed by "cx,cz" -> Map(voxelIndex -> blockId).
- * Kept even after a chunk is unloaded so revisiting an area restores changes.
+ * One generator, chunk cache and edit store per dimension.
+ *
+ * Travelling between dimensions swaps which set is active rather than tearing
+ * the worker down, so returning to a dimension does not have to regenerate
+ * everything — and edits in the dimension you left stay intact.
  */
-const edits = new Map();
+const dimensions = new Map();
+
+/** The dimension currently being served. */
+let activeDim = DIMENSIONS.OVERWORLD;
+
+/** World seed, kept so a dimension can build its generator lazily. */
+let worldSeed = 0;
+
+function dimensionState(id = activeDim) {
+  let state = dimensions.get(id);
+  if (!state) {
+    state = { generator: null, chunks: new Map(), edits: new Map(), emitters: new Map() };
+    dimensions.set(id, state);
+  }
+  return state;
+}
+
+/** Active generator / caches, re-read through getters so switching is cheap. */
+const terrainOf = (id = activeDim) => dimensionState(id).generator;
+const chunksOf = (id = activeDim) => dimensionState(id).chunks;
+const editsOf = (id = activeDim) => dimensionState(id).edits;
+const emittersOf = (id = activeDim) => dimensionState(id).emitters;
 
 /** Chunks the main thread currently holds — only these are worth remeshing. */
 const sentChunks = new Set();
 
 /**
- * Every light-emitting block, keyed "x,y,z" -> emission level.
+ * Light-emitting blocks are tracked per dimension, keyed "x,y,z" -> level.
  *
  * Kept as a registry rather than discovered by scanning: lighting a chunk only
  * needs the handful of emitters near it, and searching for them would cost
  * hundreds of thousands of block lookups per chunk.
  */
-const emitters = new Map();
 
 /** Register or clear an emitter after a block changes. */
 function updateEmitter(wx, wy, wz, id) {
   const key = wx + ',' + wy + ',' + wz;
   const level = emissionOf(id);
+  const emitters = emittersOf();
   if (level > 0) emitters.set(key, level);
   else emitters.delete(key);
 }
@@ -70,7 +90,7 @@ function emittersNear(cx, cz) {
   const maxZ = cz * CHUNK_SZ + CHUNK_SZ + LIGHT_MARGIN;
 
   const found = [];
-  for (const [key, level] of emitters) {
+  for (const [key, level] of emittersOf()) {
     const comma1 = key.indexOf(',');
     const comma2 = key.indexOf(',', comma1 + 1);
     const x = +key.slice(0, comma1);
@@ -88,12 +108,13 @@ function emittersNear(cx, cz) {
 /** Generate a chunk if we do not have it yet, applying any stored edits. */
 function ensureChunk(cx, cz) {
   const key = chunkKey(cx, cz);
+  const chunks = chunksOf();
   let voxels = chunks.get(key);
   if (voxels) return voxels;
 
-  voxels = terrain.generateChunk(cx, cz);
+  voxels = terrainOf().generateChunk(cx, cz);
 
-  const chunkEdits = edits.get(key);
+  const chunkEdits = editsOf().get(key);
   if (chunkEdits) {
     for (const [index, id] of chunkEdits) voxels[index] = id;
   }
@@ -216,14 +237,15 @@ function recordEdit(wx, wy, wz, id, dirty) {
   const index = voxelIndex(lx, wy, lz);
 
   // Record the edit permanently, then patch the live voxels if loaded.
+  const edits = editsOf();
   let chunkEdits = edits.get(key);
   if (!chunkEdits) edits.set(key, (chunkEdits = new Map()));
   chunkEdits.set(index, id);
 
-  const voxels = chunks.get(key);
+  const voxels = chunksOf().get(key);
   if (voxels) voxels[index] = id;
 
-  const previousEmission = emitters.get(wx + ',' + wy + ',' + wz) ?? 0;
+  const previousEmission = emittersOf().get(wx + ',' + wy + ',' + wz) ?? 0;
   updateEmitter(wx, wy, wz, id);
   const newEmission = emissionOf(id);
 
@@ -296,28 +318,50 @@ self.onmessage = (event) => {
   const msg = event.data;
 
   switch (msg.type) {
-    case 'init':
+    case 'init': {
       // `terrainVersion` comes from the save, so an existing world keeps the
       // generation rules it was created with.
-      terrain = new TerrainGenerator(msg.seed, msg.terrainVersion);
+      worldSeed = msg.seed;
+      dimensions.clear();
+      dimensionState(DIMENSIONS.OVERWORLD).generator =
+        new TerrainGenerator(msg.seed, msg.terrainVersion);
+      dimensionState(DIMENSIONS.COMB).generator = new CombTerrainGenerator(msg.seed);
+      activeDim = msg.dimension ?? DIMENSIONS.OVERWORLD;
+      sentChunks.clear();
+      invalidateSampleCache();
       self.postMessage({ type: 'ready' });
       break;
+    }
+
+    case 'setDimension': {
+      // Switching keeps every dimension's chunks and edits in memory, so
+      // stepping back through a portal does not regenerate the world you left.
+      activeDim = msg.dimension;
+      sentChunks.clear();
+      invalidateSampleCache();
+      self.postMessage({ type: 'dimensionReady', dimension: activeDim });
+      break;
+    }
 
     case 'exportEdits': {
       // Typed arrays per chunk — compact, and structured-cloneable straight
-      // into IndexedDB without a JSON round trip.
-      const out = [];
-      for (const [key, map] of edits) {
-        if (map.size === 0) continue;
-        const indices = new Uint32Array(map.size);
-        const ids = new Uint8Array(map.size);
-        let i = 0;
-        for (const [index, id] of map) {
-          indices[i] = index;
-          ids[i] = id;
-          i++;
+      // into IndexedDB without a JSON round trip. Exported per dimension.
+      const out = {};
+      for (const [dimId, state] of dimensions) {
+        const list = [];
+        for (const [key, map] of state.edits) {
+          if (map.size === 0) continue;
+          const indices = new Uint32Array(map.size);
+          const ids = new Uint8Array(map.size);
+          let i = 0;
+          for (const [index, id] of map) {
+            indices[i] = index;
+            ids[i] = id;
+            i++;
+          }
+          list.push({ key, indices, ids });
         }
-        out.push({ key, indices, ids });
+        if (list.length > 0) out[dimId] = list;
       }
       self.postMessage({ type: 'edits', edits: out });
       break;
@@ -326,13 +370,20 @@ self.onmessage = (event) => {
     case 'importEdits': {
       // Replacing the edit set invalidates every generated chunk, so drop them
       // all and let the main thread re-request what it needs.
-      edits.clear();
-      chunks.clear();
+      for (const state of dimensions.values()) {
+        state.edits.clear();
+        state.chunks.clear();
+        state.emitters.clear();
+      }
       sentChunks.clear();
-      for (const chunk of msg.edits) {
-        const map = new Map();
-        for (let i = 0; i < chunk.indices.length; i++) map.set(chunk.indices[i], chunk.ids[i]);
-        edits.set(chunk.key, map);
+
+      for (const [dimId, list] of Object.entries(msg.edits ?? {})) {
+        const state = dimensionState(dimId);
+        for (const chunk of list) {
+          const map = new Map();
+          for (let i = 0; i < chunk.indices.length; i++) map.set(chunk.indices[i], chunk.ids[i]);
+          state.edits.set(chunk.key, map);
+        }
       }
       invalidateSampleCache();
       self.postMessage({ type: 'editsImported' });
@@ -353,7 +404,7 @@ self.onmessage = (event) => {
 
     case 'unload': {
       const key = chunkKey(msg.cx, msg.cz);
-      chunks.delete(key);
+      chunksOf().delete(key);
       sentChunks.delete(key);
       invalidateSampleCache();
       break;

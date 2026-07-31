@@ -277,7 +277,7 @@ are three separate defences:
 
 | Hazard | Defence |
 | --- | --- |
-| The save layout changes | Every save records `formatVersion`. `MIGRATIONS` in `world/save.js` holds one function per version step, applied in order on load. Old saves are upgraded, never rejected. Already used once, for the v1→v2 game-mode field. |
+| The save layout changes | Every save records `formatVersion`. `MIGRATIONS` in `world/save.js` holds one function per version step, applied in order on load. Old saves are upgraded, never rejected. Used twice so far: v1→v2 added the fixed game mode, v2→v3 added dimensions. |
 | Terrain generation changes | Every save records `terrainVersion`, and the generator is built with **that** version, not the newest. A world keeps the landscape rules it was born with, so newly explored chunks still match the ones you already walked through. |
 | Block or item ids get renumbered | Saves store a **palette** mapping id → stable name, and loading remaps by name. Ids can be reshuffled freely; only *renaming* or *deleting* a block loses data, and that is reported to the console rather than applied silently. |
 
@@ -293,10 +293,21 @@ with an explanation, rather than being loaded and mangled.
 edit v1 behaviour in place — that is exactly what silently reshapes existing
 worlds.
 
-This has already been exercised once. Terrain is at **v2**, which added the
-occasional rough/cliffy ground; the v1 code path is untouched and verified
-byte-identical, so a world created before that change still generates exactly the
-landscape it always did.
+This has already been exercised. Terrain is at **v2**, which added the occasional
+rough/cliffy ground; the v1 code path is untouched and verified byte-identical,
+so a world created before that change still generates exactly the landscape it
+always did.
+
+The save format is at **v3**. A v2 world's flat edit list is filed under the
+overworld and its block-entity keys gain a dimension prefix, so an existing world
+opens with its buildings, chests and furnaces intact and simply gains access to
+the Comb.
+
+One deliberate exception to the terrain rule: **combium ore is not gated behind a
+terrain version**. Gating it would lock every existing world out of the dimension
+permanently. Leaving it ungated only means chunks you explored before this update
+contain none — the same seam Minecraft accepts whenever it adds an ore, and it
+reshapes nothing you have already built in.
 
 ### Sound
 
@@ -330,16 +341,17 @@ Mining is gated by tool tier, which is what gives the game a spine:
 | Redstone | y 2–22 | iron pickaxe |
 | Diamond | y 1–16 | iron pickaxe |
 | Emerald | y 4–40, **mountains only** | iron pickaxe |
+| Combium | y 1–14 | **diamond pickaxe** |
 
 Mining a diamond with a stone pickaxe destroys the block and gives you nothing,
-so the loop is: wood → stone → iron (smelted in a furnace) → diamond.
+so the loop is: wood → stone → iron (smelted in a furnace) → diamond → combium.
 
-**Tools** come in wood, stone, iron, gold and diamond — pickaxe, axe, shovel and
-sword each. The right tool class multiplies mining speed; the wrong one is no
-better than bare hands. Gold keeps its Minecraft quirk: very fast, very fragile.
-Tools wear out and break.
+**Tools** come in wood, stone, iron, gold, diamond and combium — pickaxe, axe,
+shovel and sword each. The right tool class multiplies mining speed; the wrong
+one is no better than bare hands. Gold keeps its Minecraft quirk: very fast, very
+fragile. Tools wear out and break.
 
-**Armour** comes in iron, gold and diamond. Each armour point removes 4% of
+**Armour** comes in iron, gold, diamond and combium. Each armour point removes 4% of
 incoming damage, capped at 80%, so full diamond (20 points) blocks four fifths of
 a hit. Armour wears down when it saves you, and does not protect against
 starvation or falling out of the world.
@@ -352,6 +364,44 @@ sticks all burn. Smelting continues while the menu is closed.
 arrow speed both scale with the draw — a snap shot is nearly useless, a full draw
 hits for 9. Arrows are spent from anywhere in your inventory, and a charge
 indicator under the crosshair turns green at full power.
+
+---
+
+## The Comb
+
+A second dimension, reached the way the Nether is: build a frame and light it.
+
+**Combium** is the deepest ore, needs a diamond pickaxe, and is slightly rarer
+than diamond — about 1.3 blocks per chunk in the y 1–14 band, dropping 2–3 raw
+each. Smelt it into ingots, then craft **blocks of combium** four ingots at a
+time. Ten of those make a portal frame.
+
+**Buckets** are crafted from three iron and carry one of three things. Right
+click a water or lava *source* block to fill, right click anywhere to pour it
+back out, and right click a cow for milk.
+
+**The portal** is a frame in nether-portal proportions — 2–4 wide, 3–5 tall,
+corners optional — lit with a **bucket of milk**. Detection floods the enclosed
+gap and verifies the ring, so any legal size and either orientation works.
+Breaking a single frame block collapses the whole portal. Standing in one whites
+out the screen over about a second, then you travel; coordinates scale 4:1, so
+the Comb is a compressed map of the overworld, same as the Nether.
+
+**The dimension itself** is a pale rolling plateau of comb stone riddled with
+hollow cells, veined with crimson crystal that glows. No day cycle, no sun, no
+overworld wildlife — a permanent bone-white haze.
+
+**Shrines** sit on a coarse grid, roughly one per 12×12 chunks: a stepped brick
+platform, crystal-capped pillars, a throne, and a chest behind it holding the
+dimension's loot table (guaranteed combium ingots and shards, with diamond gear
+and a combium sword as rare rolls).
+
+**The Comb Warden** guards each one. 220 health, three phases that get faster and
+hit harder as it drops, a roar that shoves you back on every phase change, and a
+leash that pulls it home — and regenerates it — if you try to fight from range
+and run. Its health shows across the top of the screen while you are near it. It
+drops a **Comb Heart**, 6–12 ingots, and rolls from its own table. One per
+shrine, and it stays dead.
 
 ---
 
@@ -584,7 +634,7 @@ damage with knockback; player attacks apply damage and knockback; pigs drop
 porkchops; zombies burn in direct sunlight; lava damages the player; the player
 rests exactly flush on the block surface.
 
-**Ores & biomes** — all seven ores generate and stay inside their depth bands;
+**Ores & biomes** — all eight ores generate and stay inside their depth bands;
 emerald appears only in mountains and is the rarest; diamond is rarer than iron
 which is rarer than coal; all ten biomes appear with a sane spread (36% plains
 down to 0.9% mountains); savanna/taiga/swamp surface blocks and acacia/spruce
@@ -597,6 +647,28 @@ wooden pickaxe cannot harvest diamond but an iron one can; tools wear down and
 break; a diamond pickaxe mines ~8× faster than fists; furnaces smelt, keep
 running with the menu closed, and return their contents when broken; full
 diamond armour blocks 80% of damage but none of starvation.
+
+**The Comb** — 94 headless assertions plus a full in-browser playthrough. Every
+block, item and gear id is unique and resolves, and no two items share an icon.
+A diamond pickaxe mines combium for 2–3 drops while an iron one destroys it for
+nothing; ore → ingot → block → frame → portal runs end to end. Frames light at
+2×3 through 4×5 on either axis, missing corners are tolerated, a hole in a wall
+or an oversized opening is refused, and breaking one frame block collapses the
+whole portal. Travel scales coordinates 4:1, builds a return portal, and lands
+you *beside* it rather than inside — standing in the arrival portal used to send
+you straight back once the cooldown lapsed. Comb terrain is deterministic per
+seed, every column has ground, shrines straddling a chunk border are written
+identically from both sides, and shrine chests and the Warden are placed exactly
+once per shrine and survive a save/load round trip. The Warden escalates through
+three phases (8→10→12 damage, 1.6→0.9s cooldown), drops its loot table, and does
+not respawn. Buckets fill from sources only, pour water and lava, and milk a cow.
+
+**Save format v3** — a v2 world migrates with its edits filed under the
+overworld, block-entity keys prefixed, and its creative lock preserved; a v1
+world walks all the way to v3. Both dimensions' chests and furnaces coexist and
+survive travel in both directions — block entities used to be wiped on every
+portal trip, which emptied every overworld container the moment you left.
+Breaking a chest or furnace returns everything inside it.
 
 **Movement & controls** — sprinting works while jumping (this was a real bug:
 `input.js` bailed out of keydown whenever Ctrl was held, so the sprint key

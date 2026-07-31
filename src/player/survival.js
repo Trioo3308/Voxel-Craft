@@ -97,7 +97,11 @@ export class Survival {
    * @param {string} cause 'fall' | 'mob' | 'starve' | 'void' | ...
    * @returns {boolean} whether the damage was actually applied
    */
-  damage(amount, cause = 'generic') {
+  /**
+   * @param source optional attacker (a mob type), recorded so the death screen
+   *   can name what actually killed you rather than guessing.
+   */
+  damage(amount, cause = 'generic', source = null) {
     if (this.dead || amount <= 0 || this.invulnerable) return false;
     // Ignore repeat hits during i-frames, except for continuous sources.
     if (this.invulnerableFor > 0 && cause !== 'starve' && cause !== 'drown') return false;
@@ -113,6 +117,7 @@ export class Survival {
 
     this.health = Math.max(0, this.health - applied);
     this.lastDamageCause = cause;
+    this.lastDamageSource = source;
     this.invulnerableFor = 0.5;
     this.addExhaustion(EXHAUSTION.damageTaken);
 

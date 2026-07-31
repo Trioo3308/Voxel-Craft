@@ -72,7 +72,51 @@ export class SkyCycle {
     this.setTime(this.isNight ? 0.02 : 0.52);
   }
 
+  /**
+   * Switch presentation for a dimension.
+   * A dimension without a day cycle gets a fixed sky and ambient level instead,
+   * so the Comb stays a constant bone-white haze rather than cycling.
+   */
+  setDimension(info) {
+    this.dimensionInfo = info;
+    if (!info.hasDayCycle) {
+      this._fixedSky = new THREE.Color(info.skyColor);
+      this._fixedFog = new THREE.Color(info.fogColor);
+    } else {
+      this._fixedSky = null;
+      this._fixedFog = null;
+    }
+  }
+
   update(dt, world) {
+    // A dimension with no sun ignores the clock entirely.
+    if (this._fixedSky) {
+      this.renderer.scene.background = this._fixedSky;
+      if (this.renderer.scene.fog) {
+        this.renderer.scene.fog.color.copy(this._fixedFog);
+        const info = this.dimensionInfo;
+        if (info && info.fogScale) {
+          const far = Settings.renderDistance * 16;
+          this.renderer.scene.fog.near = far * Settings.fogStart * info.fogScale;
+          this.renderer.scene.fog.far = far * info.fogScale;
+        }
+      }
+      const ambient = this.dimensionInfo ? this.dimensionInfo.ambient : 1;
+      if (world) world.setLightTint(this._tint.setScalar(ambient));
+
+      // Entity lighting has to track the same `ambient` the terrain tint uses.
+      // Terrain is unlit geometry multiplied by that tint, while mobs are lit by
+      // these lamps — pinning the lamps to fixed values left the Warden reading
+      // grey against a shrine that was nearly white.
+      this.renderer.sunLight.intensity = 0.45 + ambient * 0.95;
+      this.renderer.sunLight.color.setRGB(1, 0.97, 0.95);
+      this.renderer.hemiLight.intensity = ambient * 0.95;
+      this.renderer.ambientLight.intensity = 0.18 + ambient * 0.34;
+      // A dimension with no sun still needs a stable shading direction.
+      this.renderer.sunLight.position.set(60, 120, 45);
+      return;
+    }
+
     if (!this.paused) {
       this.time = (this.time + dt / this.cycleLength) % 1;
     }

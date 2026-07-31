@@ -17,6 +17,7 @@ import {
   ITEM_ID, WOOL, GRASS, DIRT, SAND, SNOW, STONE, DRY_GRASS, PODZOL, SWAMP_GRASS,
 } from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
+import { BOSS_LOOT } from './loot.js';
 
 // ---------------------------------------------------------------------------
 // Model building helpers
@@ -367,6 +368,129 @@ export const CREEPER = {
 };
 
 // ---------------------------------------------------------------------------
+// The Comb dimension boss
+// ---------------------------------------------------------------------------
+
+/**
+ * The Comb Warden guards the throne. Three phases, each faster and angrier than
+ * the last, with a slam that knocks you back hard enough to matter. It never
+ * spawns naturally — the shrine places exactly one.
+ */
+export const WARDEN = {
+  name: 'comb_warden',
+  displayName: 'Comb Warden',
+  width: 1.6,
+  height: 3.4,
+  maxHealth: 220,
+  speed: 2.2,
+  boss: true,
+  voice: { name: 'warden', voice: 'groan', pitch: 52, duration: 0.9 },
+  drops: [],   // handled by the boss loot table instead
+  lootTable: BOSS_LOOT,
+
+  brain: {
+    hostile: true,
+    sightRange: 34,
+    loseSightAfter: 14,
+    attackRange: 3.0,
+    attackDamage: 8,
+    attackCooldown: 1.6,
+    burnsInSunlight: false,
+    maxVerticalChase: 20,
+    // Never wanders far from its shrine.
+    leash: 26,
+  },
+
+  /** Phase thresholds as fractions of max health. */
+  phases: [
+    { at: 1.00, speed: 1.0, cooldown: 1.6, damage: 8 },
+    { at: 0.60, speed: 1.25, cooldown: 1.2, damage: 10 },
+    { at: 0.30, speed: 1.55, cooldown: 0.9, damage: 12 },
+  ],
+
+  ai(mob, dt, ctx) {
+    // --- Phase escalation --------------------------------------------------
+    const fraction = mob.health / this.maxHealth;
+    let phase = 0;
+    for (let i = 0; i < this.phases.length; i++) {
+      if (fraction <= this.phases[i].at) phase = i;
+    }
+    if (phase !== mob.memory.phase) {
+      mob.memory.phase = phase;
+      // Roar on entering a new phase, and shove anything nearby away.
+      audio.mobSound(this.voice, 'hurt', mob._listenerDist ?? 0);
+      const player = ctx.player;
+      if (mob.horizontalDistanceTo(player.position) < 8) {
+        const dx = player.position.x - mob.position.x;
+        const dz = player.position.z - mob.position.z;
+        const len = Math.hypot(dx, dz) || 1;
+        player.velocity.x += (dx / len) * 9;
+        player.velocity.z += (dz / len) * 9;
+        player.velocity.y = 6;
+      }
+    }
+
+    const tuning = this.phases[phase];
+    mob.moveSpeed *= tuning.speed;
+    mob.attackInterval = tuning.cooldown;
+    mob.attackDamage = tuning.damage;
+
+    // --- Leash: return home rather than chasing across the dimension -------
+    const home = mob.memory.home;
+    if (home) {
+      const fromHome = Math.hypot(mob.position.x - home.x, mob.position.z - home.z);
+      if (fromHome > this.brain.leash) {
+        mob._steerToward(home, 1.2);
+        // Regenerate while disengaged, so hit-and-run does not work.
+        mob.health = Math.min(this.maxHealth, mob.health + dt * 6);
+      }
+    }
+  },
+
+  onDamaged(mob) {
+    // Bosses do not flee.
+    mob.fleeTimer = 0;
+  },
+
+  buildModel() {
+    const group = new THREE.Group();
+    // Near-white, because these are lit surfaces rather than the unlit terrain:
+    // anything below about 0xe8 reads as plain grey next to the shrine's bricks.
+    const shell = 0xf6f3ee;
+    const dark = 0xe2dcd2;
+    const glow = 0xc2323c;
+
+    const legLeft = limb(0.42, 1.5, 0.42, dark, -0.42, 1.5, 0);
+    const legRight = limb(0.42, 1.5, 0.42, dark, 0.42, 1.5, 0);
+    const armLeft = limb(0.36, 1.4, 0.36, shell, -0.86, 2.6, 0);
+    const armRight = limb(0.36, 1.4, 0.36, shell, 0.86, 2.6, 0);
+
+    const torso = box(1.3, 1.3, 0.7, shell, 0, 2.2, 0);
+    // Exposed crimson core — the obvious weak point.
+    const core = box(0.5, 0.5, 0.06, glow, 0, 2.25, 0.37);
+    const ribs = box(1.36, 0.12, 0.74, glow, 0, 2.65, 0);
+    const head = box(0.9, 0.8, 0.8, shell, 0, 3.05, 0);
+    const crest = box(0.24, 0.5, 0.24, glow, 0, 3.6, 0);
+    const eyeLeft = box(0.2, 0.14, 0.03, glow, -0.22, 3.1, 0.42);
+    const eyeRight = box(0.2, 0.14, 0.03, glow, 0.22, 3.1, 0.42);
+    // Crimson bands so the red highlight is legible from across the plateau,
+    // where the small chest core alone is too little to register.
+    const bandLeft = box(0.46, 0.16, 0.46, glow, -0.42, 2.02, 0);
+    const bandRight = box(0.46, 0.16, 0.46, glow, 0.42, 2.02, 0);
+    const collar = box(1.0, 0.18, 0.76, glow, 0, 2.86, 0);
+
+    group.add(
+      legLeft, legRight, armLeft, armRight, torso, core, ribs, head, crest,
+      eyeLeft, eyeRight, bandLeft, bandRight, collar
+    );
+    return {
+      group,
+      parts: { legFrontLeft: legLeft, legFrontRight: legRight, armLeft, armRight, head },
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Passives
 // ---------------------------------------------------------------------------
 
@@ -596,5 +720,11 @@ export const CHICKEN = {
   },
 };
 
-/** Every registered mob. Spawning iterates this list. */
+/**
+ * Every naturally-spawning mob. The Warden is deliberately absent — it is
+ * placed by the shrine, not rolled by the spawner.
+ */
 export const MOB_TYPES = [ZOMBIE, SKELETON, SPIDER, CREEPER, PIG, COW, SHEEP, CHICKEN];
+
+/** Everything that can exist, including bosses, for lookups and saves. */
+export const ALL_MOB_TYPES = [...MOB_TYPES, WARDEN];

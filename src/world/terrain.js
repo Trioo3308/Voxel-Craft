@@ -11,7 +11,7 @@ import { Noise, hash2i, smoothstep, clamp, mulberry32 } from './noise.js';
 import { CHUNK_SX, CHUNK_SY, CHUNK_SZ, CHUNK_VOLUME, voxelIndex } from './chunk.js';
 import {
   AIR, GRASS, DIRT, STONE, SAND, GRAVEL, LOG, LEAVES, WATER, BEDROCK, SNOW,
-  COAL_ORE, IRON_ORE, GOLD_ORE, REDSTONE_ORE, LAPIS_ORE, DIAMOND_ORE, EMERALD_ORE,
+  COAL_ORE, IRON_ORE, GOLD_ORE, REDSTONE_ORE, LAPIS_ORE, DIAMOND_ORE, EMERALD_ORE, COMBIUM_ORE,
   DRY_GRASS, PODZOL, SWAMP_GRASS, CLAY, SANDSTONE, TREE_WOODS,
 } from './blocks.js';
 import Settings from '../settings.js';
@@ -50,6 +50,21 @@ export const BIOME_NAMES = [
  *   threshold  higher is rarer
  */
 const ORE_TABLE = [
+  // Combium is the gateway to the Comb dimension: deepest band, diamond pickaxe
+  // required, and slightly rarer than diamond itself (~1.3 vs ~1.5 per chunk in
+  // y 1..16). At 2-3 drops per vein block that is roughly a dozen chunks of deep
+  // mining for a ten-block portal frame.
+  //
+  // The threshold is measured, not guessed. This field's tail holds 1342ppm
+  // above 0.70 but only 157ppm above 0.80, so the original 0.80 in a 12-block
+  // band generated essentially nothing — the same "raw noise clusters near zero"
+  // trap that the biome and ruggedness fields both hit.
+  //
+  // Deliberately NOT gated behind a terrain version: gating it would lock every
+  // existing world out of the dimension. Leaving it ungated only means chunks
+  // explored before this update have none, the same seam Minecraft accepts
+  // whenever it adds an ore.
+  { id: COMBIUM_ORE.id,  field: 'nCombium',  minY: 1,  maxY: 14,  scale: 0.19, threshold: 0.775 },
   { id: DIAMOND_ORE.id,  field: 'nDiamond',  minY: 1,  maxY: 16,  scale: 0.16, threshold: 0.76 },
   { id: EMERALD_ORE.id,  field: 'nEmerald',  minY: 4,  maxY: 40,  scale: 0.22, threshold: 0.80, mountainsOnly: true },
   { id: REDSTONE_ORE.id, field: 'nRedstone', minY: 2,  maxY: 22,  scale: 0.13, threshold: 0.68 },
@@ -104,6 +119,7 @@ export class TerrainGenerator {
     this.nLapis = new Noise(seed + 13);
     this.nDiamond = new Noise(seed + 14);
     this.nEmerald = new Noise(seed + 15);
+    this.nCombium = new Noise(seed + 16);
 
     // Small memo cache for column heights — the tree pass re-queries columns
     // that the terrain pass already computed.

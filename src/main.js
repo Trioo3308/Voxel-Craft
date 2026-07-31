@@ -25,8 +25,21 @@ import { makeFurnaceState } from './player/crafting.js';
 import {
   isLiquid, GRASS, DIRT, SAND, SNOW, STONE, DRY_GRASS, PODZOL, SWAMP_GRASS,
   CRAFTING_TABLE, isFurnaceBlock, isDoor, DOOR_CLOSED, DOOR_OPEN, BED, CHEST,
+  PORTAL, COMBIUM_BLOCK, THRONE,
 } from './world/blocks.js';
 import { audio } from './engine/audio.js';
+import { DIMENSIONS, dimensionInfo } from './world/dimensions.js';
+import { CombTerrainGenerator, SHRINE_SPACING, SHRINE_LAYOUT } from './world/combTerrain.js';
+import { ignitePortal, extinguishPortal, buildReturnPortal, destinationOf } from './world/portal.js';
+import { THRONE_LOOT, fillChest } from './entities/loot.js';
+import { WARDEN } from './entities/mobTypes.js';
+
+/**
+ * Overworld coordinates are divided by this when entering the Comb, so the
+ * dimension is compact relative to the overworld — the same trick the Nether
+ * uses to make it a travel shortcut.
+ */
+const DIMENSION_SCALE = 4;
 
 // Re-exported on `window.VoxelCraft` for console debugging.
 import * as Blocks from './world/blocks.js';
@@ -80,6 +93,11 @@ export class Game {
     this._autosaveTimer = 0;
     this._playTime = 0;
     this._saving = false;
+
+    /** Shrines already stocked, keyed by throne position. Saved with the world. */
+    this._shrinesDone = new Set();
+    this._shrineTimer = 0;
+    this._travelling = false;
 
     this._lastFrameTime = performance.now();
 
@@ -146,6 +164,23 @@ export class Game {
 
   _bindGameEvents() {
     this.player.survival.onDeath = (cause) => this._onDeath(cause);
+    this.player.onIgnitePortal = (x, y, z) => this._ignitePortal(x, y, z);
+    this.player.onPortalTravel = () => this._travelDimension();
+
+    // The entity manager already rolled the boss loot table; this is just the
+    // fanfare, and it retires the shrine so the Warden does not come back.
+    this.entities.onBossDefeated = (mob) => {
+      this.hud.showToast(`${mob.type.displayName} falls`);
+      audio.explosion(mob.distanceTo(this.player.eyePosition));
+      if (mob.memory.shrineKey) this._shrinesDone.add(mob.memory.shrineKey);
+    };
+
+    // Walking away must not cost you the boss: releasing the shrine key lets
+    // `_maintainShrines` post a new guardian when you come back. The chest is
+    // not refilled — that is tracked by the chest's own block entity.
+    this.entities.onMobDespawn = (mob) => {
+      if (mob.type.boss && mob.memory.shrineKey) this._shrinesDone.delete(mob.memory.shrineKey);
+    };
 
     // Right-clicking a station opens its interface instead of placing a block.
     this.player.onUseStation = (blockId, x, y, z) => {
@@ -196,23 +231,31 @@ export class Game {
       return false;
     };
 
-    // Breaking a container spills its contents rather than deleting them.
-    this.player.onBlockBroken = (blockId, target) => {
+    // Breaking a container spills its contents rather than deleting them. The
+    // entity is handed in by the break itself — clearing the block drops it, so
+    // it can no longer be looked up by position at this point.
+    this.player.onBlockBroken = (blockId, target, entity) => {
       if (!target) return;
-      const key = `${target.x},${target.y},${target.z}`;
-      const entity = this.world.blockEntities.get(key);
 
       if (entity && isFurnaceBlock(blockId)) {
         for (const field of ['input', 'fuel', 'output']) {
           const stack = entity.state[field];
           if (stack) this.player.inventory.addExisting(stack);
         }
-        this.world.blockEntities.delete(key);
       } else if (entity && blockId === CHEST.id) {
         for (const stack of entity.state.slots) {
           if (stack) this.player.inventory.addExisting(stack);
         }
-        this.world.blockEntities.delete(key);
+      }
+
+      // Breaking part of a frame collapses the whole portal, so a portal can
+      // never outlive its ring.
+      if (blockId === COMBIUM_BLOCK.id) {
+        for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
+          if (this.world.getBlock(target.x + dx, target.y + dy, target.z + dz) === PORTAL.id) {
+            extinguishPortal(this.world, target.x + dx, target.y + dy, target.z + dz);
+          }
+        }
       }
 
       // A door is two blocks; breaking either half removes both.
@@ -224,6 +267,151 @@ export class Game {
         }
       }
     };
+  }
+
+  /**
+   * Light a combium portal with a bucket of milk.
+   * @returns {boolean} whether a valid frame was found and filled
+   */
+  _ignitePortal(x, y, z) {
+    const result = ignitePortal(this.world, x, y, z);
+    if (!result) {
+      this.hud.showToast('The frame is not complete');
+      return false;
+    }
+    audio.ignite();
+    this.hud.showToast('The portal opens');
+    return true;
+  }
+
+  /**
+   * Travel through a portal.
+   *
+   * The arrival position is derived from the departure by a coordinate scale,
+   * so the two dimensions stay roughly aligned and a portal built in one place
+   * always lands you near the same spot in the other.
+   */
+  async _travelDimension() {
+    if (this._travelling) return;
+    this._travelling = true;
+
+    const from = this.world.dimension;
+    const to = destinationOf(from);
+    const scale = to === DIMENSIONS.COMB ? 1 / DIMENSION_SCALE : DIMENSION_SCALE;
+
+    const targetX = Math.round(this.player.position.x * scale);
+    const targetZ = Math.round(this.player.position.z * scale);
+
+    this._setState('loading');
+    el('loadingFill').style.width = '0%';
+    this.entities.clear();
+
+    await this.world.setDimension(to);
+    this.dimension = to;
+
+    // Stream the arrival area before deciding where the ground is.
+    await this._preloadAround(targetX, targetZ);
+
+    // Land on solid ground, then build a return portal around it.
+    const surface = this.world.getSurfaceY(targetX, targetZ);
+    const landingY = surface >= 0 ? surface + 1 : 64;
+    const built = buildReturnPortal(this.world, targetX, landingY, targetZ);
+
+    this.player.position.set(built.stand.x, built.stand.y, built.stand.z);
+    this.player.velocity.set(0, 0, 0);
+    this.player.fallDistance = 0;
+    // Do not immediately bounce back through the portal we just arrived in.
+    this.player._portalCooldown = 4;
+    this.player.portalCharge = 0;
+    this.player._portalArmed = true;
+
+    this._applyDimensionLook();
+    this._setState('playing');
+    this.input.requestLock();
+    this.hud.showToast(dimensionInfo(to).name);
+    this._travelling = false;
+    this.saveWorld();
+  }
+
+  /**
+   * Populate any shrine near the player that has not been stocked yet.
+   *
+   * The generator builds the structure; this fills its chest and posts the
+   * Warden. Doing it here rather than in the worker keeps loot rolls and mob
+   * spawning on the thread that owns entities, and `_shrinesDone` (saved with
+   * the world) means a shrine is only ever stocked once.
+   */
+  _maintainShrines(dt) {
+    if (this.world.dimension !== DIMENSIONS.COMB) return;
+
+    this._shrineTimer -= dt;
+    if (this._shrineTimer > 0) return;
+    this._shrineTimer = 2;
+
+    // Shrine placement is a pure function of the seed, so their positions can be
+    // asked for directly instead of hunting for thrones block by block. This
+    // generator is only ever used for `shrineAt` — it never generates a chunk.
+    if (!this._shrineOracle) this._shrineOracle = new CombTerrainGenerator(this.world.seed);
+
+    const pcx = Math.floor(this.player.position.x / 16);
+    const pcz = Math.floor(this.player.position.z / 16);
+    // Anchors are SHRINE_SPACING chunks apart, so one grid step either way
+    // covers everything that could possibly be in render range.
+    const step = SHRINE_SPACING;
+    const originX = Math.floor(pcx / step) * step;
+    const originZ = Math.floor(pcz / step) * step;
+
+    for (let gz = -1; gz <= 1; gz++) {
+      for (let gx = -1; gx <= 1; gx++) {
+        const shrine = this._shrineOracle.shrineAt(originX + gx * step, originZ + gz * step);
+        if (!shrine) continue;
+
+        const key = `${shrine.wx},${shrine.wz}`;
+        if (this._shrinesDone.has(key)) continue;
+
+        // Only act once the structure is actually streamed in, or the throne
+        // check below reads unloaded air and the shrine is skipped forever.
+        const t = SHRINE_LAYOUT.throne;
+        const tx = shrine.wx + t.dx, ty = shrine.y + t.dy, tz = shrine.wz + t.dz;
+        if (!this.world.isChunkLoaded(tx, tz)) continue;
+        if (this.world.getBlock(tx, ty, tz) !== THRONE.id) continue;
+
+        this._shrinesDone.add(key);
+        this._stockShrine(shrine, key);
+      }
+    }
+  }
+
+  /** Fill a shrine's chest and post its guardian. */
+  _stockShrine(shrine, key) {
+    const { wx, wz, y } = shrine;
+
+    const c = SHRINE_LAYOUT.chest;
+    const cx = wx + c.dx, cy = y + c.dy, cz = wz + c.dz;
+    if (this.world.getBlock(cx, cy, cz) === CHEST.id) {
+      // Only stock a chest that has never had state. A chest the player already
+      // opened has one, so leaving and returning cannot farm the shrine.
+      if (!this.world.getBlockEntity(cx, cy, cz)) {
+        const entity = this.world.getBlockEntity(cx, cy, cz, () => ({
+          type: 'chest',
+          state: { slots: new Array(27).fill(null) },
+        }));
+        fillChest(entity.state.slots, THRONE_LOOT);
+      }
+    }
+
+    // One Warden per shrine, standing in front of the throne.
+    const g = SHRINE_LAYOUT.guardian;
+    const warden = this.entities.spawnMob(WARDEN, wx + g.dx, y + g.dy, wz + g.dz);
+    warden.memory.home = { x: wx + 0.5, y: y + 1, z: wz + 0.5 };
+    warden.memory.shrineKey = key;
+    this.hud.showToast('Something guards this place');
+  }
+
+  /** Sky, fog and ambient light for the current dimension. */
+  _applyDimensionLook() {
+    const info = dimensionInfo(this.world.dimension);
+    this.sky.setDimension(info);
   }
 
   /**
@@ -446,6 +634,14 @@ export class Game {
     this.entities.world = this.world;
     this.terrainInfo = new TerrainGenerator(save.seed, save.terrainVersion);
 
+    // Per-world state that must not leak across sessions. The shrine oracle is
+    // seeded, so a stale one would point at the previous world's shrines.
+    this._shrineOracle = null;
+    this._shrinesDone = new Set();
+    this._shrineTimer = 0;
+    this._travelling = false;
+    this._applyDimensionLook();
+
     // Whether this world may use creative at all, fixed when it was created.
     this.allowCreative = save.allowCreative === true;
 
@@ -621,13 +817,22 @@ export class Game {
   _onDeath(cause) {
     const messages = {
       fall: 'You hit the ground too hard.',
-      mob: 'You were slain by a zombie.',
+      mob: 'You were slain.',
       starve: 'You starved to death.',
       void: 'You fell out of the world.',
       lava: 'You tried to swim in lava.',
       explosion: 'A creeper got too close.',
     };
-    el('deathCause').textContent = messages[cause] ?? 'You died.';
+
+    // Name the actual killer. This used to read "slain by a zombie" whatever hit
+    // you, which is a strange thing to be told by a skeleton or the Warden.
+    let text = messages[cause] ?? 'You died.';
+    const killer = this.player.survival.lastDamageSource;
+    if (cause === 'mob' && killer) {
+      const name = killer.displayName ?? killer.name;
+      text = killer.boss ? `The ${name} destroyed you.` : `You were slain by a ${name.toLowerCase()}.`;
+    }
+    el('deathCause').textContent = text;
     this.hud.closeAllContainers();
     this._setState('dead');
     this.input.releaseLock();
@@ -709,7 +914,9 @@ export class Game {
         player: this.player,
         isDay: this.sky.isDay,
         isNight: this.sky.isNight,
+        dimension: this.world.dimension,
       });
+      this._maintainShrines(dt);
 
       this._autosaveTimer += dt;
       if (this._autosaveTimer >= AUTOSAVE_INTERVAL) {
