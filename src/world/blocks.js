@@ -139,6 +139,7 @@ export const TILE = {
   WHEAT_ITEM: 169,
   SEEDS: 170,
   BREAD: 171,
+  MOSSY_COBBLE: 172,
 
   /**
    * Tool and armour icons are generated parametrically (shape x material), so
@@ -802,6 +803,12 @@ export function wheatStage(id) {
   const index = WHEAT_STAGES.findIndex((b) => b.id === id);
   return index;
 }
+
+/** Damp, overgrown stone — the tell that a room down here was built, not carved. */
+export const MOSSY_COBBLE = defineBlock(81, 'mossy_cobblestone', {
+  displayName: 'Mossy Cobblestone', tiles: TILE.MOSSY_COBBLE, hardness: 2.0,
+  toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
+});
 
 /** Every log/leaf pair, so terrain can pick a tree style per biome. */
 export const TREE_WOODS = {

@@ -32,8 +32,9 @@ import {
 import { audio } from './engine/audio.js';
 import { DIMENSIONS, dimensionInfo } from './world/dimensions.js';
 import { CombTerrainGenerator, SHRINE_SPACING, SHRINE_LAYOUT } from './world/combTerrain.js';
+import { DUNGEON_SPACING } from './world/terrain.js';
 import { ignitePortal, extinguishPortal, buildReturnPortal, destinationOf } from './world/portal.js';
-import { THRONE_LOOT, fillChest } from './entities/loot.js';
+import { THRONE_LOOT, DUNGEON_LOOT, fillChest } from './entities/loot.js';
 import { WARDEN } from './entities/mobTypes.js';
 
 /**
@@ -98,9 +99,14 @@ export class Game {
     this._playTime = 0;
     this._saving = false;
 
-    /** Shrines already stocked, keyed by throne position. Saved with the world. */
+    /**
+     * Structures already stocked — Comb shrines by throne position, dungeons
+     * prefixed "d:". Saved with the world so loot is never re-rolled.
+     */
     this._shrinesDone = new Set();
     this._shrineTimer = 0;
+    this._dungeonTimer = 0;
+    this._caveSoundTimer = 20;
     this._travelling = false;
 
     this._lastFrameTime = performance.now();
@@ -417,6 +423,67 @@ export class Game {
     }
   }
 
+  /**
+   * Stock any dungeon chest near the player that has not been filled yet.
+   *
+   * Same shape as `_maintainShrines`: the generator builds the room, this fills
+   * it, and `_shrinesDone` (saved with the world) makes sure a chest is only
+   * ever rolled once. Positions come straight from the seeded generator, so no
+   * searching is needed.
+   */
+  _maintainDungeons(dt) {
+    if (this.world.dimension !== DIMENSIONS.OVERWORLD || !this.terrainInfo) return;
+    if (!this.terrainInfo.dungeonAt) return;
+
+    this._dungeonTimer -= dt;
+    if (this._dungeonTimer > 0) return;
+    this._dungeonTimer = 2;
+
+    const pcx = Math.floor(this.player.position.x / 16);
+    const pcz = Math.floor(this.player.position.z / 16);
+    const step = DUNGEON_SPACING;
+    const originX = Math.floor(pcx / step) * step;
+    const originZ = Math.floor(pcz / step) * step;
+
+    for (let gz = -1; gz <= 1; gz++) {
+      for (let gx = -1; gx <= 1; gx++) {
+        const room = this.terrainInfo.dungeonAt(originX + gx * step, originZ + gz * step);
+        if (!room) continue;
+
+        const key = `d:${room.wx},${room.wz}`;
+        if (this._shrinesDone.has(key)) continue;
+        if (!this.world.isChunkLoaded(room.wx, room.wz)) continue;
+
+        // Only once the room is actually streamed in — otherwise the chest
+        // lookup reads unloaded air and the dungeon is skipped for good.
+        const stocked = this._stockDungeon(room);
+        if (stocked) this._shrinesDone.add(key);
+      }
+    }
+  }
+
+  /** Fill a dungeon's chests. Returns false if the room has not loaded yet. */
+  _stockDungeon(room) {
+    const { wx, wz, y, halfX, halfZ } = room;
+    const spots = [
+      [wx - halfX, y, wz - halfZ + 1],
+      [wx + halfX, y, wz + halfZ - 1],
+    ];
+
+    let found = 0;
+    for (const [x, cy, z] of spots) {
+      if (this.world.getBlock(x, cy, z) !== CHEST.id) continue;
+      found++;
+      if (this.world.getBlockEntity(x, cy, z)) continue; // already looted
+      const entity = this.world.getBlockEntity(x, cy, z, () => ({
+        type: 'chest',
+        state: { slots: new Array(27).fill(null) },
+      }));
+      fillChest(entity.state.slots, DUNGEON_LOOT);
+    }
+    return found > 0;
+  }
+
   /** Fill a shrine's chest and post its guardian. */
   _stockShrine(shrine, key) {
     const { wx, wz, y } = shrine;
@@ -486,6 +553,43 @@ export class Game {
           }
         }
       }
+    }
+  }
+
+  /**
+   * Ambient sound bed — wind, cave drone, rain hiss.
+   *
+   * "Underground" is decided by comparing the player against the surface height
+   * of their own column, which is the same test the weather uses for shelter,
+   * so stepping under a roof and stepping into a cave behave consistently.
+   */
+  _updateAmbience(dt) {
+    if (dt <= 0) return;
+
+    const p = this.player.position;
+    const px = Math.floor(p.x), py = Math.floor(p.y), pz = Math.floor(p.z);
+    const surface = this.world.getSurfaceY(px, pz);
+
+    // A few blocks of tolerance, so standing on the surface is not "indoors".
+    const covered = surface > py + 1;
+    const underground = covered && py < surface - 4;
+
+    audio.ambience({
+      underground,
+      depth: py,
+      dimension: this.world.dimension,
+      indoors: covered && !underground,
+    });
+
+    // Rain is only audible when the sky above you is actually open.
+    audio.rain(this.weather.falling && !covered ? this.weather.intensity : 0,
+               this.weather.falling === 'snow');
+
+    // Sparse one-shots down in the dark.
+    this._caveSoundTimer -= dt;
+    if (this._caveSoundTimer <= 0) {
+      this._caveSoundTimer = 14 + Math.random() * 34;
+      if (underground) audio.caveSound(py);
     }
   }
 
@@ -726,6 +830,7 @@ export class Game {
     this._shrineOracle = null;
     this._shrinesDone = new Set();
     this._shrineTimer = 0;
+    this._dungeonTimer = 0;
     this._travelling = false;
     this._applyDimensionLook();
 
@@ -846,6 +951,9 @@ export class Game {
     this.input.releaseLock();
     if (this.world) this.world.unloadAll();
     this.entities.clear();
+    // The ambience bed is held open indefinitely; leaving the world must close
+    // it or the menu keeps whistling.
+    audio.stopAmbience();
     await this._showWorldScreen();
   }
 
@@ -1004,6 +1112,7 @@ export class Game {
         dimension: this.world.dimension,
       });
       this._maintainShrines(dt);
+      this._maintainDungeons(dt);
       this._updateEffects(dt);
 
       this._autosaveTimer += dt;
@@ -1029,12 +1138,7 @@ export class Game {
     });
     this.sky.overcast = this.weather.overcast;
     this.sky.flash = this.weather.flash;
-    // Rain you can hear only when you are actually out in it.
-    const exposed = this.world.getSurfaceY(
-      Math.floor(this.player.position.x), Math.floor(this.player.position.z)
-    ) <= Math.floor(this.player.position.y);
-    audio.rain(this.weather.falling && exposed ? this.weather.intensity : 0,
-               this.weather.falling === 'snow');
+    this._updateAmbience(simDt);
 
     if (this.particles) this.particles.update(simDt);
     this.sky.update(playing ? dt : 0, this.world);

@@ -13,6 +13,7 @@ import {
   AIR, GRASS, DIRT, STONE, SAND, GRAVEL, LOG, LEAVES, WATER, BEDROCK, SNOW,
   COAL_ORE, IRON_ORE, GOLD_ORE, REDSTONE_ORE, LAPIS_ORE, DIAMOND_ORE, EMERALD_ORE, COMBIUM_ORE,
   DRY_GRASS, PODZOL, SWAMP_GRASS, CLAY, SANDSTONE, TREE_WOODS,
+  COBBLE, MOSSY_COBBLE, CHEST,
 } from './blocks.js';
 import Settings from '../settings.js';
 
@@ -21,7 +22,14 @@ import Settings from '../settings.js';
  * Saved worlds record the version they were created with, and the loader
  * refuses to silently regenerate them under different rules — see world/save.js.
  */
-export const TERRAIN_VERSION = 2;
+export const TERRAIN_VERSION = 3;
+
+/**
+ * Dungeons sit on a coarse grid, so at most one exists per region. Exported
+ * because the main thread walks the same grid to find rooms to stock, and two
+ * copies of the number would drift apart.
+ */
+export const DUNGEON_SPACING = 10; // chunks
 
 export const BIOME = {
   OCEAN: 0,
@@ -411,6 +419,13 @@ export class TerrainGenerator {
       }
     }
 
+    // ---- Pass 1b: dungeons (v3+) ------------------------------------------
+    // Gated on the version because chunks are regenerated from the seed rather
+    // than stored: carving rooms into v2 generation would hollow out ground
+    // under builds people already made. Old worlds keep exactly the landscape
+    // they had; new ones get dungeons everywhere.
+    if (this.version >= 3) this._placeDungeons(voxels, cx, cz, baseX, baseZ);
+
     // ---- Pass 2: trees ----------------------------------------------------
     // Scan a margin around the chunk so trunks rooted just outside still drop
     // their canopy into this chunk.
@@ -425,6 +440,104 @@ export class TerrainGenerator {
     }
 
     return voxels;
+  }
+
+  // -------------------------------------------------------------------------
+  // Dungeons
+  // -------------------------------------------------------------------------
+
+  /**
+   * Is there a dungeon anchored in this chunk, and where?
+   *
+   * Same coarse-grid trick as the Comb's shrines: anchors only exist on every
+   * Nth chunk, so the answer is a hash rather than a search, and it is a pure
+   * function of the seed — which is what lets a room straddling a chunk border
+   * be written identically from both sides.
+   */
+  dungeonAt(cx, cz) {
+    if (((cx % DUNGEON_SPACING) + DUNGEON_SPACING) % DUNGEON_SPACING !== 0) return null;
+    if (((cz % DUNGEON_SPACING) + DUNGEON_SPACING) % DUNGEON_SPACING !== 0) return null;
+
+    const h = hash2i(cx, cz, this.seed ^ 0xd0e5);
+    // Not every anchor produces one, or they would be a perfect lattice.
+    if ((h & 0xff) < 70) return null;
+
+    const wx = cx * CHUNK_SX + 4 + (h % 8);
+    const wz = cz * CHUNK_SZ + 4 + ((h >>> 8) % 8);
+
+    const surface = this.columnHeight(wx, wz);
+    // Deep enough to be a find, shallow enough to reach before diamond gear.
+    const y = 14 + ((h >>> 16) % 26);
+    if (y > surface - 10) return null;
+
+    return {
+      wx, wz, y,
+      halfX: 3 + ((h >>> 20) & 1),
+      halfZ: 3 + ((h >>> 21) & 1),
+      height: 4,
+    };
+  }
+
+  /** Stamp any dungeon whose footprint reaches this chunk. */
+  _placeDungeons(voxels, cx, cz, baseX, baseZ) {
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const room = this.dungeonAt(cx + dx * DUNGEON_SPACING, cz + dz * DUNGEON_SPACING);
+        if (!room) continue;
+        if (Math.abs(room.wx - baseX) > 40 || Math.abs(room.wz - baseZ) > 40) continue;
+        this._buildDungeon(voxels, baseX, baseZ, room);
+      }
+    }
+  }
+
+  /**
+   * A hollow mossy room with a chest or two.
+   *
+   * The shell is written as solid wall first and then hollowed, so a room that
+   * happens to open into a cave still has walls rather than bleeding into it.
+   */
+  _buildDungeon(voxels, baseX, baseZ, room) {
+    const { wx, wz, y, halfX, halfZ, height } = room;
+    const rnd = mulberry32(hash2i(wx, wz, this.seed ^ 0x5eaf));
+
+    const set = (x, py, z, id) => {
+      const lx = x - baseX;
+      const lz = z - baseZ;
+      if (lx < 0 || lx >= CHUNK_SX || lz < 0 || lz >= CHUNK_SZ) return;
+      if (py < 1 || py >= CHUNK_SY) return;
+      voxels[voxelIndex(lx, py, lz)] = id;
+    };
+
+    // Shell, including floor and ceiling.
+    for (let dy = -1; dy <= height; dy++) {
+      for (let dz = -halfZ - 1; dz <= halfZ + 1; dz++) {
+        for (let dx = -halfX - 1; dx <= halfX + 1; dx++) {
+          // Mossy patches over plain cobble, thicker low down where it is damp.
+          const damp = dy <= 0 ? 0.55 : 0.28;
+          set(wx + dx, y + dy, wz + dz, rnd() < damp ? MOSSY_COBBLE.id : COBBLE.id);
+        }
+      }
+    }
+
+    // Hollow the interior back out.
+    for (let dy = 0; dy < height; dy++) {
+      for (let dz = -halfZ; dz <= halfZ; dz++) {
+        for (let dx = -halfX; dx <= halfX; dx++) {
+          set(wx + dx, y + dy, wz + dz, AIR);
+        }
+      }
+    }
+
+    // One or two chests, tucked against opposite walls.
+    const spots = [
+      [wx - halfX, y, wz - halfZ + 1],
+      [wx + halfX, y, wz + halfZ - 1],
+    ];
+    const count = rnd() < 0.45 ? 2 : 1;
+    for (let i = 0; i < count; i++) {
+      const [sx, sy, sz] = spots[i];
+      set(sx, sy, sz, CHEST.id);
+    }
   }
 
   /**

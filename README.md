@@ -365,6 +365,75 @@ arrow speed both scale with the draw — a snap shot is nearly useless, a full d
 hits for 9. Arrows are spent from anywhere in your inventory, and a charge
 indicator under the crosshair turns green at full power.
 
+**Farming** is the one food source you can renew. Dig any grassy block and about
+one in five yields seeds; a hoe turns grass or dirt into farmland; seeds go in,
+wheat comes out, and three wheat bake into bread. Farmland within four blocks of
+water is irrigated and grows roughly three times faster — measured at 91 seconds
+to ripen against 299 dry — which is the whole reason to dig a channel down the
+middle of a field. Harvesting early costs you the harvest but not the seed.
+
+Crops advance on **random ticks** rather than a registry: nothing tracks where
+your farms are, a planted crop is just a block id that occasionally gets poked.
+That keeps the cost fixed no matter how much you plant.
+
+---
+
+## Weather
+
+Rain, snow and thunderstorms, on a global state that ramps in and out rather
+than snapping. What actually falls is decided per column from the biome beneath
+you, so you can walk out of a snowfall into rain without the weather changing,
+and deserts stay dry through the same storm.
+
+Precipitation reuses the particle pool. Drops are ghosts — collision-testing a
+few hundred a second against every ledge would cost more than the rest of the
+effect layer — so instead each drop is handed the height of the ground below it
+and given exactly enough life to reach it. That is what makes a roof shelter you
+rather than rain falling straight through, and it is one height lookup instead of
+a per-step sweep.
+
+Storms grey the sky, drop the sun and mute the sunset band; lightning flashes
+everything white and cracks with a rolling tail. Rain is one looping voice,
+audible only when the sky above you is actually open. The weather is saved with
+the world, so logging out in a storm means logging back into one.
+
+---
+
+## Effects and ambience
+
+**Particles** all come from one pooled `InstancedMesh`, so the entire effect
+layer is a single draw call however much is happening, and the pool recycles
+rather than growing when an explosion overruns it. Shards are tinted by sampling
+the broken block's own atlas tile, so stone throws grey chips and grass throws
+green ones without the particle code knowing anything about blocks. They fire on
+breaking, mining, landing, sprinting, splashing, damage from any source,
+explosions, and lit portals.
+
+**Ambience** is two long-lived voices whose gain is steered toward a target
+rather than retriggered sounds — walking into a cave is a crossfade, not a cut.
+Wind above ground, a sub-bass drone below that deepens with depth, and sparse
+one-shots down in the dark: a drip, rock settling, a far-off groan.
+
+---
+
+## Dungeons
+
+Small mossy-cobble rooms buried between y 14 and 40, roughly one per hundred
+chunks, each holding one or two chests of mid-game loot — iron, coal, bread,
+arrows, the occasional diamond or ready-made tool. Never combium: that gate stays
+shut until you mine it yourself.
+
+Placement is a pure function of the seed on a coarse grid, the same trick the
+Comb's shrines use, so a room straddling a chunk border is written identically
+from both sides.
+
+Dungeons are gated behind **terrain v3**, and that gate matters more than it
+looks. Chunks are regenerated from the seed every time they load rather than
+stored — only your edits are saved — so adding room-carving to v2 generation
+would retroactively hollow out ground beneath houses people had already built.
+Worlds created before this update keep generating exactly as they did and get no
+dungeons; new worlds get them everywhere.
+
 ---
 
 ## The Comb
@@ -591,14 +660,21 @@ These are deliberate scope choices, not bugs:
 - **Fluid is not simulated on chunk load**, only on change. Terrain-generated
   oceans and cave water sit still until you disturb them — which is both the
   cheap option and roughly how early Minecraft behaved.
-- **No buckets.** Water and lava sources are placed from the creative palette.
-- **Zombie AI is steering-based**, not A\* — they walk toward you and jump at
+- **Mob AI is steering-based**, not A\* — they walk toward you and jump at
   obstacles, so they can get stuck on complex terrain.
 - **No enchanting, potions or redstone circuitry.** Redstone and lapis generate
   and can be mined, but currently have no use beyond decoration.
-- **Armour comes in iron, gold and diamond only** — the three metal tiers, as in
-  Minecraft. There is no leather (no cows) and no wood or stone armour.
-- Dropped item stacks do not merge with each other.
+- **Armour has no leather tier** — it starts at iron, so there is no early-game
+  armour before your first smelt.
+- **Wheat is the only crop.** The farming loop is complete (till, plant, grow,
+  harvest, bake) but it grows exactly one thing.
+- **Crops do not need light.** Block light lives in the worker and the growth
+  tick runs on the main thread, so a crop underground in the pitch dark grows
+  the same as one in a field. Irrigation is what matters instead.
+- **Dungeons have no spawner.** They are a room and a reward, not an encounter;
+  whatever wanders in is ordinary cave spawning.
+- **Weather is global, not regional.** One storm covers the whole world at once
+  — only *what falls* is decided locally, per biome.
 
 ---
 
@@ -662,6 +738,24 @@ identically from both sides, and shrine chests and the Warden are placed exactly
 once per shrine and survive a save/load round trip. The Warden escalates through
 three phases (8→10→12 damage, 1.6→0.9s cooldown), drops its loot table, and does
 not respawn. Buckets fill from sources only, pour water and lava, and milk a cow.
+
+**This batch** — 137 headless assertions across four suites, plus in-browser
+checks of each feature. Particles: shards take their colour from the broken
+block, settle on ground, ghosts fall through it, the pool caps at capacity
+instead of growing. Farming: seeds drop from grass at the intended rate, a hoe
+tills only soil, seeds plant only on farmland, crops run all four stages, a ripe
+harvest gives grain and an unripe one only the seed, a crop whose soil is removed
+dies. Merging: 30 stacks become 1, 100 become 64+36, different items and anything
+carrying durability never merge. Weather: zero drops leak under a roof, taiga
+gives snow and desert gives nothing, the sun drops from 1.5 to 0.9 under storm.
+Dungeons: rooms are hollow with solid shells, chests stock once, and **v2 worlds
+generate byte-identically with no dungeons at all**. Ambience: wind fades and the
+drone rises as you descend.
+
+A static **import checker** was added after a missing `export` reached the browser
+— `node --check` validates syntax per file and says nothing about whether an
+imported name exists, so all 350 named imports are now verified against their
+targets' actual exports.
 
 **Held tools and the swing** — a tool is carried by its handle, not by the middle
 of its blade. The grip point is *measured* from the icon (the midpoint of its

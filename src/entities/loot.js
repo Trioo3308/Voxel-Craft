@@ -35,6 +35,29 @@ export const THRONE_LOOT = table([
   { id: toolItemId('sword', 'combium'), min: 1, max: 1, weight: 2 },
 ], 5);
 
+/**
+ * Overworld dungeon chests. Deliberately mid-game: enough to be worth the trip
+ * and the fight, never enough to skip a tier. No combium — that gate stays shut
+ * until you mine it yourself.
+ */
+export const DUNGEON_LOOT = table([
+  { id: ITEM_ID.BREAD, min: 1, max: 3, weight: 0, always: true },
+
+  { id: ITEM_ID.IRON_INGOT, min: 2, max: 6, weight: 26 },
+  { id: ITEM_ID.COAL, min: 3, max: 9, weight: 22 },
+  { id: ITEM_ID.BREAD, min: 1, max: 3, weight: 18 },
+  { id: ITEM_ID.SEEDS, min: 2, max: 5, weight: 14 },
+  { id: ITEM_ID.GOLD_INGOT, min: 1, max: 4, weight: 13 },
+  { id: ITEM_ID.BONE, min: 2, max: 6, weight: 12 },
+  { id: ITEM_ID.ARROW, min: 4, max: 12, weight: 12 },
+  { id: ITEM_ID.GUNPOWDER, min: 1, max: 4, weight: 10 },
+  { id: ITEM_ID.LAPIS, min: 2, max: 6, weight: 8 },
+  { id: ITEM_ID.DIAMOND, min: 1, max: 2, weight: 5 },
+  { id: toolItemId('pickaxe', 'iron'), min: 1, max: 1, weight: 5 },
+  { id: armorItemId('helmet', 'iron'), min: 1, max: 1, weight: 4 },
+  { id: ITEM_ID.BOW, min: 1, max: 1, weight: 4 },
+], 4);
+
 /** Dropped by the Comb Warden. */
 export const BOSS_LOOT = table([
   { id: ITEM_ID.COMB_HEART, min: 1, max: 1, weight: 0, always: true },

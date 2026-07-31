@@ -466,6 +466,107 @@ export class AudioEngine {
     this._rainFilter.frequency.setTargetAtTime(snow ? 900 : 2600, this.ctx.currentTime, 0.6);
   }
 
+  /**
+   * Continuous ambience: wind above ground, a low drone below it.
+   *
+   * Held as two long-lived voices whose gains are steered toward a target,
+   * rather than retriggered sounds. That is what makes walking into a cave a
+   * crossfade instead of a cut, and it costs two oscillator chains total no
+   * matter how long you play.
+   *
+   * @param ctx {{underground:boolean, depth:number, dimension:string,
+   *              sheltered:boolean, indoors:boolean}}
+   */
+  ambience(ctx) {
+    if (!this.ready) return;
+    const now = this.ctx.currentTime;
+
+    if (!this._ambience) {
+      const make = (type, freq, q) => {
+        const source = this.ctx.createBufferSource();
+        source.buffer = this._noise('pink');
+        source.loop = true;
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = type;
+        filter.frequency.value = freq;
+        filter.Q.value = q;
+        const gain = this.ctx.createGain();
+        gain.gain.value = 0;
+        source.connect(filter).connect(gain).connect(this.master);
+        source.start();
+        return { source, filter, gain };
+      };
+
+      this._ambience = {
+        // Airy hiss for the surface.
+        wind: make('bandpass', 620, 0.7),
+        // Sub-bass rumble for underground.
+        cave: make('lowpass', 120, 1.2),
+        caveTimer: 8 + Math.random() * 20,
+      };
+
+      // A slow wobble on the wind so it breathes instead of sitting flat.
+      const lfo = this.ctx.createOscillator();
+      lfo.frequency.value = 0.07;
+      const depth = this.ctx.createGain();
+      depth.gain.value = 260;
+      lfo.connect(depth).connect(this._ambience.wind.filter.frequency);
+      lfo.start();
+    }
+
+    const amb = this._ambience;
+    const comb = ctx.dimension === 'comb';
+
+    // Wind fades out as you go under, and indoors.
+    let windTarget = ctx.underground ? 0 : 0.05;
+    if (ctx.indoors) windTarget *= 0.35;
+    // The Comb has no weather and no open sky; it gets a thinner, higher tone.
+    if (comb) windTarget = 0.035;
+
+    // The drone comes up with depth, so a shallow cellar is not the deep dark.
+    const depthFactor = Math.min(1, Math.max(0, (60 - ctx.depth) / 45));
+    const caveTarget = ctx.underground ? 0.06 * depthFactor : 0;
+
+    amb.wind.gain.gain.setTargetAtTime(windTarget, now, 1.5);
+    amb.cave.gain.gain.setTargetAtTime(caveTarget, now, 2.0);
+    amb.wind.filter.frequency.setTargetAtTime(comb ? 1500 : 620, now, 2.0);
+  }
+
+  /**
+   * Occasional one-shot underground: a distant settling, a drip, a far-off
+   * groan of rock. Sparse on purpose — the point is to make a cave feel
+   * inhabited, and anything frequent becomes wallpaper.
+   */
+  caveSound(depth) {
+    if (!this.ready) return;
+    const pick = Math.random();
+
+    if (pick < 0.34) {
+      // Water drip.
+      this.tone({ freq: 900 + Math.random() * 700, endFreq: 300, duration: 0.12,
+                  gain: 0.07, type: 'sine' });
+    } else if (pick < 0.68) {
+      // Distant rock settling.
+      this.noise({ freq: 190 + Math.random() * 120, q: 0.7, decay: 0.7,
+                   gain: 0.06, kind: 'pink', type: 'lowpass' });
+      this.tone({ freq: 58, endFreq: 34, duration: 0.9, gain: 0.05, type: 'sine', delay: 0.05 });
+    } else {
+      // A long low groan; deeper down it drops further.
+      const base = 70 - Math.min(30, (60 - depth) * 0.5);
+      this.tone({ freq: base, endFreq: base * 0.7, duration: 1.6, gain: 0.055,
+                  type: 'sine', attack: 0.4 });
+    }
+  }
+
+  /** Fade every held ambience voice out — leaving a world, or muting. */
+  stopAmbience() {
+    if (!this._ambience || !this.ctx) return;
+    const now = this.ctx.currentTime;
+    this._ambience.wind.gain.gain.setTargetAtTime(0, now, 0.3);
+    this._ambience.cave.gain.gain.setTargetAtTime(0, now, 0.3);
+    if (this._rainGain) this._rainGain.gain.setTargetAtTime(0, now, 0.3);
+  }
+
   /** Bowstring being drawn — pitch rises with charge. */
   bowDraw(charge) {
     if (!this._throttle('bowDraw', 0.18)) return;

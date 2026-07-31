@@ -321,6 +321,23 @@ export const PAINTERS = {
     speckle(set, rnd, [152, 114, 82], 12);
   },
 
+  [TILE.MOSSY_COBBLE]: (set, rnd) => {
+    // Cobble, then moss creeping over it from the top down.
+    noiseFill(set, rnd, [124, 124, 128], 22);
+    speckle(set, rnd, [96, 96, 100], 26, 2);
+    speckle(set, rnd, [158, 158, 162], 14, 2);
+    for (let y = 0; y < T; y++) {
+      // Denser near the top, so the moss looks like it grew rather than
+      // being sprayed on evenly.
+      const density = 0.42 * (1 - y / T) + 0.10;
+      for (let x = 0; x < T; x++) {
+        if (rnd() > density) continue;
+        const d = (rnd() - 0.5) * 26;
+        set(x, y, 74 + d, 104 + d, 56 + d);
+      }
+    }
+  },
+
   // --- Farming -------------------------------------------------------------
 
   // Four growth stages: shoots, leafing, heading, ripe. Each is a set of
