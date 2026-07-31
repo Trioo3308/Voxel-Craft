@@ -1339,6 +1339,53 @@ for (const piece of ARMOR_PIECES) {
 }
 
 // ---------------------------------------------------------------------------
+// Grip points
+// ---------------------------------------------------------------------------
+
+const gripCache = new Map();
+
+/**
+ * Where a tool's icon should sit in the fist, as {u, v} fractions of the tile
+ * (u from the left, v from the top).
+ *
+ * Measured from the icon rather than tabulated per tool, so adding or redrawing
+ * a sprite cannot leave a stale offset behind. The rule is the midpoint of the
+ * lowest opaque row: every tool sprite here runs handle-at-the-bottom, blade or
+ * head at the top, so that lands on the butt of the grip — a diagonal pickaxe
+ * at bottom-left, a straight shovel at bottom-centre, both correct.
+ */
+export function getGripPoint(tile) {
+  const cached = gripCache.get(tile);
+  if (cached) return cached;
+
+  let grip = { u: 0.5, v: 0.5 };
+  const painter = PAINTERS[tile];
+
+  if (painter) {
+    // Replay the painter into a recorder instead of reading back the atlas,
+    // which keeps this usable before the atlas has been built.
+    const columnsByRow = [];
+    const record = (x, y, r, g, bl, a = 255) => {
+      if (a < 128 || x < 0 || x >= T || y < 0 || y >= T) return;
+      (columnsByRow[y] ??= []).push(x);
+    };
+    painter(record, mulberry32(0x9e3779b9 ^ (tile * 7919)));
+
+    for (let y = T - 1; y >= 0; y--) {
+      const cols = columnsByRow[y];
+      if (!cols || cols.length === 0) continue;
+      const minX = Math.min(...cols);
+      const maxX = Math.max(...cols);
+      grip = { u: (minX + maxX + 1) / 2 / T, v: (y + 1) / T };
+      break;
+    }
+  }
+
+  gripCache.set(tile, grip);
+  return grip;
+}
+
+// ---------------------------------------------------------------------------
 // Atlas construction
 // ---------------------------------------------------------------------------
 

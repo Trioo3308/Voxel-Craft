@@ -663,6 +663,22 @@ once per shrine and survive a save/load round trip. The Warden escalates through
 three phases (8→10→12 damage, 1.6→0.9s cooldown), drops its loot table, and does
 not respawn. Buckets fill from sources only, pour water and lava, and milk a cow.
 
+**Held tools and the swing** — a tool is carried by its handle, not by the middle
+of its blade. The grip point is *measured* from the icon (the midpoint of its
+lowest opaque row) rather than tabulated per tool, so redrawing a sprite cannot
+leave a stale offset behind; a diagonal pickaxe grips at u=0.19, a straight
+shovel at u=0.47, and the hand-drawn combium sword at u=0.09, all correct from
+the same rule. The sprite is shifted inside a holder so the grip sits at the
+holder's origin, which also makes the tool rotate about the hand instead of about
+its own centre. A bow is excluded — it is gripped mid-limb, and the rule would
+put the hand on its bottom tip.
+
+Mining sets `didSwing` every frame it is held, and the view model restarted the
+swing on each one, pinning progress at 0 so the arm sat frozen mid-mine. A swing
+in flight is now left alone and reloops only once a cycle completes: holding to
+mine runs 7 strokes in 2 seconds, and releasing lets the stroke in flight finish
+within 0.25s and stop. The arm sweeps 0.9 rad through the stroke.
+
 **Shapes, textures and walk-through blocks** — `emitShape` *crops* a partial
 block's tile to the box extent rather than squashing the whole tile into it, so
 a torch only ever shows columns 7–9 and rows 6–15. Art drawn outside that window

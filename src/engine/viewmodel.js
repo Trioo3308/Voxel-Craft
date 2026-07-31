@@ -11,11 +11,28 @@
  */
 
 import * as THREE from 'three';
-import { getAtlasTexture } from '../world/textures.js';
-import { getIconTile, isBlockId, ATLAS_COLS, FACE_PY, BLOCKS } from '../world/blocks.js';
+import { getAtlasTexture, getGripPoint } from '../world/textures.js';
+import { getIconTile, isBlockId, getThing, ATLAS_COLS, FACE_PY, BLOCKS } from '../world/blocks.js';
 
 const SKIN = 0xc98b62;
 const SLEEVE = 0x3f6fb5;
+
+/** Edge length of the flat sprite used for tools and items. */
+const SPRITE_SIZE = 0.34;
+
+/** Where the grip of a tool sits — the front of the closed fist. */
+const HOLD_TOOL = new THREE.Vector3(-0.03, 0.03, -0.14);
+/**
+ * Blade/head points up-left at roughly 40 degrees. The sprite's own axis is
+ * up-left once mirrored, so the small +z roll only tilts it off the diagonal;
+ * the yaw is what gives it perspective rather than looking like a decal.
+ */
+const HOLD_TOOL_ROTATION = new THREE.Euler(0, 0.45, 0.18);
+/** Plain items float in front of the hand instead. */
+const HOLD_ITEM = new THREE.Vector3(-0.02, 0.06, -0.2);
+
+/** Seconds one full swing takes. */
+const SWING_SECONDS = 0.28;
 
 export class ViewModel {
   constructor(renderer) {
@@ -152,11 +169,36 @@ export class ViewModel {
       mesh.rotation.set(0.2, 0.7, 0.1);
       this.heldObject = mesh;
     } else {
-      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.34), this._spriteMaterial(id));
-      // Angled like a held tool rather than facing the camera flat.
-      mesh.position.set(-0.02, 0.06, -0.2);
-      mesh.rotation.set(0, -0.55, -0.5);
-      this.heldObject = mesh;
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(SPRITE_SIZE, SPRITE_SIZE), this._spriteMaterial(id));
+
+      // A tool is carried by its handle, not by the middle of its blade. The
+      // sprite is shifted inside a holder so its grip sits at the holder's
+      // origin, and the holder is what gets placed at the fist — so the tool
+      // also rotates about the hand instead of about its own centre.
+      const thing = getThing(id);
+      const holder = new THREE.Group();
+
+      // A bow is gripped mid-limb, not at a handle, so it is excluded — the
+      // measured rule would put the hand on its bottom tip. Plain items have no
+      // handle either and stay centred.
+      const hasHandle = !!(thing && thing.tool && !thing.ranged);
+
+      if (hasHandle) {
+        const grip = getGripPoint(getIconTile(id));
+        // Mirrored, so the handle ends up on the right beside the fist and the
+        // head sweeps up-left toward the crosshair — the icons are all drawn
+        // handle-bottom-left, which points the wrong way when held.
+        mesh.scale.x = -1;
+        mesh.position.set((grip.u - 0.5) * SPRITE_SIZE, (grip.v - 0.5) * SPRITE_SIZE, 0);
+        holder.position.copy(HOLD_TOOL);
+        holder.rotation.copy(HOLD_TOOL_ROTATION);
+      } else {
+        holder.position.copy(HOLD_ITEM);
+        holder.rotation.set(0, -0.55, -0.5);
+      }
+
+      holder.add(mesh);
+      this.heldObject = holder;
     }
 
     // The arm still shows, tucked behind the item.
@@ -164,8 +206,16 @@ export class ViewModel {
     this.pivot.add(this.heldObject);
   }
 
-  /** Trigger the swing animation. */
+  /**
+   * Trigger the swing animation.
+   *
+   * A swing already in flight is left alone. Mining sets `didSwing` every frame
+   * it is held, and restarting the cycle each time pinned progress at 0 — the
+   * arm sat frozen mid-mine instead of swinging. Repeats are handled in
+   * `update` by relooping once a cycle actually completes.
+   */
   triggerSwing() {
+    if (this._swinging) return;
     this.swing = 0;
     this._swinging = true;
   }
@@ -185,14 +235,27 @@ export class ViewModel {
 
     // --- Swing ------------------------------------------------------------
     if (this._swinging) {
-      this.swing += dt * 3.6;
+      this.swing += dt / SWING_SECONDS;
       if (this.swing >= 1) {
-        this.swing = 0;
-        this._swinging = false;
+        // Holding to mine keeps `didSwing` true, so roll straight into the next
+        // stroke; a one-off hit stops here. The remainder is carried over so
+        // repeated swings stay evenly paced instead of drifting with framerate.
+        if (player.didSwing) {
+          this.swing %= 1;
+        } else {
+          this.swing = 0;
+          this._swinging = false;
+        }
       }
     }
-    // Up-and-over arc: rises, punches forward, returns.
-    const s = this._swinging ? Math.sin(this.swing * Math.PI) : 0;
+
+    // Up-and-over arc: rises, drives down and forward, then recovers. The
+    // downstroke is quicker than the recovery, which is what makes it read as a
+    // swing with weight rather than a symmetric wobble.
+    const t = this.swing;
+    const s = this._swinging
+      ? (t < 0.4 ? Math.sin((t / 0.4) * Math.PI * 0.5) : Math.cos(((t - 0.4) / 0.6) * Math.PI * 0.5))
+      : 0;
 
     // --- Walk bob ---------------------------------------------------------
     const speed = Math.hypot(player.velocity.x, player.velocity.z);
