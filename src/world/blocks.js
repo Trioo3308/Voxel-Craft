@@ -141,6 +141,16 @@ export const TILE = {
   BREAD: 171,
   MOSSY_COBBLE: 172,
 
+  // --- Saplings, ladders, tools ---------------------------------------------
+  SAPLING_OAK: 186,
+  SAPLING_ACACIA: 187,
+  SAPLING_SPRUCE: 188,
+  LADDER: 189,
+  SHEARS: 190,
+  FISHING_ROD: 191,
+  FISH: 192,
+  COOKED_FISH: 193,
+
   // --- The Comb -------------------------------------------------------------
   COMB_RESIN: 173,
   COMB_RESIN_ITEM: 174,
@@ -227,6 +237,8 @@ export const SHAPES = {
   FARMLAND: [[0, 0, 0, 1, 0.9375, 1]],
   // Crops are decoration you walk through; the box only shapes the render.
   CROP: [[0.0625, 0, 0.0625, 0.9375, 0.875, 0.9375]],
+  // A ladder is a thin panel against the -Z face.
+  LADDER: [[0, 0, 0, 1, 1, 0.125]],
 };
 
 /** Height of a shape's tallest box, used for step-up and headroom checks. */
@@ -310,6 +322,14 @@ function defineBlock(id, name, options = {}) {
     crossHeight: options.crossHeight ?? 1,
     /** Damage dealt every half second while standing in this block. */
     contactDamage: options.contactDamage ?? 0,
+    /** Tree style this sapling becomes, or null if it is not a sapling. */
+    grows: options.grows ?? null,
+    /** Standing in this block lets you climb up and down freely. */
+    climbable: options.climbable === true,
+    /** Leaves: decays when cut off from a log. */
+    decays: options.decays === true,
+    /** Leaves: the sapling this canopy drops. */
+    sapling: options.sapling ?? null,
     /** Light this block emits, 0..15. */
     lightEmission: options.lightEmission ?? 0,
     displayName: options.displayName ?? name,
@@ -457,11 +477,17 @@ export const ITEM_ID = {
   COMB_RESIN: 163,
   CROWN: 164,
 
-  // Gear runs are 30 and 24 wide. They moved again when the hoe was added as a
-  // fifth tool kind, which pushed the tool run into what had been the armour
-  // range; saves remap by *name*, so renumbering is safe.
-  TOOL_BASE: 168,   // 168..197 (5 kinds x 6 materials)
-  ARMOR_BASE: 200,  // 200..223 (4 pieces x 6 material slots)
+  // --- Husbandry, fishing and climbing --------------------------------------
+  SHEARS: 165,
+  FISHING_ROD: 166,
+  FISH: 167,
+  COOKED_FISH: 168,
+
+  // Gear runs are 30 and 24 wide. They have moved twice now — once for the hoe,
+  // once to make room for named items — and saves remap by *name*, so this is
+  // safe as long as no name changes.
+  TOOL_BASE: 176,   // 176..205 (5 kinds x 6 materials)
+  ARMOR_BASE: 208,  // 208..231 (4 pieces x 6 material slots)
 };
 
 // ---------------------------------------------------------------------------
@@ -836,6 +862,83 @@ export function wheatStage(id) {
 }
 
 // ---------------------------------------------------------------------------
+// Saplings and ladders
+// ---------------------------------------------------------------------------
+
+/**
+ * Saplings. One per wood type, so the tree you plant is the tree you felled.
+ *
+ * `grows` names the tree style rather than pointing at blocks directly — the
+ * growth code already knows how to build each style, and duplicating the
+ * log/leaf pair here would be a second place to keep in step.
+ */
+export const SAPLINGS = [];
+function defineSapling(id, tile, name, displayName, grows) {
+  const block = defineBlock(id, name, {
+    displayName, tiles: tile, hardness: 0.05,
+    solid: false, opaque: false, cullSameType: false,
+    cross: true, crossHeight: 0.7,
+    grows,
+  });
+  SAPLINGS.push(block);
+  return block;
+}
+
+export const SAPLING_OAK = defineSapling(91, TILE.SAPLING_OAK, 'oak_sapling', 'Oak Sapling', 'oak');
+export const SAPLING_ACACIA = defineSapling(92, TILE.SAPLING_ACACIA, 'acacia_sapling', 'Acacia Sapling', 'acacia');
+export const SAPLING_SPRUCE = defineSapling(93, TILE.SAPLING_SPRUCE, 'spruce_sapling', 'Spruce Sapling', 'spruce');
+
+export function isSapling(id) {
+  const b = BLOCKS[id];
+  return !!b && !!b.grows;
+}
+
+/**
+ * Leaves become their own sapling and the occasional stick.
+ *
+ * Wired up here rather than in each leaf's options because saplings are defined
+ * after the leaves are; the alternative is writing the ids inline, which is the
+ * magic-number trap the save palette exists to avoid.
+ *
+ * Both drops are chance-based, so clearing a canopy gives you enough to replant
+ * without burying you in saplings.
+ */
+for (const [leaf, sapling] of [
+  [LEAVES, SAPLING_OAK],
+  [ACACIA_LEAVES, SAPLING_ACACIA],
+  [SPRUCE_LEAVES, SAPLING_SPRUCE],
+]) {
+  leaf.drops = 0;   // nothing guaranteed; everything comes off the bonus table
+  leaf.sapling = sapling.id;
+  leaf.decays = true;
+  leaf.bonusDrops = [
+    { id: sapling.id, chance: 0.11, min: 1, max: 1 },
+    { id: ITEM_ID.STICK, chance: 0.08, min: 1, max: 2 },
+  ];
+}
+
+/** Blocks that hold leaves up. A leaf too far from one of these decays. */
+export const LEAF_SUPPORTS = new Set([LOG.id, ACACIA_LOG.id, SPRUCE_LOG.id]);
+
+export function isLeaf(id) {
+  const b = BLOCKS[id];
+  return !!b && b.decays === true;
+}
+
+/**
+ * A ladder. Climbable rather than solid: standing in one lets you move up and
+ * down freely, which is handled in the player's physics.
+ */
+export const LADDER = defineBlock(94, 'ladder', {
+  displayName: 'Ladder', tiles: TILE.LADDER, hardness: 0.4, toolType: 'axe',
+  solid: false, opaque: false, cullSameType: false,
+  climbable: true,
+  // A thin panel against one wall rather than a cross — you should be able to
+  // see past a ladder, and it should not look like a plant.
+  shape: SHAPES.LADDER,
+});
+
+// ---------------------------------------------------------------------------
 // The Comb — materials, flora and hazards
 // ---------------------------------------------------------------------------
 
@@ -995,6 +1098,25 @@ export const SEEDS = defineItem(ITEM_ID.SEEDS, 'wheat_seeds', {
 /** The first food you can farm rather than hunt. */
 export const BREAD = defineItem(ITEM_ID.BREAD, 'bread', {
   displayName: 'Bread', tile: TILE.BREAD, food: 5, saturation: 6,
+});
+
+// --- Husbandry and fishing --------------------------------------------------
+/** Shears: not a mining tool, so they get durability without a `tool` block. */
+export const SHEARS = defineItem(ITEM_ID.SHEARS, 'shears', {
+  displayName: 'Shears', tile: TILE.SHEARS, maxStack: 1,
+  tool: { kind: 'shears', material: 'iron', tier: -1, speed: 1, durability: 238, damage: 2 },
+});
+
+export const FISHING_ROD = defineItem(ITEM_ID.FISHING_ROD, 'fishing_rod', {
+  displayName: 'Fishing Rod', tile: TILE.FISHING_ROD, maxStack: 1,
+  tool: { kind: 'rod', material: 'wood', tier: -1, speed: 1, durability: 64, damage: 1 },
+});
+
+export const FISH = defineItem(ITEM_ID.FISH, 'fish', {
+  displayName: 'Raw Fish', tile: TILE.FISH, food: 2, saturation: 1,
+});
+export const COOKED_FISH = defineItem(ITEM_ID.COOKED_FISH, 'cooked_fish', {
+  displayName: 'Cooked Fish', tile: TILE.COOKED_FISH, food: 5, saturation: 6,
 });
 
 // --- The Comb ---------------------------------------------------------------

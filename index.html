@@ -210,6 +210,24 @@
   /* ---------------------------------------------------------------------
      Debug readout (F3)
      --------------------------------------------------------------------- */
+  /* Compact position/facing readout. Separate from the debug panel so it can be
+     left on permanently without the FPS and chunk counters. */
+  #locator {
+    position: absolute; left: 8px; top: 8px;
+    font-size: 12px; line-height: 1.5;
+    text-shadow: 1px 1px 2px #000;
+    white-space: pre;
+    display: none;
+    background: rgba(0,0,0,0.32);
+    padding: 5px 8px;
+    border-radius: 3px;
+    color: #e8e8ea;
+    pointer-events: none;
+  }
+  #locator.show { display: block; }
+  /* Sits below the debug panel when both are up. */
+  #debug.show ~ #locator.show { top: 108px; }
+
   #debug {
     position: absolute; left: 8px; top: 8px;
     font-size: 12px; line-height: 1.45;
@@ -511,6 +529,7 @@
   </div>
 
   <div id="debug"></div>
+  <div id="locator"></div>
 </div>
 
 <!-- World select ---------------------------------------------------------->

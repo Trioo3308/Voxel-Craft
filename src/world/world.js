@@ -20,7 +20,9 @@ import {
   AIR, BLOCKS, isSolid as blockIsSolid, isLiquid as blockIsLiquid, isFluidFamily,
   isFurnaceBlock, FURNACE, FURNACE_LIT,
   isFarmland, FARMLAND_MOIST, WHEAT_STAGES, wheatStage,
+  isSapling, isLeaf, LEAF_SUPPORTS, GRASS, DIRT, PODZOL, DRY_GRASS, SWAMP_GRASS, SAND,
 } from './blocks.js';
+import { growTree } from './treeGrowth.js';
 import { getAtlasTexture } from './textures.js';
 import { FluidSimulator } from './fluids.js';
 import { TERRAIN_VERSION } from './terrain.js';
@@ -48,6 +50,20 @@ const RANDOM_TICK_RADIUS = 16;       // blocks, horizontally
 const RANDOM_TICK_HEIGHT = 8;        // blocks, above and below the player
 const GROWTH_CHANCE_DRY = 0.18;
 const GROWTH_CHANCE_MOIST = 0.40;
+
+/** Saplings take longer than wheat — a tree should feel like a wait. */
+const SAPLING_GROWTH_CHANCE = 0.10;
+/** What a sapling will root in. */
+const SAPLING_SOIL = new Set([GRASS.id, DIRT.id, PODZOL.id, DRY_GRASS.id, SWAMP_GRASS.id, SAND.id]);
+
+/** Leaf decay: how eagerly an unsupported leaf gives up, and how far it looks. */
+const LEAF_DECAY_CHANCE = 0.55;
+const LEAF_RANGE = 4;
+
+/** Six-way neighbours, shared by the leaf-support flood. */
+const NEIGHBOURS = [
+  [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+];
 
 /** Per-chunk render + data record. */
 class Chunk {
@@ -308,8 +324,62 @@ export class World {
       if (y < 1 || y >= CHUNK_SY) continue;
       if (!this.isChunkLoaded(x, z)) continue;
 
-      this._tickCrop(x, y, z);
+      const id = this.getBlock(x, y, z);
+      if (wheatStage(id) >= 0) this._tickCrop(x, y, z);
+      else if (isSapling(id)) this._tickSapling(x, y, z, id);
+      else if (isLeaf(id)) this._tickLeaf(x, y, z, id);
     }
+  }
+
+  /** A sapling with room and daylight becomes a tree. */
+  _tickSapling(x, y, z, id) {
+    if (Math.random() > SAPLING_GROWTH_CHANCE) return;
+
+    const soil = this.getBlock(x, y - 1, z);
+    if (!SAPLING_SOIL.has(soil)) return;
+
+    growTree(this, x, y, z, BLOCKS[id].grows);
+  }
+
+  /**
+   * Leaves cut off from a trunk wither away.
+   *
+   * The support search is a bounded flood rather than a box scan: a box would
+   * count a *different* tree's log four blocks away and keep a floating canopy
+   * alive forever, which is exactly the artefact this is meant to clear up.
+   */
+  _tickLeaf(x, y, z, id) {
+    if (Math.random() > LEAF_DECAY_CHANCE) return;
+    if (this._leafHasSupport(x, y, z)) return;
+
+    const block = BLOCKS[id];
+    this.setBlock(x, y, z, AIR);
+    if (this.onLeafDecayed) this.onLeafDecayed(x, y, z, block);
+  }
+
+  /** Is this leaf connected to a log through at most LEAF_RANGE leaves? */
+  _leafHasSupport(x, y, z) {
+    const seen = new Set([`${x},${y},${z}`]);
+    let frontier = [[x, y, z, 0]];
+
+    while (frontier.length > 0) {
+      const next = [];
+      for (const [cx, cy, cz, depth] of frontier) {
+        for (const [dx, dy, dz] of NEIGHBOURS) {
+          const nx = cx + dx, ny = cy + dy, nz = cz + dz;
+          const key = `${nx},${ny},${nz}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          const neighbour = this.getBlock(nx, ny, nz);
+          if (LEAF_SUPPORTS.has(neighbour)) return true;
+          // Only keep walking through leaves, and only so far.
+          if (depth + 1 < LEAF_RANGE && isLeaf(neighbour)) next.push([nx, ny, nz, depth + 1]);
+        }
+      }
+      frontier = next;
+    }
+    return false;
   }
 
   /** Advance one crop, if that is what is at these coordinates. */

@@ -17,6 +17,9 @@ import { CHUNK_SY } from '../world/chunk.js';
 import { BLOCKS, AIR } from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
 
+/** Babies render at this fraction of adult size. */
+const BABY_SCALE = 0.55;
+
 const GRAVITY = 28;
 const TERMINAL_VELOCITY = 55;
 
@@ -50,6 +53,19 @@ export class Mob {
     this.wantsJump = false;
     /** Free-form per-type state so AI functions stay stateless themselves. */
     this.memory = {};
+
+    // --- Husbandry ----------------------------------------------------------
+    /** Seconds left in the "willing to breed" state after being fed. */
+    this.loveTimer = 0;
+    /** Seconds before this animal can breed again. */
+    this.breedCooldown = 0;
+    /** Babies are smaller, faster and cannot breed until grown. */
+    this.isBaby = false;
+    /** Seconds until a baby becomes an adult. */
+    this.growTimer = 0;
+    /** Sheep only: sheared until the wool grows back. */
+    this.sheared = false;
+    this.woolRegrow = 0;
 
     this.attackCooldown = 0;
     /** Per-instance melee overrides; null falls back to `type.brain`. */
@@ -123,6 +139,7 @@ export class Mob {
     this.age += dt;
     if (this.attackCooldown > 0) this.attackCooldown -= dt;
     if (this.hurtTimer > 0) this.hurtTimer -= dt;
+    this._updateHusbandry(dt);
 
     if (this.dead) {
       this._updateDeathAnimation(dt);
@@ -584,6 +601,65 @@ export class Mob {
     this.deathTimer = 0;
     this.velocity.set(0, 0, 0);
     audio.mobSound(this.type.voice, 'death', this._listenerDist ?? 0);
+  }
+
+  /** Breeding timers, growing up, and wool growing back. */
+  _updateHusbandry(dt) {
+    if (this.loveTimer > 0) this.loveTimer -= dt;
+    if (this.breedCooldown > 0) this.breedCooldown -= dt;
+
+    if (this.isBaby) {
+      this.growTimer -= dt;
+      if (this.growTimer <= 0) this.growUp();
+    }
+
+    if (this.sheared) {
+      this.woolRegrow -= dt;
+      if (this.woolRegrow <= 0) {
+        this.sheared = false;
+        this.refreshModel();
+      }
+    }
+  }
+
+  /** Turn a baby into an adult: full size, and able to breed. */
+  growUp() {
+    if (!this.isBaby) return;
+    this.isBaby = false;
+    this.growTimer = 0;
+    this.health = this.type.maxHealth;
+    this.object3D.scale.setScalar(1);
+  }
+
+  /** Make this a newborn — half size, and a while before it can breed. */
+  makeBaby(growSeconds) {
+    this.isBaby = true;
+    this.growTimer = growSeconds;
+    this.health = Math.max(1, Math.round(this.type.maxHealth / 2));
+    this.object3D.scale.setScalar(BABY_SCALE);
+  }
+
+  /**
+   * Rebuild the visual after a state change that alters it — currently only
+   * shearing. Cheaper than tracking every wool part individually, and it happens
+   * a handful of times a session.
+   */
+  refreshModel() {
+    if (!this.type.buildModel) return;
+    const scale = this.object3D.scale.x;
+    const parent = this.object3D.parent;
+    const built = this.type.buildModel(this);
+    built.group.position.copy(this.object3D.position);
+    built.group.rotation.copy(this.object3D.rotation);
+    built.group.scale.setScalar(scale);
+
+    if (parent) {
+      parent.remove(this.object3D);
+      parent.add(built.group);
+    }
+    this.dispose();
+    this.object3D = built.group;
+    this.parts = built.parts;
   }
 
   /** Called by a pack-mate that spotted the player. */

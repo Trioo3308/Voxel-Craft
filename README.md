@@ -376,6 +376,34 @@ Crops advance on **random ticks** rather than a registry: nothing tracks where
 your farms are, a planted crop is just a block id that occasionally gets poked.
 That keeps the cost fixed no matter how much you plant.
 
+**Trees are renewable.** Leaves drop saplings (about one in nine) and sticks;
+plant a sapling on soil and it grows into a tree of its own species, given room
+above it. Leaves cut off from a trunk **decay** rather than hanging in the air,
+scattering their own drops as they go. The support check is a bounded flood
+through connected leaves rather than a box scan — a box would count a
+*different* tree's log nearby and keep a floating canopy alive forever, which is
+precisely the artefact this exists to clear up.
+
+**Livestock.** Feed two adult cows, sheep or pigs wheat (chickens take seeds) and
+they breed; the calf is half-size and grows up on a timer. **Shears** yield wool
+and leave the sheep visibly bare until its fleece regrows, so wool no longer
+depends on killing spiders for string.
+
+**Fishing.** Cast a rod into water, wait, and reel in during the bite window.
+Deliberately a state machine on the player rather than a bobber entity — the
+float never needs to collide, be hit, or outlive the cast.
+
+**Ladders** climb by holding jump or forward against them; releasing slides you
+down slowly rather than dropping.
+
+**Tool repair.** Two worn copies of the same tool combine into one with their
+durability summed plus a 5% bonus, capped at new. It cannot be an ordinary
+recipe: the result depends on the *durability* of the inputs, which the pattern
+matcher has no concept of, so it is checked before the recipe table.
+
+**A locator readout** shows position, facing and biome — the world is infinite
+with no map, and without it "walk back to the portal" is guesswork.
+
 ---
 
 ## Weather
@@ -706,6 +734,9 @@ These are deliberate scope choices, not bugs:
   armour before your first smelt.
 - **Wheat is the only crop.** The farming loop is complete (till, plant, grow,
   harvest, bake) but it grows exactly one thing.
+- **Fishing catches only fish** — no junk, no treasure, no enchanted rods.
+- **Ladders have no facing.** They render against one wall regardless of which
+  side you placed them on.
 - **Crops do not need light.** Block light lives in the worker and the growth
   tick runs on the main thread, so a crop underground in the pitch dark grows
   the same as one in a field. Irrigation is what matters instead.
@@ -776,6 +807,21 @@ identically from both sides, and shrine chests and the Warden are placed exactly
 once per shrine and survive a save/load round trip. The Warden escalates through
 three phases (8→10→12 damage, 1.6→0.9s cooldown), drops its loot table, and does
 not respawn. Buckets fill from sources only, pour water and lava, and milk a cow.
+
+**Husbandry, forestry and fishing** — leaves drop saplings at the intended rate,
+a sapling grows a tree with trunk and canopy, and a canopy whose trunk is removed
+decays completely. Shearing yields wool once, is refused a second time, and
+regrows on a timer. Two fed cows produce exactly one half-size calf and both go
+on cooldown; the calf grows up. Repair sums durability, refuses mismatched tools,
+and never exceeds new. Fishing casts only into water, catches nothing if you pull
+early, and lands a fish inside the bite window. A ladder lifts you 5 blocks in
+90 frames.
+
+The import checker gained an **undefined-identifier pass** after `dimensionInfo`
+and `Settings` were used in hud.js without being imported — the existing check
+only proved that imports which *exist* resolve, and said nothing about names used
+but never imported. It immediately caught a real bug in this batch: `BABY_SCALE`
+referenced in mob.js but never declared.
 
 **Plants and the Comb** — plants render as two crossed quads rather than a box.
 A box maps the texture onto its lid, so a wheat field read as cubes with wheat

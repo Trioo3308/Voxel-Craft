@@ -18,6 +18,10 @@ import {
 import { HOTBAR_SIZE, STORAGE_SIZE, Inventory } from '../player/inventory.js';
 import { findRecipe, consumeGrid, fuelValueFor, smeltResultFor, SMELT_SECONDS } from '../player/crafting.js';
 import { BIOME_NAMES } from '../world/terrain.js';
+import { dimensionInfo } from '../world/dimensions.js';
+import Settings from '../settings.js';
+
+const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 
 const HEART = '❤️';
 const DRUMSTICK = '🍗';
@@ -43,6 +47,8 @@ export class HUD {
     this.waterOverlayEl = el('waterOverlay');
     this.lavaOverlayEl = el('lavaOverlay');
     this.debugEl = el('debug');
+    this.locatorEl = el('locator');
+    this._locatorTimer = 0;
     this.saveToastEl = el('saveToast');
 
     this.inventoryScreen = el('inventoryScreen');
@@ -491,6 +497,7 @@ export class HUD {
       if (this._toastTimer <= 0) this.saveToastEl.classList.remove('show');
     }
 
+    this._updateLocator(dt);
     this._updateStats();
     this._updateBreakBar();
     this._updateBossBar();
@@ -508,6 +515,44 @@ export class HUD {
         this._updateDebug();
       }
     }
+  }
+
+  /**
+   * Position, facing and biome.
+   *
+   * The world is infinite and there is no map, so without this "walk back to
+   * where I built the portal" is pure guesswork. Refreshed on a timer because
+   * it writes to the DOM and nothing here changes meaningfully per frame.
+   */
+  _updateLocator(dt) {
+    this.locatorEl.classList.toggle('show', Settings.showLocator === true);
+    if (!Settings.showLocator) return;
+
+    this._locatorTimer -= dt;
+    if (this._locatorTimer > 0) return;
+    this._locatorTimer = 0.2;
+
+    const p = this.player;
+    const x = Math.floor(p.position.x);
+    const y = Math.floor(p.position.y);
+    const z = Math.floor(p.position.z);
+
+    // Yaw 0 faces -Z. Sixteenths of a turn would be over-precise for a compass
+    // you glance at, so this is the eight-point rose.
+    const turns = ((-p.yaw / (Math.PI * 2)) % 1 + 1) % 1;
+    const facing = COMPASS[Math.round(turns * 8) % 8];
+
+    let biome = '';
+    const terrain = this.game.terrainInfo;
+    if (terrain && this.game.world?.dimension === 'overworld') {
+      const surface = this.game.world.getSurfaceY(x, z);
+      if (surface >= 0) biome = BIOME_NAMES[terrain.biomeAt(x, z, surface)] ?? '';
+    } else if (this.game.world) {
+      biome = dimensionInfo(this.game.world.dimension).name;
+    }
+
+    this.locatorEl.textContent =
+      `${x}, ${y}, ${z}   ${facing}` + (biome ? `\n${biome}` : '');
   }
 
   _updateStats() {

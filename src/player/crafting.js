@@ -16,9 +16,9 @@ import {
   IRON_BLOCK, GOLD_BLOCK, DIAMOND_BLOCK, WOOL,
   BUILDING_FAMILIES, DOOR_CLOSED, BED, TORCH, CHEST,
   COMBIUM_ORE, COMBIUM_BLOCK, COMB_BRICK,
-  COMB_WAX, COMB_TILE, COMB_PILLAR, COMB_LANTERN, COMB_GLASS,
+  COMB_WAX, COMB_TILE, COMB_PILLAR, COMB_LANTERN, COMB_GLASS, LADDER,
   ITEM_ID, TOOL_KINDS, ARMOR_PIECES, ARMOR_MATERIAL_NAMES,
-  toolItemId, armorItemId, getDisplayName,
+  toolItemId, armorItemId, getDisplayName, getThing,
 } from '../world/blocks.js';
 
 // ---------------------------------------------------------------------------
@@ -141,6 +141,12 @@ shaped(['RRR', 'RSR', 'RRR'], { R: ITEM_ID.COMB_RESIN, S: ITEM_ID.COMBIUM_INGOT 
 // Three wheat in a row. The first food you can make instead of hunt.
 shaped(['WWW'], { W: ITEM_ID.WHEAT }, { id: ITEM_ID.BREAD, count: 1 });
 
+// --- Ladders, shears, rod ----------------------------------------------------
+shaped(['S.S', 'SSS', 'S.S'], { S: ITEM_ID.STICK }, { id: LADDER.id, count: 3 });
+shaped(['.I', 'I.'], { I: ITEM_ID.IRON_INGOT }, { id: ITEM_ID.SHEARS, count: 1 });
+shaped(['..S', '.SR', 'S.R'], { S: ITEM_ID.STICK, R: ITEM_ID.STRING },
+       { id: ITEM_ID.FISHING_ROD, count: 1 });
+
 // --- Bow --------------------------------------------------------------------
 shaped(['.SG', 'S.G', '.SG'], { S: ITEM_ID.STICK, G: ITEM_ID.STRING }, { id: ITEM_ID.BOW, count: 1 });
 
@@ -254,6 +260,13 @@ export function findRecipe(grid, size) {
   const box = boundingBox(grid, size);
   if (!box) return null;
 
+  // Repair is checked first and shapeless: two worn copies of the same tool
+  // anywhere in the grid combine. It cannot be a normal recipe because the
+  // result depends on the *durability* of the inputs, which the pattern
+  // matcher has no concept of.
+  const repair = findRepair(grid);
+  if (repair) return repair;
+
   for (const recipe of RECIPES) {
     if (recipe.type === 'shaped') {
       const h = recipe.pattern.length;
@@ -265,6 +278,42 @@ export function findRecipe(grid, size) {
     }
   }
   return null;
+}
+
+/**
+ * Two of the same damaged tool combine into one.
+ *
+ * Durability is summed with a bonus, as in Minecraft, so repairing always beats
+ * carrying two half-dead tools — and capped at the maximum, so it can never
+ * produce something better than new.
+ *
+ * This cannot be an ordinary recipe: the result depends on the *durability* of
+ * the inputs, which the pattern matcher has no concept of.
+ *
+ * @returns {{id, count, durability}|null}
+ */
+export function findRepair(grid) {
+  const tools = [];
+  for (const stack of grid) {
+    if (!stack) continue;
+    // Anything in the grid that is not one of the two tools disqualifies it,
+    // otherwise "two picks and a stick" would silently repair.
+    if (stack.durability === undefined || stack.durability === null) return null;
+    tools.push(stack);
+  }
+  if (tools.length !== 2) return null;
+  if (tools[0].id !== tools[1].id) return null;
+
+  const item = getThing(tools[0].id);
+  const max = item?.tool?.durability ?? item?.armor?.durability;
+  if (!max) return null;
+
+  // Neither may be pristine — combining two full tools would just destroy one.
+  if (tools[0].durability >= max && tools[1].durability >= max) return null;
+
+  const bonus = Math.floor(max * 0.05);
+  const repaired = Math.min(max, tools[0].durability + tools[1].durability + bonus);
+  return { id: tools[0].id, count: 1, durability: repaired };
 }
 
 /**
@@ -300,6 +349,7 @@ export const SMELTING = new Map([
   [ITEM_ID.MUTTON, { id: ITEM_ID.COOKED_MUTTON, count: 1 }],
   [ITEM_ID.CHICKEN_RAW, { id: ITEM_ID.CHICKEN_COOKED, count: 1 }],
   [COMBIUM_ORE.id, { id: ITEM_ID.COMBIUM_INGOT, count: 1 }],
+  [ITEM_ID.FISH, { id: ITEM_ID.COOKED_FISH, count: 1 }],
 ]);
 
 /** Seconds of burn time each fuel provides. One smelt takes SMELT_SECONDS. */

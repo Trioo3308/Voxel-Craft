@@ -1142,6 +1142,106 @@ export const PAINTERS = {
     }
   },
 
+  // --- Saplings and ladders ------------------------------------------------
+
+  // Three saplings sharing one shape, differing in leaf colour so they read as
+  // the tree they will become.
+  ...Object.fromEntries([
+    [TILE.SAPLING_OAK, [86, 140, 52]],
+    [TILE.SAPLING_ACACIA, [128, 152, 58]],
+    [TILE.SAPLING_SPRUCE, [54, 104, 62]],
+  ].map(([tile, [lr, lg, lb]]) => [
+    tile,
+    (set, rnd) => {
+      // A short stem with a small crown of leaves.
+      for (let y = 9; y < T; y++) {
+        const d = (rnd() - 0.5) * 14;
+        set(7, y, 116 + d, 84 + d, 48 + d);
+        set(8, y, 96 + d, 68 + d, 38 + d);
+      }
+      for (let y = 3; y < 10; y++) {
+        const spread = y < 5 ? 2 : y < 8 ? 3 : 2;
+        for (let x = 7 - spread; x <= 8 + spread; x++) {
+          if (rnd() < 0.22) continue;   // ragged edges
+          const d = (rnd() - 0.5) * 30;
+          set(x, y, lr + d, lg + d, lb + d);
+        }
+      }
+      set(7, 2, lr + 24, lg + 24, lb + 16);
+      set(8, 2, lr + 18, lg + 18, lb + 12);
+    },
+  ])),
+
+  [TILE.SHEARS]: (set, rnd) => {
+    // Two crossed blades on a dark pivot.
+    for (let i = 0; i < 8; i++) {
+      set(3 + i, 3 + i, 214, 216, 222);
+      set(4 + i, 3 + i, 176, 178, 186);
+      set(12 - i, 3 + i, 214, 216, 222);
+      set(11 - i, 3 + i, 176, 178, 186);
+    }
+    set(7, 7, 60, 60, 66); set(8, 7, 60, 60, 66);
+    // Handles.
+    for (let i = 0; i < 3; i++) { set(3 + i, 12 + i, 96, 74, 46); set(12 - i, 12 + i, 96, 74, 46); }
+  },
+
+  [TILE.FISHING_ROD]: (set, rnd) => {
+    // A diagonal rod with a line hanging off the tip.
+    for (let i = 0; i < 11; i++) {
+      const d = (rnd() - 0.5) * 14;
+      set(3 + i, 12 - i, 146 + d, 104 + d, 58 + d);
+      if (4 + i < T) set(4 + i, 12 - i, 118 + d, 82 + d, 44 + d);
+    }
+    for (let y = 2; y < 12; y++) set(14, y, 236, 236, 230);
+    set(14, 12, 208, 208, 200);
+  },
+
+  [TILE.FISH]: (set, rnd) => {
+    // A silvery body with a tail fin and an eye.
+    for (let y = 6; y < 11; y++) {
+      const inset = y === 6 || y === 10 ? 2 : 1;
+      for (let x = 4 + inset; x < 12 - inset + 1; x++) {
+        const d = (rnd() - 0.5) * 22;
+        set(x, y, 172 + d, 186 + d, 200 + d);
+      }
+    }
+    for (let i = 0; i < 3; i++) { set(3 + i, 6 + i, 140, 154, 172); set(3 + i, 10 - i, 140, 154, 172); }
+    set(10, 8, 30, 32, 38);
+    for (let x = 6; x < 11; x++) set(x, 6, 206, 218, 230);
+  },
+
+  [TILE.COOKED_FISH]: (set, rnd) => {
+    // The same fish, browned.
+    for (let y = 6; y < 11; y++) {
+      const inset = y === 6 || y === 10 ? 2 : 1;
+      for (let x = 4 + inset; x < 12 - inset + 1; x++) {
+        const d = (rnd() - 0.5) * 20;
+        set(x, y, 196 + d, 148 + d, 84 + d);
+      }
+    }
+    for (let i = 0; i < 3; i++) { set(3 + i, 6 + i, 164, 118, 62); set(3 + i, 10 - i, 164, 118, 62); }
+    set(10, 8, 46, 32, 22);
+    for (let x = 6; x < 11; x++) set(x, 6, 220, 176, 110);
+  },
+
+  [TILE.LADDER]: (set, rnd) => {
+    // Two rails and evenly spaced rungs; everything else transparent.
+    for (let y = 0; y < T; y++) {
+      const d = (rnd() - 0.5) * 16;
+      set(2, y, 148 + d, 108 + d, 60 + d);
+      set(3, y, 122 + d, 88 + d, 48 + d);
+      set(12, y, 148 + d, 108 + d, 60 + d);
+      set(13, y, 122 + d, 88 + d, 48 + d);
+    }
+    for (let y = 2; y < T; y += 5) {
+      for (let x = 3; x < 13; x++) {
+        const d = (rnd() - 0.5) * 14;
+        set(x, y, 156 + d, 116 + d, 66 + d);
+        set(x, y + 1, 128 + d, 92 + d, 52 + d);
+      }
+    }
+  },
+
   // --- Comb materials ------------------------------------------------------
 
   [TILE.COMB_RESIN]: (set, rnd) => {

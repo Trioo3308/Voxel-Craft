@@ -29,6 +29,18 @@ const TILLABLE = new Set([GRASS.id, DIRT.id, DRY_GRASS.id, PODZOL.id, SWAMP_GRAS
 /** How far farmland looks for water before counting as irrigated. */
 const MOISTURE_RADIUS = 4;
 
+/** Seconds before a sheared sheep grows its wool back. */
+const SHEAR_REGROW_SECONDS = 90;
+/** How long a fed animal stays willing to breed. */
+const BREED_LOVE_SECONDS = 12;
+
+/** Fishing: seconds of waiting, and how long the bite window stays open. */
+const FISH_WAIT_MIN = 6;
+const FISH_WAIT_MAX = 22;
+const FISH_BITE_WINDOW = 1.4;
+/** Walk further than this from your line and you lose it. */
+const FISH_MAX_DISTANCE = 14;
+
 export class Player {
   /**
    * @param {import('../world/world.js').World} world
@@ -91,6 +103,13 @@ export class Player {
     this.portalCharge = 0;
     this.inPortal = false;
     this._portalCooldown = 0;
+
+    // --- Fishing ------------------------------------------------------------
+    /** Where the float is sitting, or null when the line is not cast. */
+    this.fishingSpot = null;
+    this.fishTimer = 0;
+    /** Positive while a fish is on the hook — the window to reel in. */
+    this.fishBiteTimer = 0;
     /** Cleared on travel, re-armed by stepping out — see _updatePortal. */
     this._portalArmed = true;
 
@@ -149,6 +168,7 @@ export class Player {
     if (!this.survival.dead) {
       this._updateMovement(dt);
       this._updateEnvironment(dt);
+      this._updateFishing(dt);
       this._updatePortal(dt);
       this._updateTarget();
       this._updateInteraction(dt, ctx);
@@ -336,6 +356,28 @@ export class Player {
   _updateJumpAndGravity(dt) {
     const wantsUp = this.input.isActionDown('jump');
 
+    // --- Climbing -----------------------------------------------------------
+    // Standing in a ladder replaces gravity with a slow, controlled climb.
+    // Checked at both foot and head height so you can still climb the last rung
+    // when your feet have already cleared it.
+    this.onLadder =
+      this._climbableAt(this.position.y + 0.1) || this._climbableAt(this.position.y + 1.2);
+
+    if (this.onLadder && !this.flying) {
+      const wantsDown = this.input.isActionDown('crouch');
+      // Holding forward against the ladder climbs; jump climbs faster; sneak
+      // descends. Letting go slides down slowly rather than dropping.
+      const climbing = this.input.isActionDown('forward');
+      let vy = -1.4;
+      if (wantsUp) vy = P.climbSpeed;
+      else if (wantsDown) vy = -P.climbSpeed;
+      else if (climbing) vy = P.climbSpeed * 0.75;
+
+      this.velocity.y += (vy - this.velocity.y) * (1 - Math.exp(-18 * dt));
+      this.fallDistance = 0;
+      return;
+    }
+
     if (this.inLiquid) {
       // Swimming: gentle buoyancy, and Space paddles upward.
       this.velocity.y += (wantsUp ? 6 : -3.5) * dt * 4;
@@ -349,6 +391,14 @@ export class Player {
       }
       this._applyGravity(dt);
     }
+  }
+
+  /** Is there a climbable block at this height, in the player's own column? */
+  _climbableAt(y) {
+    const block = getBlock(this.world.getBlock(
+      Math.floor(this.position.x), Math.floor(y), Math.floor(this.position.z)
+    ));
+    return !!block && block.climbable;
   }
 
   _applyGravity(dt) {
@@ -580,7 +630,11 @@ export class Player {
     // MouseEvent.button: 0 = left, 1 = middle, 2 = right.
     if (input.isMouseDown(2) && this._placeCooldown === 0) {
       // Sneaking suppresses station UIs so you can still build against them.
-      if (!this.sneaking && this._tryUseBlock()) {
+      if (this._tryFish()) {
+        this._placeCooldown = 0.4;
+      } else if (!this.sneaking && this._tryUseBlock()) {
+        this._placeCooldown = 0.4;
+      } else if (this._tryUseOnMob(ctx)) {
         this._placeCooldown = 0.4;
       } else if (this._tryTill()) {
         this._placeCooldown = 0.4;
@@ -792,6 +846,128 @@ export class Player {
     return false;
   }
 
+  /**
+   * Right-click an animal: shear it, or feed it to breed.
+   *
+   * One entry point for both, because they share the raycast and the "is there
+   * actually an animal there" question — and because a held item can only do
+   * one of them, so the order never matters.
+   */
+  _tryUseOnMob(ctx) {
+    if (!ctx.entities) return false;
+    const slot = this.inventory.getSelected();
+    if (!slot) return false;
+
+    const hit = ctx.entities.raycast(this.eyePosition, this.getLookDirection(), P.reach);
+    if (!hit || hit.mob.dead) return false;
+    const mob = hit.mob;
+
+    // --- Shearing -----------------------------------------------------------
+    if (slot.id === ITEM_ID.SHEARS) {
+      if (!mob.type.shearable || mob.sheared) return false;
+      mob.sheared = true;
+      // Regrows, so a flock is a renewable wool supply rather than a one-off.
+      mob.woolRegrow = SHEAR_REGROW_SECONDS;
+      const drop = mob.type.shearable;
+      this.inventory.add(drop.id, drop.min + Math.floor(Math.random() * (drop.max - drop.min + 1)));
+      if (mob.refreshModel) mob.refreshModel();
+      audio.blockBreak('wool');
+      this.didSwing = true;
+      if (!this.creative) this.inventory.damageHeldTool(1);
+      return true;
+    }
+
+    // --- Breeding -----------------------------------------------------------
+    if (!mob.type.breedsWith || !mob.type.breedsWith.includes(slot.id)) return false;
+    if (mob.isBaby || mob.loveTimer > 0 || mob.breedCooldown > 0) return false;
+
+    mob.loveTimer = BREED_LOVE_SECONDS;
+    if (!this.creative) this.inventory.consumeSelected(1);
+    audio.mobSound(mob.type.voice, 'idle', 0);
+    this.didSwing = true;
+    if (ctx.entities.onMobInLove) ctx.entities.onMobInLove(mob);
+    return true;
+  }
+
+  /**
+   * Fishing. Right click casts into water; right click again reels in.
+   *
+   * Deliberately a state machine on the player rather than a bobber entity: the
+   * bobber never needs to collide, be hit, or outlive the cast, so an entity
+   * would be machinery for nothing. `fishingSpot` is what the HUD and the
+   * particle layer read to draw the float and its ripples.
+   */
+  _tryFish() {
+    const slot = this.inventory.getSelected();
+    if (!slot || slot.id !== ITEM_ID.FISHING_ROD) return false;
+
+    // --- Reeling in ---------------------------------------------------------
+    if (this.fishingSpot) {
+      // The bite window is the only time reeling in lands anything; pulling
+      // early or late just splashes.
+      const caught = this.fishBiteTimer > 0;
+      const spot = this.fishingSpot;
+      this.fishingSpot = null;
+      this.fishTimer = 0;
+      this.fishBiteTimer = 0;
+
+      if (caught) {
+        this.inventory.add(ITEM_ID.FISH, 1);
+        audio.pickup();
+        if (this.onFishCaught) this.onFishCaught(spot);
+      } else {
+        audio.splash();
+      }
+      this.didSwing = true;
+      if (!this.creative) this.inventory.damageHeldTool(1);
+      return true;
+    }
+
+    // --- Casting ------------------------------------------------------------
+    // The line has to land in actual water, so fishing needs a pond rather than
+    // any old block you happen to be facing.
+    const hit = this.targetFluid();
+    if (!hit || hit.family !== 'water') return false;
+
+    this.fishingSpot = { x: hit.x + 0.5, y: hit.y + 1, z: hit.z + 0.5 };
+    // A long, variable wait, so it is something you settle into rather than spam.
+    this.fishTimer = FISH_WAIT_MIN + Math.random() * (FISH_WAIT_MAX - FISH_WAIT_MIN);
+    this.fishBiteTimer = 0;
+    audio.splash();
+    this.didSwing = true;
+    return true;
+  }
+
+  /** Count down to a bite, and give a short window to reel it in. */
+  _updateFishing(dt) {
+    if (!this.fishingSpot) return;
+
+    // Walking away from your line loses it.
+    const dx = this.position.x - this.fishingSpot.x;
+    const dz = this.position.z - this.fishingSpot.z;
+    if (Math.hypot(dx, dz) > FISH_MAX_DISTANCE) {
+      this.fishingSpot = null;
+      return;
+    }
+
+    if (this.fishBiteTimer > 0) {
+      this.fishBiteTimer -= dt;
+      // Missed the window: the fish is gone, wait again.
+      if (this.fishBiteTimer <= 0) {
+        this.fishTimer = FISH_WAIT_MIN + Math.random() * (FISH_WAIT_MAX - FISH_WAIT_MIN);
+      }
+      return;
+    }
+
+    this.fishTimer -= dt;
+    if (this.fishTimer > 0) return;
+
+    // A bite: reeling in while this is positive is a catch.
+    this.fishBiteTimer = FISH_BITE_WINDOW;
+    audio.splash();
+    if (this.onFishBite) this.onFishBite(this.fishingSpot);
+  }
+
   /** Right-click a cow with an empty bucket for milk. */
   _tryMilkCow(ctx) {
     if (!ctx.entities) return false;
@@ -873,13 +1049,19 @@ export class Player {
     if (!this.creative) {
       // Mining a diamond with a stone pickaxe destroys the block and yields
       // nothing — this gate is what drives the tool progression.
-      if (this.canHarvest(def) && def.drops) {
-        const [min, max] = def.dropCount;
-        const count = min + Math.floor(Math.random() * (max - min + 1));
-        if (count > 0) this.inventory.add(def.drops, count);
+      if (this.canHarvest(def)) {
+        // `drops` is checked against AIR rather than for truthiness: leaves
+        // deliberately have no primary drop, and `0` is falsy — which silently
+        // skipped their sapling and stick rolls too.
+        if (def.drops !== AIR) {
+          const [min, max] = def.dropCount;
+          const count = min + Math.floor(Math.random() * (max - min + 1));
+          if (count > 0) this.inventory.add(def.drops, count);
+        }
 
-        // A second, chance-based table on top of the main drop — how digging
-        // grass yields the seeds that start a farm.
+        // A second, chance-based table independent of the main drop — how
+        // digging grass yields the seeds that start a farm, and how a canopy
+        // yields the sapling to replant it.
         if (def.bonusDrops) {
           for (const bonus of def.bonusDrops) {
             if (Math.random() > bonus.chance) continue;
@@ -895,7 +1077,8 @@ export class Player {
           this.inventory.add(ITEM_ID.WHEAT, 1 + Math.floor(Math.random() * 2));
           this.inventory.add(ITEM_ID.SEEDS, Math.floor(Math.random() * 2));
         }
-      } else if (def.drops && !this.canHarvest(def)) {
+      } else if (def.drops !== AIR) {
+        // Right block, wrong tool tier: it breaks and yields nothing.
         this.lastHarvestFailure = def;
       }
 

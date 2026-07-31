@@ -12,6 +12,8 @@ export const Settings = {
 
   // ---- Streaming -----------------------------------------------------------
   /** Radius, in chunks, of terrain kept loaded around the player. */
+  /** Position/facing readout on the HUD. Off by default; toggled in settings. */
+  showLocator: true,
   renderDistance: 8,
   /** Extra radius kept in memory before a chunk is unloaded (hysteresis). */
   unloadPadding: 2,
@@ -40,6 +42,8 @@ export const Settings = {
     sneakSpeed: 1.4,
     flySpeed: 14,
     jumpVelocity: 8.4,
+    /** Vertical speed while on a ladder — deliberate, not a jump. */
+    climbSpeed: 3.4,
     gravity: 28,
     terminalVelocity: 60,
     /** Ground friction / air control (0..1, higher = snappier). */

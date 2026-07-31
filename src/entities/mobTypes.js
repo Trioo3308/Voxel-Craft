@@ -495,6 +495,14 @@ export const WARDEN = {
 // Passives
 // ---------------------------------------------------------------------------
 
+/**
+ * What each farm animal will accept as feed. Wheat for the grazers, seeds for
+ * chickens — the same split Minecraft uses, and it gives the two farming
+ * products distinct uses.
+ */
+const WHEAT_FEED = [ITEM_ID.WHEAT];
+const SEED_FEED = [ITEM_ID.SEEDS];
+
 /** Shared config for grazing animals. */
 const PASSIVE_BRAIN = {
   hostile: false,
@@ -505,6 +513,8 @@ const PASSIVE_BRAIN = {
 
 export const PIG = {
   name: 'pig',
+  breedsWith: WHEAT_FEED,
+  growSeconds: 150,
   displayName: 'Pig',
   width: 0.8,
   height: 0.95,
@@ -557,6 +567,8 @@ export const PIG = {
 
 export const COW = {
   name: 'cow',
+  breedsWith: WHEAT_FEED,
+  growSeconds: 170,
   displayName: 'Cow',
   width: 0.9,
   height: 1.35,
@@ -614,6 +626,8 @@ export const COW = {
 
 export const SHEEP = {
   name: 'sheep',
+  breedsWith: WHEAT_FEED,
+  growSeconds: 160,
   displayName: 'Sheep',
   width: 0.8,
   height: 1.2,
@@ -635,9 +649,14 @@ export const SHEEP = {
     canSpawnOn: (id) => GRASSY.has(id),
   },
 
-  buildModel() {
+  /** Shearing yields wool and leaves the sheep bare until it regrows. */
+  shearable: { id: WOOL.id, min: 1, max: 3 },
+
+  buildModel(mob) {
     const group = new THREE.Group();
-    const fleece = 0xece7e0;
+    // A shorn sheep shows pink skin where the fleece was, and loses the bulk.
+    const shorn = !!(mob && mob.sheared);
+    const fleece = shorn ? 0xe2b9b2 : 0xece7e0;
     const skin = 0xd8c3b0;
 
     const legFrontLeft = limb(0.16, 0.5, 0.16, skin, -0.18, 0.5, 0.24);
@@ -645,10 +664,14 @@ export const SHEEP = {
     const legBackLeft = limb(0.16, 0.5, 0.16, skin, -0.18, 0.5, -0.28);
     const legBackRight = limb(0.16, 0.5, 0.16, skin, 0.18, 0.5, -0.28);
 
-    // Chunky fleece body, slightly oversized to look woolly.
-    const body = box(0.68, 0.62, 0.98, fleece, 0, 0.82, 0);
+    // Chunky fleece body, slightly oversized to look woolly — until it is shorn.
+    const body = shorn
+      ? box(0.56, 0.5, 0.86, fleece, 0, 0.78, 0)
+      : box(0.68, 0.62, 0.98, fleece, 0, 0.82, 0);
     const head = box(0.38, 0.38, 0.36, skin, 0, 0.98, 0.62);
-    const wooltuft = box(0.42, 0.2, 0.3, fleece, 0, 1.14, 0.5);
+    const wooltuft = shorn
+      ? box(0.3, 0.1, 0.22, fleece, 0, 1.1, 0.5)
+      : box(0.42, 0.2, 0.3, fleece, 0, 1.14, 0.5);
     const eyeLeft = box(0.07, 0.07, 0.02, 0x141010, -0.11, 1.02, 0.81);
     const eyeRight = box(0.07, 0.07, 0.02, 0x141010, 0.11, 1.02, 0.81);
     const earLeft = box(0.12, 0.07, 0.06, skin, -0.22, 1.02, 0.56);
@@ -667,6 +690,8 @@ export const SHEEP = {
 
 export const CHICKEN = {
   name: 'chicken',
+  breedsWith: SEED_FEED,
+  growSeconds: 120,
   displayName: 'Chicken',
   width: 0.45,
   height: 0.7,

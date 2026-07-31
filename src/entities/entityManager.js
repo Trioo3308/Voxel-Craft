@@ -23,6 +23,12 @@ const ITEM_MERGE_RADIUS = 0.9;
 /** Seconds between merge sweeps — this is O(n^2), so it does not run per frame. */
 const ITEM_MERGE_INTERVAL = 0.25;
 
+/** Breeding: how close fed partners must be, and how long before they can again. */
+const BREED_RADIUS = 4;
+const BREED_COOLDOWN = 90;
+const BREED_CHECK_INTERVAL = 0.4;
+const DEFAULT_GROW_SECONDS = 150;
+
 export class EntityManager {
   /**
    * @param {THREE.Scene} scene
@@ -41,6 +47,7 @@ export class EntityManager {
 
     this._spawnTimer = 0;
     this._mergeTimer = 0;
+    this._breedTimer = 0;
     this._tmpVec = new THREE.Vector3();
 
     /**
@@ -68,6 +75,7 @@ export class EntityManager {
     this._separateEntities(context.player);
     this._updateProjectiles(dt, context);
     this._updateItems(dt, context);
+    this._updateBreeding(dt);
 
     this._spawnTimer -= dt;
     if (this._spawnTimer <= 0) {
@@ -339,6 +347,49 @@ export class EntityManager {
     }
 
     this._mergeItems(dt);
+  }
+
+  /**
+   * Pair up animals that have both been fed and are standing close enough.
+   *
+   * Run on the same sweep timer as item merging rather than per frame — this is
+   * O(n^2) over the mob list, and a pairing being a fraction of a second late is
+   * imperceptible.
+   */
+  _updateBreeding(dt) {
+    this._breedTimer -= dt;
+    if (this._breedTimer > 0) return;
+    this._breedTimer = BREED_CHECK_INTERVAL;
+
+    for (let i = 0; i < this.mobs.length; i++) {
+      const a = this.mobs[i];
+      if (a.dead || a.loveTimer <= 0 || a.isBaby) continue;
+
+      for (let j = i + 1; j < this.mobs.length; j++) {
+        const b = this.mobs[j];
+        if (b.dead || b.loveTimer <= 0 || b.isBaby) continue;
+        if (b.type !== a.type) continue;
+        if (a.horizontalDistanceTo(b.position) > BREED_RADIUS) continue;
+
+        // Both partners spend their willingness and go on cooldown, so a fed
+        // crowd produces one baby per pair rather than a baby per animal.
+        a.loveTimer = 0; b.loveTimer = 0;
+        a.breedCooldown = BREED_COOLDOWN; b.breedCooldown = BREED_COOLDOWN;
+
+        const baby = this.spawnMob(
+          a.type,
+          (a.position.x + b.position.x) / 2,
+          Math.max(a.position.y, b.position.y),
+          (a.position.z + b.position.z) / 2
+        );
+        baby.makeBaby(a.type.growSeconds ?? DEFAULT_GROW_SECONDS);
+        if (this.particles) {
+          this.particles.portalMotes(baby.position.x, baby.position.y + 0.5, baby.position.z, 8);
+        }
+        audio.mobSound(a.type.voice, 'idle', 0);
+        break;
+      }
+    }
   }
 
   /**

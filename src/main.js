@@ -182,6 +182,17 @@ export class Game {
     this.player.onIgnitePortal = (x, y, z) => this._ignitePortal(x, y, z);
     this.player.onPortalTravel = () => this._travelDimension();
 
+    // Decayed leaves scatter their drops on the ground rather than vanishing,
+    // so a canopy you cut the trunk out of still gives you the saplings.
+    this.world_onLeafDecayed = (x, y, z, block) => {
+      if (this.particles) this.particles.blockBreak(x, y, z, block.id, 6);
+      for (const bonus of block.bonusDrops ?? []) {
+        if (Math.random() > bonus.chance) continue;
+        const n = bonus.min + Math.floor(Math.random() * (bonus.max - bonus.min + 1));
+        if (n > 0) this.entities.dropItem(x + 0.5, y + 0.5, z + 0.5, bonus.id, n);
+      }
+    };
+
     // --- Effects ------------------------------------------------------------
     this.player.onLand = (fallDistance) => {
       if (!this.particles) return;
@@ -877,6 +888,7 @@ export class Game {
     if (this.particles) this.particles.dispose();
     this.particles = new ParticleSystem(this.renderer.scene, this.world);
     this.entities.particles = this.particles;
+    this.world.onLeafDecayed = this.world_onLeafDecayed;
 
     // Per-world state that must not leak across sessions. The shrine oracle is
     // seeded, so a stale one would point at the previous world's shrines.
