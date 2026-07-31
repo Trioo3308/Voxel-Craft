@@ -289,7 +289,13 @@ function solidBlockPainter(set, rnd, [r, g, b]) {
   }
 }
 
-const PAINTERS = {
+/**
+ * One painter per tile: `(set, rnd) => void`, where `set(x, y, r, g, b)` writes
+ * a pixel. Exported so a tile can be inspected without building the atlas —
+ * which is how the shape-vs-texture agreement is checked (a partial block crops
+ * its tile, so art outside that window silently never renders).
+ */
+export const PAINTERS = {
   [TILE.GRASS_TOP]: (set, rnd) => {
     noiseFill(set, rnd, GRASS_GREEN, 16);
     speckle(set, rnd, [72, 122, 48], 18);
@@ -852,22 +858,36 @@ const PAINTERS = {
   },
 
   [TILE.TORCH]: (set, rnd) => {
-    // Stick with a burning head; background stays transparent.
-    for (let y = 6; y < T; y++) {
+    // A torch is a 0.125-wide, 0.625-tall shape, and `emitShape` CROPS the tile
+    // to that extent rather than squashing the whole thing into it. Only tile
+    // columns 7..9 and rows 6..15 are ever visible, so anything drawn outside
+    // that strip is invisible — which is why the flame, originally at rows 2..5,
+    // never appeared and a torch looked like a bare stick.
+    //
+    // Everything therefore lives inside the strip, flame at the top of it.
+    const FLAME_TOP = 6, FLAME_BOTTOM = 9;
+
+    // Handle, filling the rest of the strip below the flame.
+    for (let y = FLAME_BOTTOM; y < T; y++) {
       const d = (rnd() - 0.5) * 16;
       set(7, y, 138 + d, 102 + d, 58 + d);
       set(8, y, 116 + d, 84 + d, 46 + d);
     }
-    // Flame.
-    for (let y = 2; y < 6; y++) {
+
+    // Flame. Wider than the strip on purpose so the crop never clips an edge.
+    for (let y = FLAME_TOP; y < FLAME_BOTTOM; y++) {
+      const heat = (FLAME_BOTTOM - y) / (FLAME_BOTTOM - FLAME_TOP);
       for (let x = 6; x < 10; x++) {
-        const heat = (6 - y) / 4;
-        const d = (rnd() - 0.5) * 40;
-        set(x, y, 250 + d, 180 + heat * 60 + d, 60 + d);
+        const d = (rnd() - 0.5) * 34;
+        set(x, y, 252 + d, 172 + heat * 62 + d, 56 + d);
       }
     }
-    set(7, 1, 255, 240, 180);
-    set(8, 1, 255, 228, 150);
+    // Hot core at the very tip — this is also what the top face samples, since
+    // that face reads the tile centre (columns 7..9, rows 7..9).
+    set(7, FLAME_TOP, 255, 242, 186);
+    set(8, FLAME_TOP, 255, 232, 158);
+    set(7, FLAME_TOP + 1, 255, 226, 132);
+    set(8, FLAME_TOP + 1, 255, 214, 118);
   },
 
   [TILE.CHEST_TOP]: (set, rnd) => {
@@ -1241,6 +1261,62 @@ function unpack(hex) {
   return [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255];
 }
 
+/**
+ * Paint a 16x16 sprite whose characters map to literal colours.
+ *
+ * `drawSprite` tints one shape across every material, which is what keeps the
+ * twenty-odd tool icons consistent. A hand-drawn icon needs its own palette
+ * instead, so it gets its own painter rather than being forced through the
+ * material tint.
+ */
+function drawExactSprite(set, rows, palette) {
+  for (let y = 0; y < Math.min(rows.length, T); y++) {
+    const row = rows[y];
+    for (let x = 0; x < Math.min(row.length, T); x++) {
+      const hex = palette[row[x]];
+      if (hex === undefined) continue;
+      set(x, y, (hex >> 16) & 255, (hex >> 8) & 255, hex & 255);
+    }
+  }
+}
+
+/**
+ * The combium sword, traced from the sprite supplied for it rather than
+ * generated: a white blade with a crimson fuller, black outline, and a brown
+ * grip with a gold pommel.
+ */
+const COMBIUM_SWORD_SPRITE = [
+  '.............AAB',
+  '............ACCA',
+  '...........AABCA',
+  '..........DABAA.',
+  '.........DDBAA..',
+  '........EEBDD...',
+  '.......FEBED....',
+  '..GG..FFBEE.....',
+  '...GGCCBFF......',
+  '....GCBCF.......',
+  '....HGCC........',
+  '...HIHGG........',
+  '..HIH..GG.......',
+  'GGJH....G.......',
+  'GJG.............',
+  'GGG.............',
+];
+
+const COMBIUM_SWORD_PALETTE = {
+  A: 0xfffefe, // blade highlight
+  B: 0xfb0000, // fuller, bright
+  C: 0x9e0000, // fuller, shadowed
+  D: 0xe9e9e9,
+  E: 0xd4cfcf,
+  F: 0xb2b0b0, // blade shadow
+  G: 0x000000, // outline
+  H: 0x573703, // grip
+  I: 0xb46f00, // pommel
+  J: 0x031257,
+};
+
 // Register the generated icons alongside the hand-written painters.
 for (const kind of TOOL_KINDS) {
   for (const material of GEAR_MATERIALS) {
@@ -1248,6 +1324,12 @@ for (const kind of TOOL_KINDS) {
     PAINTERS[toolTile(kind, material)] = (set) => drawSprite(set, TOOL_SPRITES[kind], color);
   }
 }
+
+// ...then override the one that has a bespoke sprite. Registered after the loop
+// so it wins, and keyed off the same `toolTile` so it cannot drift if the gear
+// ids are renumbered again.
+PAINTERS[toolTile('sword', 'combium')] =
+  (set) => drawExactSprite(set, COMBIUM_SWORD_SPRITE, COMBIUM_SWORD_PALETTE);
 
 for (const piece of ARMOR_PIECES) {
   for (const material of ARMOR_MATERIAL_NAMES) {

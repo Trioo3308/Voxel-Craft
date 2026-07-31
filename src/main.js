@@ -237,15 +237,24 @@ export class Game {
     this.player.onBlockBroken = (blockId, target, entity) => {
       if (!target) return;
 
+      // Whatever will not fit falls on the floor instead of evaporating.
+      // `addExisting` reports the leftover count, and ignoring it meant breaking
+      // a full furnace or chest with a full inventory destroyed the difference.
+      const recover = (stack) => {
+        if (!stack) return;
+        const leftover = this.player.inventory.addExisting(stack);
+        if (leftover > 0) {
+          this.entities.dropItem(
+            target.x + 0.5, target.y + 0.5, target.z + 0.5,
+            stack.id, leftover, stack.durability
+          );
+        }
+      };
+
       if (entity && isFurnaceBlock(blockId)) {
-        for (const field of ['input', 'fuel', 'output']) {
-          const stack = entity.state[field];
-          if (stack) this.player.inventory.addExisting(stack);
-        }
+        for (const field of ['input', 'fuel', 'output']) recover(entity.state[field]);
       } else if (entity && blockId === CHEST.id) {
-        for (const stack of entity.state.slots) {
-          if (stack) this.player.inventory.addExisting(stack);
-        }
+        for (const stack of entity.state.slots) recover(stack);
       }
 
       // Breaking part of a frame collapses the whole portal, so a portal can

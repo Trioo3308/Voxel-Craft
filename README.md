@@ -663,12 +663,26 @@ once per shrine and survive a save/load round trip. The Warden escalates through
 three phases (8→10→12 damage, 1.6→0.9s cooldown), drops its loot table, and does
 not respawn. Buckets fill from sources only, pour water and lava, and milk a cow.
 
+**Shapes, textures and walk-through blocks** — `emitShape` *crops* a partial
+block's tile to the box extent rather than squashing the whole tile into it, so
+a torch only ever shows columns 7–9 and rows 6–15. Art drawn outside that window
+is silently invisible, which is why torches rendered as bare sticks with the
+flame at rows 2–5. A check now asserts no torch pixel falls outside the visible
+rows and that the flame sits at the top of them. Torches and comb growth are
+walk-through, verified by walking a lane past both with a stone wall as the
+control that must still stop you; both remain targetable, placeable and
+breakable, since raycasting keys off "not air, not liquid" rather than solidity.
+The combium sword uses its supplied sprite, asserted pixel for pixel against the
+original and confirmed distinct from the generic tinted sword.
+
 **Save format v3** — a v2 world migrates with its edits filed under the
 overworld, block-entity keys prefixed, and its creative lock preserved; a v1
 world walks all the way to v3. Both dimensions' chests and furnaces coexist and
 survive travel in both directions — block entities used to be wiped on every
 portal trip, which emptied every overworld container the moment you left.
-Breaking a chest or furnace returns everything inside it.
+Breaking a chest or furnace returns everything inside it — and when the inventory
+is full the remainder falls on the floor instead of being destroyed, which is the
+case that was still losing furnace contents.
 
 **Movement & controls** — sprinting works while jumping (this was a real bug:
 `input.js` bailed out of keydown whenever Ctrl was held, so the sprint key

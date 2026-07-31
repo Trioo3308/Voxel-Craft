@@ -639,6 +639,9 @@ export const BED = defineBlock(63, 'bed', {
 export const TORCH = defineBlock(64, 'torch', {
   displayName: 'Torch', tiles: TILE.TORCH, hardness: 0.1,
   shape: SHAPES.TORCH, emissive: true,
+  // Decoration, not architecture — you walk through a torch rather than being
+  // stopped by a stick. The shape is still used for rendering and the hitbox.
+  solid: false,
   // The whole point: a portable light source.
   lightEmission: 14,
 });
@@ -689,7 +692,9 @@ export const COMB_CRYSTAL = defineBlock(70, 'comb_crystal', {
 
 export const COMB_GROWTH = defineBlock(71, 'comb_growth', {
   displayName: 'Comb Growth', tiles: TILE.COMB_GROWTH, hardness: 0.3,
-  opaque: false, cullSameType: false,
+  // Ground cover you brush through, like tall grass — it scatters the surface
+  // of the Comb thickly enough that solid growths would make it a maze.
+  opaque: false, cullSameType: false, solid: false,
 });
 
 export const COMB_BRICK = defineBlock(72, 'comb_brick', {
