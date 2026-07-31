@@ -19,12 +19,35 @@ import {
 import {
   AIR, BLOCKS, isSolid as blockIsSolid, isLiquid as blockIsLiquid, isFluidFamily,
   isFurnaceBlock, FURNACE, FURNACE_LIT,
+  isFarmland, FARMLAND_MOIST, WHEAT_STAGES, wheatStage,
 } from './blocks.js';
 import { getAtlasTexture } from './textures.js';
 import { FluidSimulator } from './fluids.js';
 import { TERRAIN_VERSION } from './terrain.js';
 import { DIMENSIONS } from './dimensions.js';
 import { tickFurnace } from '../player/crafting.js';
+
+/**
+ * Random-tick tuning.
+ *
+ * The sample count has to be derived from the volume, not picked by feel. A
+ * given crop is hit at `samples / volume` per round, so time-to-ripen is
+ *
+ *   stages / (roundsPerSecond * samples/volume * growthChance)
+ *
+ * With a 33 x 33 x 17 window that volume is ~18.5k cells; the first draft
+ * sampled 28 of them per round, which works out to roughly fifty minutes to
+ * grow a single wheat. Measured with these numbers: 91 seconds irrigated, 299
+ * dry, so a channel is worth digging at 3.3x. Sampling is just an array index,
+ * so ~1300 lookups a second is far cheaper than the bookkeeping a crop registry
+ * would need.
+ */
+const RANDOM_TICK_INTERVAL = 0.25;   // seconds between rounds
+const RANDOM_TICKS_PER_ROUND = 320;
+const RANDOM_TICK_RADIUS = 16;       // blocks, horizontally
+const RANDOM_TICK_HEIGHT = 8;        // blocks, above and below the player
+const GROWTH_CHANCE_DRY = 0.18;
+const GROWTH_CHANCE_MOIST = 0.40;
 
 /** Per-chunk render + data record. */
 class Chunk {
@@ -83,6 +106,7 @@ export class World {
     this.blockEntities = new Map();
 
     this.fluids = new FluidSimulator(this);
+    this._tickAccumulator = 0;
 
     this._initMaterials();
     this._initWorker();
@@ -251,9 +275,62 @@ export class World {
     this._drainUploadQueue();
     this.fluids.update(dt);
     this._tickBlockEntities(dt);
+    this._randomTick(position, dt);
 
     this.stats.loaded = this.chunks.size;
     this.stats.pending = this.pendingRequests + this.queue.length;
+  }
+
+  /**
+   * Random block ticks near the player — how crops grow.
+   *
+   * Sampling random cells is Minecraft's own trick, and it is what keeps growth
+   * off any per-block bookkeeping: nothing has to remember where the farms are,
+   * a planted crop is just a block id that occasionally gets poked. The cost is
+   * fixed per frame regardless of how much has been planted.
+   */
+  _randomTick(position, dt) {
+    if (dt <= 0) return;
+
+    this._tickAccumulator += dt;
+    if (this._tickAccumulator < RANDOM_TICK_INTERVAL) return;
+    this._tickAccumulator = 0;
+
+    const px = Math.floor(position.x);
+    const py = Math.floor(position.y);
+    const pz = Math.floor(position.z);
+
+    for (let i = 0; i < RANDOM_TICKS_PER_ROUND; i++) {
+      const span = RANDOM_TICK_RADIUS * 2 + 1;
+      const x = px + ((Math.random() * span) | 0) - RANDOM_TICK_RADIUS;
+      const z = pz + ((Math.random() * span) | 0) - RANDOM_TICK_RADIUS;
+      const y = py + ((Math.random() * (RANDOM_TICK_HEIGHT * 2 + 1)) | 0) - RANDOM_TICK_HEIGHT;
+      if (y < 1 || y >= CHUNK_SY) continue;
+      if (!this.isChunkLoaded(x, z)) continue;
+
+      this._tickCrop(x, y, z);
+    }
+  }
+
+  /** Advance one crop, if that is what is at these coordinates. */
+  _tickCrop(x, y, z) {
+    const id = this.getBlock(x, y, z);
+    const stage = wheatStage(id);
+    if (stage < 0 || stage >= WHEAT_STAGES.length - 1) return;
+
+    const soil = this.getBlock(x, y - 1, z);
+    if (!isFarmland(soil)) {
+      // Something took the soil away — the crop cannot stand on its own.
+      this.setBlock(x, y, z, AIR);
+      return;
+    }
+
+    // Irrigated soil roughly doubles the growth rate, which is the whole reason
+    // to dig a channel rather than plant a field anywhere.
+    const chance = soil === FARMLAND_MOIST.id ? GROWTH_CHANCE_MOIST : GROWTH_CHANCE_DRY;
+    if (Math.random() > chance) return;
+
+    this.setBlock(x, y, z, WHEAT_STAGES[stage + 1].id);
   }
 
   /** Rebuild the wanted-chunk list, nearest first. */

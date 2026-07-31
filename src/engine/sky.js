@@ -21,6 +21,10 @@ const SUNSET_TINT = new THREE.Color(0xffcaa0);
 /** Night is dark but never pitch black — you still need to be able to play. */
 const NIGHT_TINT = new THREE.Color(0x39406b);
 
+/** Storm grey, and the white a lightning strike washes everything with. */
+const OVERCAST_SKY = new THREE.Color(0x5a6068);
+const LIGHTNING = new THREE.Color(0xffffff);
+
 function smoothstep(edge0, edge1, x) {
   const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
   return t * t * (3 - 2 * t);
@@ -39,6 +43,14 @@ export class SkyCycle {
 
     this._skyColor = new THREE.Color();
     this._tint = new THREE.Color();
+
+    /**
+     * Weather's contribution, pushed in each frame rather than read out of a
+     * Weather instance — the sky should not need to know weather exists, and a
+     * dimension without any still renders.
+     */
+    this.overcast = 0;
+    this.flash = 0;
   }
 
   /** Height of the sun above the horizon, -1..1. */
@@ -132,19 +144,29 @@ export class SkyCycle {
     this._skyColor.copy(NIGHT_SKY).lerp(DAY_SKY, dayAmount);
     this._skyColor.lerp(SUNSET_SKY, horizonAmount * 0.65);
 
+    // Weather pulls the sky toward flat grey and mutes the sunset band, then a
+    // lightning strike blows it briefly white.
+    const overcast = this.overcast ?? 0;
+    if (overcast > 0) this._skyColor.lerp(OVERCAST_SKY, overcast * 0.85);
+    if (this.flash > 0) this._skyColor.lerp(LIGHTNING, this.flash * 0.75);
+
     this.renderer.scene.background = this._skyColor;
     if (this.renderer.scene.fog) this.renderer.scene.fog.color.copy(this._skyColor);
 
     // --- Global tint on the unlit chunk material ---------------------------
     this._tint.copy(NIGHT_TINT).lerp(DAY_TINT, dayAmount);
     this._tint.lerp(SUNSET_TINT, horizonAmount * 0.45);
+    // Overcast darkens the world without tinting it, then lightning lifts it.
+    if (overcast > 0) this._tint.multiplyScalar(1 - overcast * 0.35);
+    if (this.flash > 0) this._tint.lerp(LIGHTNING, this.flash * 0.5);
     if (world) world.setLightTint(this._tint);
 
     // --- Entity lighting ---------------------------------------------------
-    this.renderer.sunLight.intensity = 0.25 + dayAmount * 1.25;
+    const gloom = 1 - overcast * 0.4;
+    this.renderer.sunLight.intensity = (0.25 + dayAmount * 1.25) * gloom;
     this.renderer.sunLight.color.copy(DAY_TINT).lerp(SUNSET_TINT, horizonAmount * 0.6);
-    this.renderer.hemiLight.intensity = 0.22 + dayAmount * 0.75;
-    this.renderer.ambientLight.intensity = 0.18 + dayAmount * 0.30;
+    this.renderer.hemiLight.intensity = (0.22 + dayAmount * 0.75) * gloom;
+    this.renderer.ambientLight.intensity = (0.18 + dayAmount * 0.30) * gloom + this.flash * 0.5;
 
     // Move the sun across the sky so entity shading direction changes.
     const angle = this.time * Math.PI * 2;

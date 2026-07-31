@@ -221,6 +221,8 @@ export async function captureState(game, meta = {}) {
     edits,
     /** Shrines already stocked, so returning does not re-roll their loot. */
     shrines: [...game._shrinesDone],
+    /** Weather carries over, so logging out in a storm means logging in to one. */
+    weather: game.weather ? game.weather.serialize() : null,
 
     // Furnace contents, keyed by position.
     blockEntities: [...game.world.blockEntities.entries()].map(([key, entity]) => ({
@@ -283,6 +285,7 @@ export async function applyState(game, save) {
   }
 
   game._shrinesDone = new Set(save.shrines ?? []);
+  if (game.weather) game.weather.restore(save.weather);
 
   // Container contents go through the same id remap as everything else.
   game.world.blockEntities.clear();

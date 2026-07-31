@@ -392,6 +392,80 @@ export class AudioEngine {
     }
   }
 
+  /**
+   * A thunderclap: a sharp crack, then a long rolling tail.
+   *
+   * The delay before the roll is what sells distance — a strike that cracks and
+   * stops sounds like a firework, not weather.
+   */
+  thunder() {
+    if (!this.ready) return;
+    const near = Math.random() < 0.35;
+    const gain = near ? 0.5 : 0.28;
+
+    // Initial crack.
+    this.noise({ freq: near ? 2200 : 900, q: 0.6, decay: 0.18, gain: gain * 0.6 });
+    this.tone({ freq: 70, endFreq: 22, duration: 1.1, gain: gain * 0.5, type: 'sine' });
+
+    // The roll: overlapping low rumbles fading out over a couple of seconds.
+    for (let i = 0; i < 6; i++) {
+      this.noise({
+        freq: 180 + Math.random() * 220,
+        q: 0.5,
+        decay: 0.5 + Math.random() * 0.8,
+        gain: gain * (0.32 - i * 0.04),
+        kind: 'pink',
+        type: 'lowpass',
+        delay: 0.12 + i * 0.22 + Math.random() * 0.18,
+      });
+    }
+  }
+
+  /**
+   * The steady hiss of falling rain, held as one looping voice rather than
+   * retriggered per drop — a few hundred one-shots a second would be both
+   * expensive and audibly granular.
+   *
+   * @param intensity 0..1; 0 stops it.
+   */
+  rain(intensity, snow = false) {
+    if (!this.ready) return;
+
+    if (intensity <= 0.01) {
+      if (this._rainGain) {
+        this._rainGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.4);
+      }
+      return;
+    }
+
+    if (!this._rainGain) {
+      const source = this.ctx.createBufferSource();
+      source.buffer = this._noise('white');
+      source.loop = true;
+
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 2600;
+      filter.Q.value = 0.4;
+
+      const gain = this.ctx.createGain();
+      gain.gain.value = 0;
+
+      source.connect(filter).connect(gain).connect(this.master);
+      source.start();
+
+      this._rainSource = source;
+      this._rainFilter = filter;
+      this._rainGain = gain;
+    }
+
+    // Snow is near-silent; rain is a wash. Both stay well under the mix so
+    // footsteps and mobs are still audible through the weather.
+    const target = snow ? intensity * 0.012 : intensity * 0.085;
+    this._rainGain.gain.setTargetAtTime(target, this.ctx.currentTime, 0.6);
+    this._rainFilter.frequency.setTargetAtTime(snow ? 900 : 2600, this.ctx.currentTime, 0.6);
+  }
+
   /** Bowstring being drawn — pitch rises with charge. */
   bowDraw(charge) {
     if (!this._throttle('bowDraw', 0.18)) return;

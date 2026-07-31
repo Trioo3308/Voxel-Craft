@@ -321,6 +321,69 @@ export const PAINTERS = {
     speckle(set, rnd, [152, 114, 82], 12);
   },
 
+  // --- Farming -------------------------------------------------------------
+
+  // Four growth stages: shoots, leafing, heading, ripe. Each is a set of
+  // upright stalks that get taller, denser and more golden.
+  ...Object.fromEntries([0, 1, 2, 3].map((stage) => [
+    TILE.WHEAT_0 + stage,
+    (set, rnd) => {
+      const ripeness = stage / 3;
+      // Green while growing, gold when ripe.
+      const r = 92 + ripeness * 120;
+      const g = 140 + ripeness * 44;
+      const b = 52 + ripeness * 14;
+
+      const top = 12 - stage * 3;          // taller each stage
+      const columns = [2, 5, 8, 11, 14].slice(0, 3 + stage >= 2 ? 5 : 3);
+
+      for (const x of columns) {
+        for (let y = top; y < T; y++) {
+          const d = (rnd() - 0.5) * 22;
+          set(x, y, r + d, g + d, b + d);
+          // A second pixel of width once there is something to see.
+          if (stage >= 1 && x + 1 < T) set(x + 1, y, r - 18 + d, g - 16 + d, b - 8 + d);
+        }
+        // Ripe stalks carry a heavy grain head.
+        if (stage === 3) {
+          set(x, top - 1, 236, 200, 96);
+          if (x + 1 < T) set(x + 1, top - 1, 214, 176, 78);
+          set(x, top - 2, 224, 188, 86);
+        } else if (stage === 2) {
+          set(x, top - 1, r + 30, g + 20, b + 10);
+        }
+      }
+    },
+  ])),
+
+  [TILE.FARMLAND]: (set, rnd) => {
+    noiseFill(set, rnd, DIRT_BROWN, 14);
+    // Plough furrows: four darker grooves with a lit lip above each.
+    for (let row = 0; row < 4; row++) {
+      const y = row * 4 + 1;
+      for (let x = 0; x < T; x++) {
+        const d = (rnd() - 0.5) * 10;
+        set(x, y, 96 + d, 68 + d, 44 + d);
+        set(x, y + 1, 120 + d, 88 + d, 58 + d);
+      }
+    }
+    speckle(set, rnd, [150, 112, 80], 10);
+  },
+
+  [TILE.FARMLAND_MOIST]: (set, rnd) => {
+    // The same furrows, darker and cooler — wet earth.
+    noiseFill(set, rnd, [92, 62, 40], 12);
+    for (let row = 0; row < 4; row++) {
+      const y = row * 4 + 1;
+      for (let x = 0; x < T; x++) {
+        const d = (rnd() - 0.5) * 9;
+        set(x, y, 62 + d, 42 + d, 28 + d);
+        set(x, y + 1, 82 + d, 56 + d, 38 + d);
+      }
+    }
+    speckle(set, rnd, [70, 52, 40], 12);
+  },
+
   [TILE.STONE]: (set, rnd) => {
     noiseFill(set, rnd, STONE_GREY, 14);
     speckle(set, rnd, [104, 104, 104], 16, 2);
@@ -922,6 +985,51 @@ export const PAINTERS = {
     set(12, 14, 116, 82, 44);
   },
 
+  [TILE.WHEAT_ITEM]: (set, rnd) => {
+    // A bundled sheaf: stalks fanning from a tied waist, with grain heads.
+    for (let i = 0; i < 5; i++) {
+      const lean = i - 2;
+      for (let y = 3; y < 14; y++) {
+        const x = 7 + Math.round((lean * (14 - y)) / 9);
+        const d = (rnd() - 0.5) * 18;
+        set(x, y, 206 + d, 170 + d, 60 + d);
+      }
+      // Grain head at the top of each stalk.
+      const hx = 7 + Math.round((lean * 11) / 9);
+      set(hx, 2, 232, 198, 88);
+      set(hx, 3, 224, 186, 74);
+    }
+    // The tie.
+    for (let x = 5; x <= 9; x++) set(x, 10, 150, 110, 46);
+  },
+
+  [TILE.SEEDS]: (set, rnd) => {
+    // A loose scatter of husks rather than a solid blob.
+    for (let i = 0; i < 16; i++) {
+      const x = 3 + ((rnd() * 10) | 0);
+      const y = 5 + ((rnd() * 7) | 0);
+      const d = (rnd() - 0.5) * 22;
+      set(x, y, 146 + d, 168 + d, 74 + d);
+      set(x, y + 1, 118 + d, 138 + d, 58 + d);
+    }
+  },
+
+  [TILE.BREAD]: (set, rnd) => {
+    // A rounded loaf with slashes across the crust.
+    for (let y = 5; y < 12; y++) {
+      const inset = y === 5 || y === 11 ? 4 : y === 6 || y === 10 ? 3 : 2;
+      for (let x = inset; x < T - inset; x++) {
+        const d = (rnd() - 0.5) * 16;
+        set(x, y, 186 + d, 132 + d, 66 + d);
+      }
+    }
+    // Highlight along the top, shadow under the bottom.
+    for (let x = 4; x < 12; x++) set(x, 6, 214, 164, 92);
+    for (let x = 4; x < 12; x++) set(x, 11, 142, 96, 44);
+    // Scored crust.
+    for (const x of [6, 9]) for (let y = 6; y < 11; y++) set(x, y, 156, 106, 50);
+  },
+
   [TILE.GUNPOWDER]: (set, rnd) => {
     // Loose grey powder.
     for (let i = 0; i < 44; i++) {
@@ -1159,6 +1267,26 @@ const TOOL_SPRITES = {
     '.......h........',
     '......ddd.......',
     '.......d........',
+    '................',
+  ],
+  // Blade across the top-right, handle running down to the bottom-left — the
+  // same diagonal as the pickaxe, so it grips correctly under the measured rule.
+  hoe: [
+    '................',
+    '.....mmmmm......',
+    '.....mllllm.....',
+    '.....mdd..m.....',
+    '......m.hh......',
+    '........hh......',
+    '.......hh.......',
+    '.......hh.......',
+    '......hh........',
+    '......hh........',
+    '.....hh.........',
+    '.....hh.........',
+    '....hh..........',
+    '....hh..........',
+    '...hh...........',
     '................',
   ],
   sword: [
@@ -1418,6 +1546,38 @@ export function getAtlasTexture() {
   atlasTexture.needsUpdate = true;
 
   return atlasTexture;
+}
+
+const tilePaletteCache = new Map();
+
+/**
+ * The opaque colours in a tile, as packed 0xRRGGBB.
+ *
+ * Particles pick from this so a shard of stone is stone-coloured and a shard of
+ * grass is green, without the particle system needing to know anything about
+ * blocks. Sampled from the built atlas, so it reflects whatever the painter
+ * actually drew rather than a second hand-maintained colour table.
+ */
+export function getTilePalette(tile) {
+  const cached = tilePaletteCache.get(tile);
+  if (cached) return cached;
+
+  getAtlasTexture(); // ensure the canvas exists
+  const ctx = atlasCanvas.getContext('2d', { willReadFrequently: true });
+  const col = tile % ATLAS_COLS;
+  const row = Math.floor(tile / ATLAS_COLS);
+  const data = ctx.getImageData(col * T, row * T, T, T).data;
+
+  const colors = [];
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 128) continue;
+    colors.push((data[i] << 16) | (data[i + 1] << 8) | data[i + 2]);
+  }
+  // A fully transparent tile still needs something to hand back.
+  if (colors.length === 0) colors.push(0x9a9a9a);
+
+  tilePaletteCache.set(tile, colors);
+  return colors;
 }
 
 /**

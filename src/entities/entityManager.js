@@ -13,10 +13,15 @@ import { ItemEntity } from './itemEntity.js';
 import { rollLoot } from './loot.js';
 import { dimensionInfo } from '../world/dimensions.js';
 import { Arrow } from './projectile.js';
-import { AIR, BLOCKS } from '../world/blocks.js';
+import { AIR, BLOCKS, getMaxStack } from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
 
 const M = Settings.mobs;
+
+/** How close two dropped stacks must be to combine. */
+const ITEM_MERGE_RADIUS = 0.9;
+/** Seconds between merge sweeps — this is O(n^2), so it does not run per frame. */
+const ITEM_MERGE_INTERVAL = 0.25;
 
 export class EntityManager {
   /**
@@ -35,7 +40,15 @@ export class EntityManager {
     this.projectiles = [];
 
     this._spawnTimer = 0;
+    this._mergeTimer = 0;
     this._tmpVec = new THREE.Vector3();
+
+    /**
+     * Effects layer, attached once a world exists. Optional throughout, so the
+     * entity code never has to care whether particles are switched on.
+     * @type {import('./particles.js').ParticleSystem|null}
+     */
+    this.particles = null;
   }
 
   // -------------------------------------------------------------------------
@@ -221,6 +234,8 @@ export class EntityManager {
     const world = this.world;
     const rSq = radius * radius;
 
+    if (this.particles) this.particles.explosion(x, y, z);
+
     for (let dy = -radius; dy <= radius; dy++) {
       for (let dz = -radius; dz <= radius; dz++) {
         for (let dx = -radius; dx <= radius; dx++) {
@@ -293,7 +308,14 @@ export class EntityManager {
   _updateMobs(dt, ctx) {
     for (let i = this.mobs.length - 1; i >= 0; i--) {
       const mob = this.mobs[i];
+      const hurtBefore = mob.hurtTimer;
       mob.update(dt, ctx);
+
+      // Watching the i-frame timer catches damage from every source — melee,
+      // arrows, sunlight, fall — without each of them needing its own hook.
+      if (this.particles && mob.hurtTimer > hurtBefore) {
+        this.particles.damage(mob.position.x, mob.position.y + mob.type.height * 0.6, mob.position.z);
+      }
 
       if (mob.removed) {
         this._dropLoot(mob);
@@ -313,6 +335,60 @@ export class EntityManager {
         this.scene.remove(item.mesh);
         item.dispose();
         this.items.splice(i, 1);
+      }
+    }
+
+    this._mergeItems(dt);
+  }
+
+  /**
+   * Coalesce touching stacks of the same thing.
+   *
+   * Digging a seam or breaking a full chest used to leave a drift of one-count
+   * entities, each with its own mesh and physics. Merging keeps the count down
+   * and, incidentally, makes a pile look like a pile.
+   *
+   * Only tools carry durability, and merging those would silently repair or
+   * damage one of them, so anything with wear is left alone.
+   */
+  _mergeItems(dt) {
+    this._mergeTimer -= dt;
+    if (this._mergeTimer > 0) return;
+    this._mergeTimer = ITEM_MERGE_INTERVAL;
+    if (this.items.length < 2) return;
+
+    const radiusSq = ITEM_MERGE_RADIUS * ITEM_MERGE_RADIUS;
+
+    for (let i = this.items.length - 1; i > 0; i--) {
+      const a = this.items[i];
+      if (a.removed || a.durability !== undefined) continue;
+
+      for (let j = i - 1; j >= 0; j--) {
+        const b = this.items[j];
+        if (b.removed || b.id !== a.id || b.durability !== undefined) continue;
+
+        const dx = a.position.x - b.position.x;
+        const dy = a.position.y - b.position.y;
+        const dz = a.position.z - b.position.z;
+        if (dx * dx + dy * dy + dz * dz > radiusSq) continue;
+
+        const max = getMaxStack(a.id);
+        const moved = Math.min(max - b.count, a.count);
+        if (moved <= 0) continue;
+
+        b.count += moved;
+        a.count -= moved;
+        // The survivor takes a nudge so a merging pile visibly settles. The
+        // mesh is keyed on the item id, not the count, so nothing else changes.
+        b.velocity.y = Math.max(b.velocity.y, 1.2);
+
+        if (a.count <= 0) {
+          a.removed = true;
+          this.scene.remove(a.mesh);
+          a.dispose();
+          this.items.splice(i, 1);
+        }
+        break;
       }
     }
   }
@@ -517,6 +593,8 @@ export class EntityManager {
     this.mobs.length = 0;
     this.items.length = 0;
     this.projectiles.length = 0;
+    // Effects belong to the scene that is going away with everything else.
+    if (this.particles) this.particles.clear();
   }
 }
 

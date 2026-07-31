@@ -17,6 +17,8 @@ import { ViewModel } from './engine/viewmodel.js';
 import { World } from './world/world.js';
 import { Player } from './player/player.js';
 import { EntityManager } from './entities/entityManager.js';
+import { ParticleSystem } from './entities/particles.js';
+import { Weather, WEATHER } from './engine/weather.js';
 import { HUD } from './ui/hud.js';
 import { SettingsScreen } from './ui/settings.js';
 import { TerrainGenerator } from './world/terrain.js';
@@ -81,6 +83,8 @@ export class Game {
     // Remembers where settings was opened from, so closing returns there.
     this._settingsReturnState = 'menu';
     this.settings = new SettingsScreen(this.input, () => this._closeSettings());
+
+    this.weather = new Weather();
 
     this.state = 'worlds';
     this.cameraInWater = false;
@@ -167,6 +171,27 @@ export class Game {
     this.player.onIgnitePortal = (x, y, z) => this._ignitePortal(x, y, z);
     this.player.onPortalTravel = () => this._travelDimension();
 
+    // --- Effects ------------------------------------------------------------
+    this.player.onLand = (fallDistance) => {
+      if (!this.particles) return;
+      const p = this.player.position;
+      const ground = this.world.getBlock(Math.floor(p.x), Math.floor(p.y) - 1, Math.floor(p.z));
+      // Harder landings kick up more, up to a cap so a long drop is not a cloud.
+      const count = Math.min(14, 3 + Math.round(fallDistance * 1.6));
+      this.particles.footDust(p.x, p.y, p.z, ground, count, 0.6);
+    };
+
+    this.player.onSplash = () => {
+      const p = this.player.position;
+      if (this.particles) this.particles.splash(p.x, p.y, p.z);
+    };
+
+    this.player.survival.onDamage((amount) => {
+      if (!this.particles || amount <= 0) return;
+      const p = this.player.eyePosition;
+      this.particles.damage(p.x, p.y - 0.4, p.z, 6);
+    });
+
     // The entity manager already rolled the boss loot table; this is just the
     // fanfare, and it retires the shrine so the Warden does not come back.
     this.entities.onBossDefeated = (mob) => {
@@ -236,6 +261,7 @@ export class Game {
     // it can no longer be looked up by position at this point.
     this.player.onBlockBroken = (blockId, target, entity) => {
       if (!target) return;
+      if (this.particles) this.particles.blockBreak(target.x, target.y, target.z, blockId);
 
       // Whatever will not fit falls on the floor instead of evaporating.
       // `addExisting` reports the leftover count, and ignoring it meant breaking
@@ -415,6 +441,52 @@ export class Game {
     warden.memory.home = { x: wx + 0.5, y: y + 1, z: wz + 0.5 };
     warden.memory.shrineKey = key;
     this.hud.showToast('Something guards this place');
+  }
+
+  /**
+   * Continuous effects — the ones that depend on what the player is doing this
+   * frame rather than on a discrete event.
+   */
+  _updateEffects(dt) {
+    if (!this.particles) return;
+    const player = this.player;
+
+    // Chips fly off the face being mined, paced on a timer so the rate does not
+    // scale with framerate.
+    this._miningPuffTimer = (this._miningPuffTimer ?? 0) - dt;
+    if (player.breakProgress > 0 && player.targetBlock && this._miningPuffTimer <= 0) {
+      this._miningPuffTimer = 0.12;
+      const t = player.targetBlock;
+      this.particles.blockHit(t.x, t.y, t.z, t.block, t.normal);
+    }
+
+    // Dust off the heels while sprinting on the ground.
+    this._sprintDustTimer = (this._sprintDustTimer ?? 0) - dt;
+    const speed = Math.hypot(player.velocity.x, player.velocity.z);
+    if (player.onGround && !player.inLiquid && speed > 5.2 && this._sprintDustTimer <= 0) {
+      this._sprintDustTimer = 0.1;
+      const p = player.position;
+      const ground = this.world.getBlock(Math.floor(p.x), Math.floor(p.y) - 1, Math.floor(p.z));
+      this.particles.footDust(p.x, p.y, p.z, ground, 2, 0.35);
+    }
+
+    // Motes drifting off any portal within a few blocks.
+    this._portalMoteTimer = (this._portalMoteTimer ?? 0) - dt;
+    if (this._portalMoteTimer <= 0) {
+      this._portalMoteTimer = 0.18;
+      const p = player.position;
+      const px = Math.floor(p.x), py = Math.floor(p.y), pz = Math.floor(p.z);
+      search:
+      for (let dy = -2; dy <= 3; dy++) {
+        for (let dz = -4; dz <= 4; dz++) {
+          for (let dx = -4; dx <= 4; dx++) {
+            if (this.world.getBlock(px + dx, py + dy, pz + dz) !== PORTAL.id) continue;
+            this.particles.portalMotes(px + dx, py + dy, pz + dz, 1);
+            break search;
+          }
+        }
+      }
+    }
   }
 
   /** Sky, fog and ambient light for the current dimension. */
@@ -642,6 +714,12 @@ export class Game {
     this.player.world = this.world;
     this.entities.world = this.world;
     this.terrainInfo = new TerrainGenerator(save.seed, save.terrainVersion);
+
+    // Effects are tied to the world they collide against, so they are rebuilt
+    // with it rather than carried over.
+    if (this.particles) this.particles.dispose();
+    this.particles = new ParticleSystem(this.renderer.scene, this.world);
+    this.entities.particles = this.particles;
 
     // Per-world state that must not leak across sessions. The shrine oracle is
     // seeded, so a stale one would point at the previous world's shrines.
@@ -926,6 +1004,7 @@ export class Game {
         dimension: this.world.dimension,
       });
       this._maintainShrines(dt);
+      this._updateEffects(dt);
 
       this._autosaveTimer += dt;
       if (this._autosaveTimer >= AUTOSAVE_INTERVAL) {
@@ -938,6 +1017,26 @@ export class Game {
     // Fluids and furnaces still tick while a container is open, as in Minecraft.
     const simDt = playing || this.state === 'container' ? dt : 0;
     this.world.update(this.player.position, simDt);
+
+    // Weather runs before the sky, which reads its overcast and flash values.
+    this.weather.update(simDt, {
+      player: this.player,
+      world: this.world,
+      terrain: this.terrainInfo,
+      particles: this.particles,
+      hasWeather: dimensionInfo(this.world.dimension).hasWeather === true,
+      onLightning: () => audio.thunder(),
+    });
+    this.sky.overcast = this.weather.overcast;
+    this.sky.flash = this.weather.flash;
+    // Rain you can hear only when you are actually out in it.
+    const exposed = this.world.getSurfaceY(
+      Math.floor(this.player.position.x), Math.floor(this.player.position.z)
+    ) <= Math.floor(this.player.position.y);
+    audio.rain(this.weather.falling && exposed ? this.weather.intensity : 0,
+               this.weather.falling === 'snow');
+
+    if (this.particles) this.particles.update(simDt);
     this.sky.update(playing ? dt : 0, this.world);
 
     // --- Presentation ------------------------------------------------------

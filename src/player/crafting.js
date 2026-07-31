@@ -126,6 +126,10 @@ shaped(['CC', 'CC'], { C: ITEM_ID.COMBIUM_INGOT }, { id: COMBIUM_BLOCK.id, count
 shapeless([COMBIUM_BLOCK.id], { id: ITEM_ID.COMBIUM_INGOT, count: 4 });
 shaped(['SS', 'SS'], { S: ITEM_ID.COMB_SHARD }, { id: COMB_BRICK.id, count: 4 });
 
+// --- Farming ----------------------------------------------------------------
+// Three wheat in a row. The first food you can make instead of hunt.
+shaped(['WWW'], { W: ITEM_ID.WHEAT }, { id: ITEM_ID.BREAD, count: 1 });
+
 // --- Bow --------------------------------------------------------------------
 shaped(['.SG', 'S.G', '.SG'], { S: ITEM_ID.STICK, G: ITEM_ID.STRING }, { id: ITEM_ID.BOW, count: 1 });
 
@@ -159,6 +163,7 @@ const TOOL_PATTERNS = {
   axe: [['MM.', 'MS.', '.S.'], ['.MM', '.SM', '.S.']],
   shovel: [['.M.', '.S.', '.S.']],
   sword: [['.M.', '.M.', '.S.']],
+  hoe: [['MM.', '.S.', '.S.'], ['.MM', '.S.', '.S.']],
 };
 
 const ARMOR_PATTERNS = {

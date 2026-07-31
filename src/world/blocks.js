@@ -129,6 +129,17 @@ export const TILE = {
   THRONE_TOP: 161,
   THRONE_SIDE: 162,
 
+  // --- Farming --------------------------------------------------------------
+  FARMLAND: 163,
+  FARMLAND_MOIST: 164,
+  WHEAT_0: 165,
+  WHEAT_1: 166,
+  WHEAT_2: 167,
+  WHEAT_3: 168,
+  WHEAT_ITEM: 169,
+  SEEDS: 170,
+  BREAD: 171,
+
   /**
    * Tool and armour icons are generated parametrically (shape x material), so
    * they occupy reserved runs rather than individual named entries.
@@ -140,7 +151,7 @@ export const TILE = {
 };
 
 /** Order used for the parametric tool/armour tile runs. */
-export const TOOL_KINDS = ['pickaxe', 'axe', 'shovel', 'sword'];
+export const TOOL_KINDS = ['pickaxe', 'axe', 'shovel', 'sword', 'hoe'];
 export const ARMOR_PIECES = ['helmet', 'chestplate', 'leggings', 'boots'];
 export const GEAR_MATERIALS = ['wood', 'stone', 'iron', 'gold', 'diamond', 'combium'];
 
@@ -195,6 +206,11 @@ export const SHAPES = {
   BED: [[0, 0, 0, 1, 0.5625, 1]],
   TORCH: [[0.4375, 0, 0.4375, 0.5625, 0.625, 0.5625]],
   CHEST: [[0.0625, 0, 0.0625, 0.9375, 0.875, 0.9375]],
+  // Tilled soil sits a notch below full height, so a field reads as worked
+  // ground and you step down into it.
+  FARMLAND: [[0, 0, 0, 1, 0.9375, 1]],
+  // Crops are decoration you walk through; the box only shapes the render.
+  CROP: [[0.0625, 0, 0.0625, 0.9375, 0.875, 0.9375]],
 };
 
 /** Height of a shape's tallest box, used for step-up and headroom checks. */
@@ -241,6 +257,12 @@ function defineBlock(id, name, options = {}) {
     drops: options.drops ?? id,
     /** How many drop, as [min, max]. */
     dropCount: options.dropCount ?? [1, 1],
+    /**
+     * Extra chance-based drops on top of `drops`, as
+     * `[{ id, chance, min, max }]`. Grass yielding the occasional seed is what
+     * this exists for — a second drop table rather than replacing the first.
+     */
+    bonusDrops: options.bonusDrops ?? null,
     /** Which tool class mines this quickly: 'pickaxe' | 'axe' | 'shovel' | null. */
     toolType: options.toolType ?? null,
     /**
@@ -400,10 +422,16 @@ export const ITEM_ID = {
   COMB_HEART: 158,
   COMB_SHARD: 159,
 
-  // Gear runs are 24 wide each now that there are six materials. Ids moved to
-  // make room; saves remap by *name*, so renumbering is safe.
-  TOOL_BASE: 160,   // 160..183
-  ARMOR_BASE: 184,  // 184..207
+  // --- Farming --------------------------------------------------------------
+  WHEAT: 160,
+  SEEDS: 161,
+  BREAD: 162,
+
+  // Gear runs are 30 and 24 wide. They moved again when the hoe was added as a
+  // fifth tool kind, which pushed the tool run into what had been the armour
+  // range; saves remap by *name*, so renumbering is safe.
+  TOOL_BASE: 168,   // 168..197 (5 kinds x 6 materials)
+  ARMOR_BASE: 200,  // 200..223 (4 pieces x 6 material slots)
 };
 
 // ---------------------------------------------------------------------------
@@ -720,6 +748,61 @@ export const PORTAL = defineBlock(74, 'combium_portal', {
   lightEmission: 11,
 });
 
+// ---------------------------------------------------------------------------
+// Farming
+// ---------------------------------------------------------------------------
+
+/**
+ * Tilled soil. Two blocks rather than one with a moisture field, matching how
+ * the lit/unlit furnace is done — the state is visible, so it may as well be
+ * the block id, which also means it saves and syncs to the worker for free.
+ *
+ * Slightly shorter than a full cube, so a field reads as tilled at a glance.
+ */
+export const FARMLAND = defineBlock(75, 'farmland', {
+  displayName: 'Farmland', hardness: 0.5, toolType: 'shovel',
+  tiles: { top: TILE.FARMLAND, side: TILE.DIRT, bottom: TILE.DIRT },
+  shape: SHAPES.FARMLAND,
+  drops: 2, // reverts to plain dirt when broken
+});
+
+export const FARMLAND_MOIST = defineBlock(76, 'farmland_moist', {
+  displayName: 'Farmland', hardness: 0.5, toolType: 'shovel',
+  tiles: { top: TILE.FARMLAND_MOIST, side: TILE.DIRT, bottom: TILE.DIRT },
+  shape: SHAPES.FARMLAND,
+  drops: 2,
+});
+
+export function isFarmland(id) {
+  return id === FARMLAND.id || id === FARMLAND_MOIST.id;
+}
+
+/**
+ * Wheat, in four visible stages. Non-solid so you walk through a field, and
+ * `cullSameType` off so neighbouring stalks do not erase each other's faces.
+ */
+export const WHEAT_STAGES = [];
+for (let stage = 0; stage < 4; stage++) {
+  WHEAT_STAGES.push(defineBlock(77 + stage, `wheat_stage_${stage}`, {
+    displayName: 'Wheat',
+    tiles: TILE.WHEAT_0 + stage,
+    hardness: 0.05,
+    solid: false, opaque: false, cullSameType: false,
+    shape: SHAPES.CROP,
+    // Drops are handled specially: a ripe crop yields grain, an unripe one only
+    // returns the seed you planted. See Game.onBlockBroken.
+    drops: ITEM_ID.SEEDS,
+  }));
+}
+
+/** The last stage is the only one worth harvesting. */
+export const WHEAT_RIPE = WHEAT_STAGES[WHEAT_STAGES.length - 1];
+
+export function wheatStage(id) {
+  const index = WHEAT_STAGES.findIndex((b) => b.id === id);
+  return index;
+}
+
 /** Every log/leaf pair, so terrain can pick a tree style per biome. */
 export const TREE_WOODS = {
   oak: { log: LOG.id, leaves: LEAVES.id },
@@ -786,6 +869,30 @@ export const GUNPOWDER      = defineItem(ITEM_ID.GUNPOWDER,      'gunpowder',   
 
 // --- Combium & the Comb dimension -------------------------------------------
 export const COMBIUM_INGOT = defineItem(ITEM_ID.COMBIUM_INGOT, 'combium_ingot', { displayName: 'Combium Ingot', tile: TILE.COMBIUM_INGOT });
+
+// --- Farming ---------------------------------------------------------------
+export const WHEAT = defineItem(ITEM_ID.WHEAT, 'wheat', {
+  displayName: 'Wheat', tile: TILE.WHEAT_ITEM,
+});
+export const SEEDS = defineItem(ITEM_ID.SEEDS, 'wheat_seeds', {
+  displayName: 'Wheat Seeds', tile: TILE.SEEDS,
+});
+/** The first food you can farm rather than hunt. */
+export const BREAD = defineItem(ITEM_ID.BREAD, 'bread', {
+  displayName: 'Bread', tile: TILE.BREAD, food: 5, saturation: 6,
+});
+
+/**
+ * Seeds come from digging up any grassy surface — the entry point into farming
+ * has to be something you trip over in the first minute, not a reward.
+ *
+ * Assigned here rather than in each block's options because those are declared
+ * long before `ITEM_ID` exists; writing the number inline would be a magic
+ * constant that the name-based save palette could not protect.
+ */
+for (const grassy of [GRASS, DRY_GRASS, PODZOL, SWAMP_GRASS]) {
+  grassy.bonusDrops = [{ id: ITEM_ID.SEEDS, chance: 0.22, min: 1, max: 1 }];
+}
 export const COMB_SHARD    = defineItem(ITEM_ID.COMB_SHARD,    'comb_shard',    { displayName: 'Comb Shard',    tile: TILE.COMB_SHARD });
 export const COMB_HEART    = defineItem(ITEM_ID.COMB_HEART,    'comb_heart',    { displayName: 'Comb Heart',    tile: TILE.COMB_HEART, maxStack: 1 });
 
@@ -871,7 +978,7 @@ export const TOOL_MATERIALS = {
   combium: { label: 'Combium', tier: 4, speed: 11, durability: 2400, swordDamage: 9, color: 0xf2f0ea },
 };
 
-const TOOL_LABELS = { pickaxe: 'Pickaxe', axe: 'Axe', shovel: 'Shovel', sword: 'Sword' };
+const TOOL_LABELS = { pickaxe: 'Pickaxe', axe: 'Axe', shovel: 'Shovel', sword: 'Sword', hoe: 'Hoe' };
 
 /** id = TOOL_BASE + kindIndex * GEAR_STRIDE + materialIndex, matching the tiles. */
 export function toolItemId(kind, material) {
@@ -891,8 +998,13 @@ for (const kind of TOOL_KINDS) {
         tier: stats.tier,
         speed: stats.speed,
         durability: stats.durability,
-        // Swords hit hardest; other tools are middling weapons.
-        damage: kind === 'sword' ? stats.swordDamage : Math.max(2, stats.swordDamage - 2),
+        // Swords hit hardest; a hoe is a farming implement and a poor weapon;
+        // everything else is middling.
+        damage: kind === 'sword' ? stats.swordDamage
+              : kind === 'hoe' ? 1
+              : Math.max(2, stats.swordDamage - 2),
+        /** Tills grass and dirt into farmland. */
+        tills: kind === 'hoe',
       },
     });
   }

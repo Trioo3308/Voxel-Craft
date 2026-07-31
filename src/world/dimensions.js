@@ -24,6 +24,8 @@ export const DIMENSION_INFO = {
     ambient: 1.0,
     /** Ordinary overworld mobs spawn. */
     spawnsOverworldMobs: true,
+    /** Rain and snow fall here. */
+    hasWeather: true,
   },
 
   [DIMENSIONS.COMB]: {
@@ -36,6 +38,8 @@ export const DIMENSION_INFO = {
     fogColor: 0xe8e3dc,
     ambient: 0.92,
     spawnsOverworldMobs: false,
+    /** Nothing falls in a dimension with no sky. */
+    hasWeather: false,
     /** Fog closes in, which sells the enclosed feeling. */
     fogScale: 0.55,
   },

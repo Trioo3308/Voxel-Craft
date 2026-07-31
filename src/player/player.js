@@ -13,13 +13,21 @@ import { raycastVoxels } from './raycast.js';
 import { Inventory } from './inventory.js';
 import { Survival, EXHAUSTION } from './survival.js';
 import {
-  AIR, getBlock, isLiquid, getSoundMaterial, getRanged, getBucket, getFluid,
+  AIR, getBlock, getItem, isLiquid, getSoundMaterial, getRanged, getBucket, getFluid,
   ITEM_ID, WATER, LAVA, PORTAL,
+  GRASS, DIRT, DRY_GRASS, PODZOL, SWAMP_GRASS,
+  FARMLAND, FARMLAND_MOIST, isFarmland, WHEAT_STAGES, wheatStage,
 } from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
 
 const P = Settings.player;
 const HALF_PI = Math.PI / 2;
+
+/** Surfaces a hoe will turn into farmland. */
+const TILLABLE = new Set([GRASS.id, DIRT.id, DRY_GRASS.id, PODZOL.id, SWAMP_GRASS.id]);
+
+/** How far farmland looks for water before counting as irrigated. */
+const MOISTURE_RADIUS = 4;
 
 export class Player {
   /**
@@ -372,6 +380,7 @@ export class Player {
     } else if (wasAirborne || this.fallDistance > 0) {
       if (!this.flying && !this.inLiquid) {
         if (this.fallDistance > 0.8) audio.fall(this.fallDistance);
+        if (this.fallDistance > 0.6 && this.onLand) this.onLand(this.fallDistance);
         if (this.fallDistance > Settings.survival.fallDamageThreshold) {
           const damage = Math.floor(this.fallDistance - Settings.survival.fallDamageThreshold);
           if (damage > 0) this.survival.damage(damage, 'fall');
@@ -383,7 +392,10 @@ export class Player {
     // Entering or leaving water splashes.
     if (this.inLiquid !== this._wasInLiquid) {
       this._wasInLiquid = this.inLiquid;
-      if (this.inLiquid) audio.splash();
+      if (this.inLiquid) {
+        audio.splash();
+        if (this.onSplash) this.onSplash();
+      }
     }
 
     this.onGround = result.onGround;
@@ -551,6 +563,10 @@ export class Player {
       // Sneaking suppresses station UIs so you can still build against them.
       if (!this.sneaking && this._tryUseBlock()) {
         this._placeCooldown = 0.4;
+      } else if (this._tryTill()) {
+        this._placeCooldown = 0.4;
+      } else if (this._tryPlantSeeds()) {
+        this._placeCooldown = 0.4;
       } else if (this._tryBucket(ctx)) {
         this._placeCooldown = 0.4;
       } else if (this._tryEat()) {
@@ -702,6 +718,61 @@ export class Player {
     return true;
   }
 
+  /**
+   * Right-click grass or dirt with a hoe to turn it into farmland.
+   * @returns {boolean} whether anything was tilled
+   */
+  _tryTill() {
+    const slot = this.inventory.getSelected();
+    if (!slot) return false;
+    const item = getItem(slot.id);
+    if (!item || !item.tool || !item.tool.tills) return false;
+
+    const target = this.targetBlock;
+    if (!target) return false;
+    if (!TILLABLE.has(target.block)) return false;
+    // Tilling under a block would bury the crop, so the top has to be clear.
+    if (this.world.getBlock(target.x, target.y + 1, target.z) !== AIR) return false;
+
+    const wet = this._waterNear(target.x, target.y, target.z);
+    this.world.setBlock(target.x, target.y, target.z, wet ? FARMLAND_MOIST.id : FARMLAND.id);
+    audio.blockPlace(getSoundMaterial(FARMLAND.id));
+    this.didSwing = true;
+    if (!this.creative) this.inventory.damageHeldTool(1);
+    return true;
+  }
+
+  /** Right-click farmland with seeds to plant them. */
+  _tryPlantSeeds() {
+    const slot = this.inventory.getSelected();
+    if (!slot || slot.id !== ITEM_ID.SEEDS) return false;
+
+    const target = this.targetBlock;
+    if (!target || !isFarmland(target.block)) return false;
+    if (this.world.getBlock(target.x, target.y + 1, target.z) !== AIR) return false;
+
+    this.world.setBlock(target.x, target.y + 1, target.z, WHEAT_STAGES[0].id);
+    audio.blockPlace('grass');
+    this.didSwing = true;
+    if (!this.creative) this.inventory.consumeSelected(1);
+    return true;
+  }
+
+  /**
+   * Is there water within the moisture radius? Farmland next to water grows
+   * faster, which is what makes players dig irrigation channels.
+   */
+  _waterNear(x, y, z) {
+    for (let dz = -MOISTURE_RADIUS; dz <= MOISTURE_RADIUS; dz++) {
+      for (let dx = -MOISTURE_RADIUS; dx <= MOISTURE_RADIUS; dx++) {
+        for (let dy = 0; dy <= 1; dy++) {
+          if (this.world.isWater(x + dx, y + dy, z + dz)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   /** Right-click a cow with an empty bucket for milk. */
   _tryMilkCow(ctx) {
     if (!ctx.entities) return false;
@@ -787,6 +858,24 @@ export class Player {
         const [min, max] = def.dropCount;
         const count = min + Math.floor(Math.random() * (max - min + 1));
         if (count > 0) this.inventory.add(def.drops, count);
+
+        // A second, chance-based table on top of the main drop — how digging
+        // grass yields the seeds that start a farm.
+        if (def.bonusDrops) {
+          for (const bonus of def.bonusDrops) {
+            if (Math.random() > bonus.chance) continue;
+            const n = bonus.min + Math.floor(Math.random() * (bonus.max - bonus.min + 1));
+            if (n > 0) this.inventory.add(bonus.id, n);
+          }
+        }
+
+        // A ripe crop also gives grain; an unripe one only returns the seed,
+        // so harvesting early costs you the harvest rather than the seed.
+        const stage = wheatStage(def.id);
+        if (stage === WHEAT_STAGES.length - 1) {
+          this.inventory.add(ITEM_ID.WHEAT, 1 + Math.floor(Math.random() * 2));
+          this.inventory.add(ITEM_ID.SEEDS, Math.floor(Math.random() * 2));
+        }
       } else if (def.drops && !this.canHarvest(def)) {
         this.lastHarvestFailure = def;
       }
