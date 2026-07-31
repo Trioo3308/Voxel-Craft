@@ -27,11 +27,13 @@ import { makeFurnaceState } from './player/crafting.js';
 import {
   isLiquid, GRASS, DIRT, SAND, SNOW, STONE, DRY_GRASS, PODZOL, SWAMP_GRASS,
   CRAFTING_TABLE, isFurnaceBlock, isDoor, DOOR_CLOSED, DOOR_OPEN, BED, CHEST,
-  PORTAL, COMBIUM_BLOCK, THRONE,
+  PORTAL, COMBIUM_BLOCK, THRONE, THRONE_AWAKENED, ITEM_ID,
 } from './world/blocks.js';
 import { audio } from './engine/audio.js';
 import { DIMENSIONS, dimensionInfo } from './world/dimensions.js';
-import { CombTerrainGenerator, SHRINE_SPACING, SHRINE_LAYOUT } from './world/combTerrain.js';
+import {
+  CombTerrainGenerator, SHRINE_SPACING, SHRINE_LAYOUT, nearestShrineAnchor,
+} from './world/combTerrain.js';
 import { DUNGEON_SPACING } from './world/terrain.js';
 import { ignitePortal, extinguishPortal, buildReturnPortal, destinationOf } from './world/portal.js';
 import { THRONE_LOOT, DUNGEON_LOOT, fillChest } from './entities/loot.js';
@@ -43,6 +45,9 @@ import { WARDEN } from './entities/mobTypes.js';
  * uses to make it a travel shortcut.
  */
 const DIMENSION_SCALE = 4;
+
+/** Extra max health granted permanently by awakening a throne. */
+const THRONE_HEALTH_BONUS = 4;
 
 // Re-exported on `window.VoxelCraft` for console debugging.
 import * as Blocks from './world/blocks.js';
@@ -218,6 +223,11 @@ export class Game {
       if (blockId === CRAFTING_TABLE.id) {
         this._openContainer(() => this.hud.openCraftingTable());
         return true;
+      }
+
+      // --- The throne -------------------------------------------------------
+      if (blockId === THRONE.id || blockId === THRONE_AWAKENED.id) {
+        return this._useThrone(blockId, x, y, z);
       }
 
       // --- Doors: toggle open/closed ---------------------------------------
@@ -396,11 +406,11 @@ export class Game {
 
     const pcx = Math.floor(this.player.position.x / 16);
     const pcz = Math.floor(this.player.position.z / 16);
-    // Anchors are SHRINE_SPACING chunks apart, so one grid step either way
-    // covers everything that could possibly be in render range.
+    // Anchors are SHRINE_SPACING chunks apart on a grid offset from the origin,
+    // so ask the generator where the nearest one is rather than assuming they
+    // land on multiples. One grid step either way covers render range.
     const step = SHRINE_SPACING;
-    const originX = Math.floor(pcx / step) * step;
-    const originZ = Math.floor(pcz / step) * step;
+    const [originX, originZ] = nearestShrineAnchor(pcx, pcz);
 
     for (let gz = -1; gz <= 1; gz++) {
       for (let gx = -1; gx <= 1; gx++) {
@@ -460,6 +470,49 @@ export class Game {
         if (stocked) this._shrinesDone.add(key);
       }
     }
+  }
+
+  /**
+   * The throne. This is what the Comb is *for*.
+   *
+   * Setting a Comb Heart into it — and the only Hearts come off the Warden that
+   * guards the shrine — awakens the throne permanently: it lights up, hands over
+   * the Crown, and raises your maximum health for good. One per throne, and
+   * thrones are hundreds of blocks apart, so each one is an event.
+   */
+  _useThrone(blockId, x, y, z) {
+    if (blockId === THRONE_AWAKENED.id) {
+      this.hud.showToast('The throne is already awake');
+      return true;
+    }
+
+    const held = this.player.inventory.getSelected();
+    if (!held || held.id !== ITEM_ID.COMB_HEART) {
+      this.hud.showToast('The throne is cold. Something is missing.');
+      return true;
+    }
+
+    this.world.setBlock(x, y, z, THRONE_AWAKENED.id);
+    if (!this.player.creative) this.player.inventory.consumeSelected(1);
+
+    // The permanent reward. Recorded on the player so it saves and survives
+    // death, and applied additively so a second throne stacks.
+    this.player.survival.maxHealth += THRONE_HEALTH_BONUS;
+    this.player.survival.health = this.player.survival.maxHealth;
+
+    this.player.inventory.add(ITEM_ID.CROWN, 1);
+
+    audio.ignite();
+    audio.mobSound({ name: 'throne', voice: 'hum', pitch: 120, duration: 1.4 }, 'idle', 0);
+    this.hud.showToast('The throne awakens. You are crowned.');
+
+    if (this.particles) {
+      for (let i = 0; i < 5; i++) this.particles.portalMotes(x, y + 1, z, 6);
+      this.particles.explosion(x + 0.5, y + 1.5, z + 0.5, 24);
+    }
+
+    this.saveWorld();
+    return true;
   }
 
   /** Fill a dungeon's chests. Returns false if the room has not loaded yet. */
@@ -1016,6 +1069,7 @@ export class Game {
       starve: 'You starved to death.',
       void: 'You fell out of the world.',
       lava: 'You tried to swim in lava.',
+      spine: 'The Comb drank you dry.',
       explosion: 'A creeper got too close.',
     };
 

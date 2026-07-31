@@ -340,34 +340,35 @@ export const PAINTERS = {
 
   // --- Farming -------------------------------------------------------------
 
-  // Four growth stages: shoots, leafing, heading, ripe. Each is a set of
-  // upright stalks that get taller, denser and more golden.
+  // Four growth stages: shoots, leafing, heading, ripe. Green to gold, thin to
+  // dense. The stalks fill the tile top to bottom because these are drawn as
+  // crossed quads whose *height* already scales per stage — leaving empty rows
+  // in the texture would just make the quad look cropped.
   ...Object.fromEntries([0, 1, 2, 3].map((stage) => [
     TILE.WHEAT_0 + stage,
     (set, rnd) => {
       const ripeness = stage / 3;
-      // Green while growing, gold when ripe.
       const r = 92 + ripeness * 120;
       const g = 140 + ripeness * 44;
       const b = 52 + ripeness * 14;
 
-      const top = 12 - stage * 3;          // taller each stage
-      const columns = [2, 5, 8, 11, 14].slice(0, 3 + stage >= 2 ? 5 : 3);
+      // More stalks as the crop fills in.
+      const columns = [[3, 11], [2, 7, 12], [1, 5, 9, 13], [1, 4, 7, 10, 13]][stage];
 
       for (const x of columns) {
-        for (let y = top; y < T; y++) {
+        for (let y = 0; y < T; y++) {
           const d = (rnd() - 0.5) * 22;
           set(x, y, r + d, g + d, b + d);
-          // A second pixel of width once there is something to see.
           if (stage >= 1 && x + 1 < T) set(x + 1, y, r - 18 + d, g - 16 + d, b - 8 + d);
         }
-        // Ripe stalks carry a heavy grain head.
+        // Ripe stalks carry a heavy grain head at the tip.
         if (stage === 3) {
-          set(x, top - 1, 236, 200, 96);
-          if (x + 1 < T) set(x + 1, top - 1, 214, 176, 78);
-          set(x, top - 2, 224, 188, 86);
+          for (let y = 0; y < 5; y++) {
+            set(x, y, 236 - y * 4, 200 - y * 5, 96 - y * 3);
+            if (x + 1 < T) set(x + 1, y, 214 - y * 4, 176 - y * 5, 78 - y * 3);
+          }
         } else if (stage === 2) {
-          set(x, top - 1, r + 30, g + 20, b + 10);
+          for (let y = 0; y < 3; y++) set(x, y, r + 30, g + 20, b + 10);
         }
       }
     },
@@ -1124,17 +1125,191 @@ export const PAINTERS = {
   },
 
   [TILE.COMB_GROWTH]: (set, rnd) => {
-    // Sparse upright fronds; transparent background for the cutout material.
-    for (let i = 0; i < 5; i++) {
-      const x = 2 + ((rnd() * 12) | 0);
-      const h = 5 + ((rnd() * 8) | 0);
-      for (let y = T - 1; y > T - 1 - h; y--) {
-        const d = (rnd() - 0.5) * 24;
-        const red = (T - y) / h;
-        set(x, y, 210 + d, 90 + red * 90 + d, 96 + d);
+    // Pale fronds with crimson tips, drawn as crossed quads. Rooted at the
+    // bottom of the tile and reaching most of the way up, so the plant has a
+    // base rather than floating.
+    for (let i = 0; i < 6; i++) {
+      const x = 1 + ((rnd() * 14) | 0);
+      const top = 1 + ((rnd() * 5) | 0);
+      for (let y = T - 1; y >= top; y--) {
+        const d = (rnd() - 0.5) * 20;
+        // Blush toward the tip.
+        const tip = (T - 1 - y) / (T - top);
+        set(x, y, 226 + d, 200 - tip * 96 + d, 200 - tip * 84 + d);
       }
-      set(x, T - h, 240, 150, 150);
+      set(x, top, 226, 74, 82);
+      if (top + 1 < T) set(x, top + 1, 214, 108, 112);
     }
+  },
+
+  // --- Comb materials ------------------------------------------------------
+
+  [TILE.COMB_RESIN]: (set, rnd) => {
+    // Amber seams running through pale wax.
+    noiseFill(set, rnd, [232, 214, 176], 12);
+    for (let i = 0; i < 5; i++) {
+      let x = (rnd() * T) | 0;
+      for (let y = 0; y < T; y++) {
+        x = Math.max(0, Math.min(T - 1, x + ((rnd() * 3) | 0) - 1));
+        const d = (rnd() - 0.5) * 20;
+        set(x, y, 214 + d, 154 + d, 68 + d);
+        if (x + 1 < T) set(x + 1, y, 196 + d, 138 + d, 58 + d);
+      }
+    }
+    speckle(set, rnd, [246, 232, 200], 12);
+  },
+
+  [TILE.COMB_WAX]: (set, rnd) => {
+    // Flat sealed wax with faint hexagonal impressions.
+    noiseFill(set, rnd, [238, 228, 206], 8);
+    for (let cy = 0; cy < T; cy += 5) {
+      for (let cx = (cy % 10 === 0) ? 0 : 3; cx < T; cx += 6) {
+        for (let i = 0; i < 4; i++) {
+          set(cx + i, cy, 220, 206, 178);
+          set(cx, cy + i, 224, 210, 182);
+        }
+      }
+    }
+  },
+
+  [TILE.COMB_LANTERN]: (set, rnd) => {
+    // A bright core behind a pale lattice frame.
+    noiseFill(set, rnd, [255, 246, 214], 10);
+    for (let i = 0; i < T; i++) {
+      set(i, 0, 226, 210, 180); set(i, T - 1, 226, 210, 180);
+      set(0, i, 226, 210, 180); set(T - 1, i, 226, 210, 180);
+    }
+    // Crimson filament in the middle.
+    for (let y = 5; y < 11; y++) for (let x = 5; x < 11; x++) {
+      const edge = x === 5 || x === 10 || y === 5 || y === 10;
+      const d = (rnd() - 0.5) * 20;
+      if (edge) set(x, y, 208 + d, 96 + d, 96 + d);
+      else set(x, y, 255, 214 + d, 150 + d);
+    }
+  },
+
+  [TILE.COMB_GLASS]: (set, rnd) => {
+    // Mostly transparent, with a pale frame and a couple of highlights.
+    for (let i = 0; i < T; i++) {
+      set(i, 0, 236, 230, 220, 190); set(i, T - 1, 236, 230, 220, 190);
+      set(0, i, 236, 230, 220, 190); set(T - 1, i, 236, 230, 220, 190);
+    }
+    for (let i = 2; i < 7; i++) set(i, i, 255, 252, 246, 120);
+    set(11, 4, 255, 252, 246, 100);
+    set(12, 5, 255, 252, 246, 100);
+  },
+
+  [TILE.COMB_TILE]: (set, rnd) => {
+    // Polished slab, quartered, with a crimson inlay at the centre.
+    noiseFill(set, rnd, [230, 224, 212], 8);
+    for (let i = 0; i < T; i++) { set(7, i, 208, 200, 186); set(8, i, 214, 206, 192); }
+    for (let i = 0; i < T; i++) { set(i, 7, 208, 200, 186); set(i, 8, 214, 206, 192); }
+    for (const [x, y] of [[7,7],[8,7],[7,8],[8,8]]) set(x, y, 186, 58, 66);
+  },
+
+  [TILE.COMB_PILLAR_SIDE]: (set, rnd) => {
+    // Vertical fluting.
+    noiseFill(set, rnd, [228, 222, 210], 8);
+    for (let x = 1; x < T; x += 4) {
+      for (let y = 0; y < T; y++) {
+        const d = (rnd() - 0.5) * 8;
+        set(x, y, 198 + d, 190 + d, 176 + d);
+        set(x + 1, y, 242 + d, 236 + d, 224 + d);
+      }
+    }
+  },
+
+  [TILE.COMB_PILLAR_TOP]: (set, rnd) => {
+    noiseFill(set, rnd, [232, 226, 214], 8);
+    // A ring, so the cap reads as turned stone.
+    for (let a = 0; a < 64; a++) {
+      const t = (a / 64) * Math.PI * 2;
+      const x = Math.round(7.5 + Math.cos(t) * 5.2);
+      const y = Math.round(7.5 + Math.sin(t) * 5.2);
+      set(x, y, 200, 192, 178);
+    }
+    for (const [x, y] of [[7,7],[8,7],[7,8],[8,8]]) set(x, y, 186, 58, 66);
+  },
+
+  [TILE.COMB_SPINE]: (set, rnd) => {
+    // Sharp crimson needles rising from the floor.
+    for (let i = 0; i < 5; i++) {
+      const x = 1 + ((rnd() * 14) | 0);
+      const top = 2 + ((rnd() * 5) | 0);
+      for (let y = T - 1; y >= top; y--) {
+        const d = (rnd() - 0.5) * 22;
+        const tip = (T - 1 - y) / (T - top);
+        set(x, y, 168 + tip * 78 + d, 34 + d, 44 + d);
+      }
+      set(x, top, 250, 224, 224);
+    }
+  },
+
+  [TILE.PALE_FUNGUS]: (set, rnd) => {
+    // Short stems under domed caps.
+    for (let i = 0; i < 3; i++) {
+      const x = 3 + ((rnd() * 10) | 0);
+      const capY = 5 + ((rnd() * 4) | 0);
+      for (let y = T - 1; y > capY; y--) set(x, y, 226, 220, 206);
+      for (let dx = -2; dx <= 2; dx++) {
+        const h = 2 - Math.abs(dx);
+        for (let dy = 0; dy <= h; dy++) {
+          const d = (rnd() - 0.5) * 16;
+          set(x + dx, capY - dy, 248 + d, 236 + d, 214 + d);
+        }
+      }
+      set(x, capY - 2, 255, 246, 226);
+    }
+  },
+
+  [TILE.THRONE_AWAKENED_TOP]: (set, rnd) => {
+    noiseFill(set, rnd, [244, 238, 226], 8);
+    // A blazing heart set into the seat.
+    for (let y = 4; y < 12; y++) for (let x = 4; x < 12; x++) {
+      const dx = x - 7.5, dy = y - 7.5;
+      const r = Math.hypot(dx, dy);
+      if (r > 3.6) continue;
+      const d = (rnd() - 0.5) * 26;
+      set(x, y, 255, r < 2 ? 210 + d : 96 + d, r < 2 ? 160 + d : 92 + d);
+    }
+  },
+
+  [TILE.THRONE_AWAKENED_SIDE]: (set, rnd) => {
+    noiseFill(set, rnd, [236, 230, 218], 10);
+    // Veins of light running up the sides.
+    for (const x of [3, 7, 12]) {
+      for (let y = 2; y < T; y++) {
+        const d = (rnd() - 0.5) * 20;
+        set(x, y, 255, 140 + d, 120 + d);
+      }
+    }
+    for (let i = 0; i < T; i++) set(i, 0, 208, 200, 188);
+  },
+
+  [TILE.COMB_RESIN_ITEM]: (set, rnd) => {
+    // A blob of amber.
+    for (let y = 4; y < 13; y++) {
+      const inset = y === 4 || y === 12 ? 5 : y === 5 || y === 11 ? 4 : 3;
+      for (let x = inset; x < T - inset; x++) {
+        const d = (rnd() - 0.5) * 20;
+        set(x, y, 224 + d, 164 + d, 72 + d);
+      }
+    }
+    for (let x = 6; x < 10; x++) set(x, 5, 246, 208, 128);
+    set(6, 6, 252, 226, 168);
+  },
+
+  [TILE.CROWN]: (set, rnd) => {
+    // A banded circlet with three points and a red stone.
+    const gold = (x, y, shade = 0) => set(x, y, 238 + shade, 206 + shade, 96 + shade);
+    for (let x = 3; x < 13; x++) { gold(x, 10); gold(x, 11, -26); }
+    for (const [x, h] of [[4, 3], [7, 5], [10, 3]]) {
+      for (let y = 10 - h; y < 10; y++) { gold(x, y); if (x + 1 < T) gold(x + 1, y, -18); }
+      set(x, 10 - h - 1, 255, 236, 160);
+    }
+    // The stone.
+    set(7, 8, 208, 48, 56); set(8, 8, 176, 34, 42);
+    set(7, 9, 232, 78, 84); set(8, 9, 196, 52, 58);
   },
 
   [TILE.COMB_BRICK]: (set, rnd) => {

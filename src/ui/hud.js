@@ -514,10 +514,29 @@ export class HUD {
     const survival = this.player.survival;
     this.statsEl.classList.toggle('hidden', this.player.creative);
 
-    for (let i = 0; i < 10; i++) {
+    // Health can exceed the starting twenty — awakening a Comb throne raises the
+    // cap permanently — so the row grows to fit rather than clipping the bonus
+    // silently. Extra hearts are tinted so it reads as a boon, not a miscount.
+    const wanted = Math.ceil(survival.maxHealth / 2);
+    while (this.heartPips.length < wanted) {
+      const heart = document.createElement('span');
+      heart.className = 'pip bonus';
+      heart.textContent = HEART;
+      this.healthEl.appendChild(heart);
+      this.heartPips.push(heart);
+    }
+
+    for (let i = 0; i < this.heartPips.length; i++) {
+      const pip = this.heartPips[i];
       const threshold = (i + 1) * 2;
-      this._setPip(this.heartPips[i], survival.health, threshold);
-      this._setPip(this.hungerPips[i], survival.hunger, threshold);
+      // A pip past the current cap is hidden entirely, so losing a boost (or
+      // loading a world without one) does not leave dead hearts on screen.
+      pip.style.display = threshold - 1 <= survival.maxHealth ? '' : 'none';
+      this._setPip(pip, survival.health, threshold);
+    }
+
+    for (let i = 0; i < 10; i++) {
+      this._setPip(this.hungerPips[i], survival.hunger, (i + 1) * 2);
     }
 
     const armor = this.player.inventory.armorPoints;

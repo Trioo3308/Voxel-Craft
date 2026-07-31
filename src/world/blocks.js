@@ -141,6 +141,21 @@ export const TILE = {
   BREAD: 171,
   MOSSY_COBBLE: 172,
 
+  // --- The Comb -------------------------------------------------------------
+  COMB_RESIN: 173,
+  COMB_RESIN_ITEM: 174,
+  COMB_LANTERN: 175,
+  COMB_GLASS: 176,
+  COMB_TILE: 177,
+  COMB_PILLAR_TOP: 178,
+  COMB_PILLAR_SIDE: 179,
+  COMB_SPINE: 180,
+  PALE_FUNGUS: 181,
+  THRONE_AWAKENED_TOP: 182,
+  THRONE_AWAKENED_SIDE: 183,
+  CROWN: 184,
+  COMB_WAX: 185,
+
   /**
    * Tool and armour icons are generated parametrically (shape x material), so
    * they occupy reserved runs rather than individual named entries.
@@ -285,6 +300,16 @@ function defineBlock(id, name, options = {}) {
      * must not hide its neighbours' faces.
      */
     shape: options.shape ?? null,
+    /**
+     * Render as two crossed quads instead of a box — plants. A box would print
+     * the plant's texture on its lid, which is why a field of crops rendered as
+     * cubes looks wrong from above.
+     */
+    cross: options.cross === true,
+    /** How tall a cross-rendered plant stands, 0..1. */
+    crossHeight: options.crossHeight ?? 1,
+    /** Damage dealt every half second while standing in this block. */
+    contactDamage: options.contactDamage ?? 0,
     /** Light this block emits, 0..15. */
     lightEmission: options.lightEmission ?? 0,
     displayName: options.displayName ?? name,
@@ -427,6 +452,10 @@ export const ITEM_ID = {
   WHEAT: 160,
   SEEDS: 161,
   BREAD: 162,
+
+  // --- The Comb -------------------------------------------------------------
+  COMB_RESIN: 163,
+  CROWN: 164,
 
   // Gear runs are 30 and 24 wide. They moved again when the hoe was added as a
   // fifth tool kind, which pushed the tool run into what had been the armour
@@ -724,6 +753,7 @@ export const COMB_GROWTH = defineBlock(71, 'comb_growth', {
   // Ground cover you brush through, like tall grass — it scatters the surface
   // of the Comb thickly enough that solid growths would make it a maze.
   opaque: false, cullSameType: false, solid: false,
+  cross: true, crossHeight: 0.8,
 });
 
 export const COMB_BRICK = defineBlock(72, 'comb_brick', {
@@ -789,7 +819,8 @@ for (let stage = 0; stage < 4; stage++) {
     tiles: TILE.WHEAT_0 + stage,
     hardness: 0.05,
     solid: false, opaque: false, cullSameType: false,
-    shape: SHAPES.CROP,
+    // Crossed quads, growing taller with each stage.
+    cross: true, crossHeight: 0.45 + stage * 0.18,
     // Drops are handled specially: a ripe crop yields grain, an unripe one only
     // returns the seed you planted. See Game.onBlockBroken.
     drops: ITEM_ID.SEEDS,
@@ -803,6 +834,83 @@ export function wheatStage(id) {
   const index = WHEAT_STAGES.findIndex((b) => b.id === id);
   return index;
 }
+
+// ---------------------------------------------------------------------------
+// The Comb — materials, flora and hazards
+// ---------------------------------------------------------------------------
+
+/**
+ * Waxy amber seams in the comb walls. The dimension's renewable material.
+ * Named for the seam rather than the substance, because the lump it drops is
+ * `comb_resin` and the save palette keys on names being unique.
+ */
+export const COMB_RESIN = defineBlock(82, 'comb_resin_seam', {
+  displayName: 'Resin Seam', tiles: TILE.COMB_RESIN, hardness: 0.9,
+  toolType: 'axe',
+  drops: ITEM_ID.COMB_RESIN, dropCount: [2, 4],
+  lightEmission: 3,
+});
+
+/** Sealed wax — soft, quiet underfoot, and the base for resin building blocks. */
+export const COMB_WAX = defineBlock(83, 'comb_wax', {
+  displayName: 'Comb Wax', tiles: TILE.COMB_WAX, hardness: 0.7, toolType: 'axe',
+});
+
+/** A proper light source for the Comb, brighter than a torch. */
+export const COMB_LANTERN = defineBlock(84, 'comb_lantern', {
+  displayName: 'Comb Lantern', tiles: TILE.COMB_LANTERN, hardness: 0.6,
+  toolType: 'pickaxe', emissive: true, lightEmission: 15,
+});
+
+export const COMB_GLASS = defineBlock(85, 'comb_glass', {
+  displayName: 'Comb Glass', tiles: TILE.COMB_GLASS, hardness: 0.4,
+  opaque: false, toolType: 'pickaxe',
+});
+
+/** Polished floor tile and a fluted pillar — the shrine's architecture. */
+export const COMB_TILE = defineBlock(86, 'comb_tile', {
+  displayName: 'Comb Tile', tiles: TILE.COMB_TILE, hardness: 2.6,
+  toolType: 'pickaxe', harvestLevel: 1, requiresTool: true,
+});
+
+export const COMB_PILLAR = defineBlock(87, 'comb_pillar', {
+  displayName: 'Comb Pillar', hardness: 2.6,
+  tiles: { top: TILE.COMB_PILLAR_TOP, bottom: TILE.COMB_PILLAR_TOP, side: TILE.COMB_PILLAR_SIDE },
+  toolType: 'pickaxe', harvestLevel: 1, requiresTool: true,
+});
+
+/**
+ * Crimson spines. Walking into them hurts — the Comb's only environmental
+ * hazard, and the reason its floor is worth looking at before you sprint.
+ */
+export const COMB_SPINE = defineBlock(88, 'comb_spine', {
+  displayName: 'Comb Spine', tiles: TILE.COMB_SPINE, hardness: 0.2,
+  solid: false, opaque: false, cullSameType: false,
+  cross: true, crossHeight: 0.7,
+  /** Damage per second while standing in it. */
+  contactDamage: 2,
+});
+
+/** Faintly luminous fungus, thick in the hollow cells. */
+export const PALE_FUNGUS = defineBlock(89, 'pale_fungus', {
+  displayName: 'Pale Fungus', tiles: TILE.PALE_FUNGUS, hardness: 0.1,
+  solid: false, opaque: false, cullSameType: false,
+  cross: true, crossHeight: 0.6,
+  emissive: true, lightEmission: 6,
+});
+
+/**
+ * The throne once a Comb Heart has been set in it. Purely a different block —
+ * the state is visible, so it may as well be the id, which also means it saves
+ * and syncs to the worker for free.
+ */
+export const THRONE_AWAKENED = defineBlock(90, 'comb_throne_awakened', {
+  displayName: 'Awakened Throne', hardness: 6.0,
+  tiles: { top: TILE.THRONE_AWAKENED_TOP, bottom: TILE.COMB_BRICK, side: TILE.THRONE_AWAKENED_SIDE },
+  toolType: 'pickaxe', harvestLevel: 2, requiresTool: true,
+  emissive: true, lightEmission: 14,
+  obtainable: false,
+});
 
 /** Damp, overgrown stone — the tell that a room down here was built, not carved. */
 export const MOSSY_COBBLE = defineBlock(81, 'mossy_cobblestone', {
@@ -887,6 +995,24 @@ export const SEEDS = defineItem(ITEM_ID.SEEDS, 'wheat_seeds', {
 /** The first food you can farm rather than hunt. */
 export const BREAD = defineItem(ITEM_ID.BREAD, 'bread', {
   displayName: 'Bread', tile: TILE.BREAD, food: 5, saturation: 6,
+});
+
+// --- The Comb ---------------------------------------------------------------
+export const COMB_RESIN_ITEM = defineItem(ITEM_ID.COMB_RESIN, 'comb_resin', {
+  displayName: 'Comb Resin', tile: TILE.COMB_RESIN_ITEM,
+  // Edible, barely — it is wax. Enough to keep you moving, never enough to live on.
+  food: 2, saturation: 1,
+});
+
+/**
+ * The Crown. Not craftable, not lootable — the only one in a world comes from
+ * awakening a throne, which means beating the Warden guarding it.
+ */
+export const CROWN = defineItem(ITEM_ID.CROWN, 'comb_crown', {
+  displayName: 'Crown of the Comb',
+  tile: TILE.CROWN,
+  maxStack: 1,
+  armor: { piece: 'helmet', material: 'crown', defense: 4, durability: 1400 },
 });
 
 /**

@@ -16,6 +16,7 @@ import {
   IRON_BLOCK, GOLD_BLOCK, DIAMOND_BLOCK, WOOL,
   BUILDING_FAMILIES, DOOR_CLOSED, BED, TORCH, CHEST,
   COMBIUM_ORE, COMBIUM_BLOCK, COMB_BRICK,
+  COMB_WAX, COMB_TILE, COMB_PILLAR, COMB_LANTERN, COMB_GLASS,
   ITEM_ID, TOOL_KINDS, ARMOR_PIECES, ARMOR_MATERIAL_NAMES,
   toolItemId, armorItemId, getDisplayName,
 } from '../world/blocks.js';
@@ -125,6 +126,16 @@ shaped(['I.I', '.I.'], { I: ITEM_ID.IRON_INGOT }, { id: ITEM_ID.BUCKET, count: 1
 shaped(['CC', 'CC'], { C: ITEM_ID.COMBIUM_INGOT }, { id: COMBIUM_BLOCK.id, count: 1 });
 shapeless([COMBIUM_BLOCK.id], { id: ITEM_ID.COMBIUM_INGOT, count: 4 });
 shaped(['SS', 'SS'], { S: ITEM_ID.COMB_SHARD }, { id: COMB_BRICK.id, count: 4 });
+
+// Resin is the Comb's workable material: wax to build with, glass to see
+// through, and a lantern that outshines a torch.
+shaped(['RR', 'RR'], { R: ITEM_ID.COMB_RESIN }, { id: COMB_WAX.id, count: 4 });
+shaped(['BB', 'BB'], { B: COMB_BRICK.id }, { id: COMB_TILE.id, count: 4 });
+shaped(['B', 'B'], { B: COMB_BRICK.id }, { id: COMB_PILLAR.id, count: 2 });
+shaped(['.R.', 'RSR', '.R.'], { R: ITEM_ID.COMB_RESIN, S: ITEM_ID.COMB_SHARD },
+       { id: COMB_LANTERN.id, count: 2 });
+shaped(['RRR', 'RSR', 'RRR'], { R: ITEM_ID.COMB_RESIN, S: ITEM_ID.COMBIUM_INGOT },
+       { id: COMB_GLASS.id, count: 4 });
 
 // --- Farming ----------------------------------------------------------------
 // Three wheat in a row. The first food you can make instead of hunt.

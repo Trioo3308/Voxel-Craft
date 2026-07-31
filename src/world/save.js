@@ -31,6 +31,7 @@
 import { BLOCKS, ITEMS, AIR, getThing, isBlockId } from './blocks.js';
 import { TERRAIN_VERSION } from './terrain.js';
 import { DIMENSIONS } from './dimensions.js';
+import Settings from '../settings.js';
 
 const DB_NAME = 'voxelcraft';
 const DB_VERSION = 1;
@@ -201,6 +202,8 @@ export async function captureState(game, meta = {}) {
       health: player.survival.health,
       hunger: player.survival.hunger,
       saturation: player.survival.saturation,
+      /** Raised permanently by awakening a Comb throne. */
+      maxHealth: player.survival.maxHealth,
     },
 
     inventory: {
@@ -251,7 +254,10 @@ export async function applyState(game, save) {
   // A survival world can never come back as creative, whatever the save says.
   player.creative = save.allowCreative === true && !!p.creative;
   player.spawnPoint.fromArray(p.spawn);
-  player.survival.health = p.health;
+  // Restore the cap before the value, or a boosted player loads clamped back
+  // down to twenty. Old saves have no field and keep the default.
+  player.survival.maxHealth = p.maxHealth ?? Settings.survival.maxHealth;
+  player.survival.health = Math.min(p.health, player.survival.maxHealth);
   player.survival.hunger = p.hunger;
   player.survival.saturation = p.saturation;
   player.survival.dead = false;

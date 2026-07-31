@@ -372,6 +372,21 @@ export class AudioEngine {
         this.tone({ freq: base * 0.85, endFreq: base * 0.5, duration: 0.08, gain: level * 0.55, type: 'triangle', lowpass: base * 3, delay: 0.13, attack: 0.008 });
         break;
 
+      case 'chitter': // comb mite — dry insect ticking, several in quick succession
+        for (let i = 0; i < 4; i++) {
+          this.noise({ freq: base * (5 + Math.random() * 3), q: 7, decay: 0.03,
+                       gain: level * 0.45, delay: i * 0.045 });
+        }
+        break;
+
+      case 'hum': // comb drifter — a slow, hollow resonance
+        this.tone({ freq: base, endFreq: base * 0.88, duration: duration * 2.6, gain: level * 0.9,
+                    type: 'sine', lowpass: base * 3, attack: 0.3,
+                    vibrato: { rate: 3.2, depth: base * 0.04 } });
+        this.tone({ freq: base * 2.01, duration: duration * 2.2, gain: level * 0.3,
+                    type: 'sine', lowpass: base * 4, attack: 0.35 });
+        break;
+
       default:
         this.tone({ freq: base, duration, gain: level, type: 'triangle', lowpass: base * 4 });
     }

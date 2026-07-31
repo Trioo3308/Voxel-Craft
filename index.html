@@ -159,6 +159,10 @@
   .statRow .pip { filter: drop-shadow(0 1px 1px rgba(0,0,0,0.9)); }
   .statRow .pip.empty { filter: grayscale(1) brightness(0.32) drop-shadow(0 1px 1px rgba(0,0,0,0.9)); }
   .statRow .pip.half { opacity: 0.55; }
+  /* Hearts beyond the starting twenty, granted by an awakened Comb throne. */
+  /* Rotating the red heart forward lands on gold; going back lands on pink. */
+  .statRow .pip.bonus { filter: hue-rotate(38deg) saturate(1.8) brightness(1.15) drop-shadow(0 0 3px rgba(255,190,90,0.95)); }
+  .statRow .pip.bonus.empty { filter: grayscale(1) brightness(0.32) drop-shadow(0 1px 1px rgba(0,0,0,0.9)); }
   #hunger { justify-content: flex-end; }
   /* Hidden in creative mode, where they mean nothing. */
   #stats.hidden { visibility: hidden; }

@@ -444,6 +444,25 @@ export class Player {
 
   /** Environmental hazards. Currently just lava; extend here for drowning etc. */
   _updateEnvironment(dt) {
+    // --- Contact hazards (comb spines) --------------------------------------
+    // Anything with `contactDamage` hurts while you stand in it. Checked at foot
+    // height only, so a spine you are walking over catches you but one at head
+    // height in a doorway does not.
+    if (!this.creative) {
+      const under = getBlock(this.world.getBlock(
+        Math.floor(this.position.x), Math.floor(this.position.y + 0.1), Math.floor(this.position.z)
+      ));
+      if (under && under.contactDamage > 0) {
+        this._contactTimer = (this._contactTimer ?? 0) + dt;
+        if (this._contactTimer >= 0.5) {
+          this._contactTimer = 0;
+          this.survival.damage(under.contactDamage, 'spine');
+        }
+      } else {
+        this._contactTimer = 0;
+      }
+    }
+
     this.inLava =
       this.world.isLava(this.position.x, this.position.y + 0.1, this.position.z) ||
       this.world.isLava(this.position.x, this.position.y + 0.9, this.position.z);

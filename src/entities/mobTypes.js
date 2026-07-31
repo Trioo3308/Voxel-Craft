@@ -15,6 +15,7 @@
 import * as THREE from 'three';
 import {
   ITEM_ID, WOOL, GRASS, DIRT, SAND, SNOW, STONE, DRY_GRASS, PODZOL, SWAMP_GRASS,
+  COMB_SOIL, COMB_STONE, COMB_BRICK, COMB_TILE,
 } from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
 import { BOSS_LOOT } from './loot.js';
@@ -724,7 +725,129 @@ export const CHICKEN = {
  * Every naturally-spawning mob. The Warden is deliberately absent — it is
  * placed by the shrine, not rolled by the spawner.
  */
+// ---------------------------------------------------------------------------
+// Comb natives
+// ---------------------------------------------------------------------------
+
+/** Blocks a Comb creature will stand on. */
+const COMB_GROUND = new Set([COMB_SOIL.id, COMB_STONE.id, COMB_BRICK.id, COMB_TILE.id]);
+
+/**
+ * A mite. Small, quick, and never alone — the Comb's ambient threat.
+ *
+ * Individually trivial; the pressure comes from the group size and from how
+ * fast they close, which is what makes the open plateau feel exposed.
+ */
+export const COMB_MITE = {
+  name: 'comb_mite',
+  displayName: 'Comb Mite',
+  width: 0.5,
+  height: 0.45,
+  maxHealth: 6,
+  speed: 4.4,
+  voice: { name: 'mite', voice: 'chitter', pitch: 210, duration: 0.09 },
+  drops: [{ id: ITEM_ID.COMB_SHARD, min: 0, max: 1 }],
+
+  brain: {
+    hostile: true,
+    sightRange: 20,
+    loseSightAfter: 7,
+    attackRange: 1.0,
+    attackDamage: 2,
+    attackCooldown: 0.7,
+    burnsInSunlight: false,
+    // Low to the ground and fast, so they pour over broken terrain.
+    maxVerticalChase: 6,
+  },
+
+  spawn: {
+    atNight: true,
+    dayTimeAllowed: true,
+    maxCount: 14,
+    weight: 6,
+    groupSize: [3, 6],
+    canSpawnOn: (id) => COMB_GROUND.has(id),
+  },
+
+  buildModel() {
+    const group = new THREE.Group();
+    const shell = 0xe8e2d6;
+    const glow = 0xc2323c;
+
+    const body = box(0.44, 0.3, 0.5, shell, 0, 0.26, 0);
+    const plate = box(0.3, 0.08, 0.34, glow, 0, 0.42, -0.02);
+    const head = box(0.26, 0.22, 0.22, shell, 0, 0.3, 0.32);
+    const eyeLeft = box(0.07, 0.07, 0.03, glow, -0.08, 0.33, 0.44);
+    const eyeRight = box(0.07, 0.07, 0.03, glow, 0.08, 0.33, 0.44);
+
+    const legFrontLeft = limb(0.07, 0.22, 0.07, shell, -0.2, 0.22, 0.16);
+    const legFrontRight = limb(0.07, 0.22, 0.07, shell, 0.2, 0.22, 0.16);
+    const legBackLeft = limb(0.07, 0.22, 0.07, shell, -0.2, 0.22, -0.16);
+    const legBackRight = limb(0.07, 0.22, 0.07, shell, 0.2, 0.22, -0.16);
+
+    group.add(body, plate, head, eyeLeft, eyeRight,
+              legFrontLeft, legFrontRight, legBackLeft, legBackRight);
+    return {
+      group,
+      parts: { legFrontLeft, legFrontRight, legBackLeft, legBackRight, head },
+    };
+  },
+};
+
+/**
+ * A drifter. Placid, slow, and the only renewable source of resin above ground
+ * — so the Comb has something worth farming as well as something worth fearing.
+ */
+export const COMB_DRIFTER = {
+  name: 'comb_drifter',
+  displayName: 'Comb Drifter',
+  width: 0.9,
+  height: 1.25,
+  maxHealth: 12,
+  speed: 1.1,
+  voice: { name: 'drifter', voice: 'hum', pitch: 86, duration: 0.5 },
+  drops: [{ id: ITEM_ID.COMB_RESIN, min: 1, max: 3 }],
+  brain: PASSIVE_BRAIN,
+
+  spawn: {
+    atNight: true,
+    dayTimeAllowed: true,
+    maxCount: 6,
+    weight: 3,
+    groupSize: [1, 2],
+    canSpawnOn: (id) => COMB_GROUND.has(id),
+  },
+
+  buildModel() {
+    const group = new THREE.Group();
+    const pale = 0xf2ede2;
+    const wax = 0xe2c88a;
+    const glow = 0xc2323c;
+
+    // A hanging sac body on stilted legs — it drifts rather than walks.
+    const sac = box(0.7, 0.66, 0.7, wax, 0, 0.72, 0);
+    const band = box(0.74, 0.1, 0.74, glow, 0, 0.9, 0);
+    const crown = box(0.5, 0.2, 0.5, pale, 0, 1.12, 0);
+    const eye = box(0.16, 0.1, 0.04, glow, 0, 0.78, 0.36);
+
+    const legFrontLeft = limb(0.06, 0.42, 0.06, pale, -0.24, 0.42, 0.18);
+    const legFrontRight = limb(0.06, 0.42, 0.06, pale, 0.24, 0.42, 0.18);
+    const legBackLeft = limb(0.06, 0.42, 0.06, pale, -0.24, 0.42, -0.18);
+    const legBackRight = limb(0.06, 0.42, 0.06, pale, 0.24, 0.42, -0.18);
+
+    group.add(sac, band, crown, eye,
+              legFrontLeft, legFrontRight, legBackLeft, legBackRight);
+    return {
+      group,
+      parts: { legFrontLeft, legFrontRight, legBackLeft, legBackRight, head: crown },
+    };
+  },
+};
+
 export const MOB_TYPES = [ZOMBIE, SKELETON, SPIDER, CREEPER, PIG, COW, SHEEP, CHICKEN];
 
+/** Natives of the Comb. Spawned there instead of the overworld set. */
+export const COMB_MOB_TYPES = [COMB_MITE, COMB_DRIFTER];
+
 /** Everything that can exist, including bosses, for lookups and saves. */
-export const ALL_MOB_TYPES = [...MOB_TYPES, WARDEN];
+export const ALL_MOB_TYPES = [...MOB_TYPES, ...COMB_MOB_TYPES, WARDEN];

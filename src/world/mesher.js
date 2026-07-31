@@ -244,6 +244,14 @@ export function buildChunkMesh(sampleBlock, cx, cz, blockLight = null) {
         // rather than as a single cube. Each box always emits all six of its
         // faces: a sub-box does not fill the cell, so there is no neighbour
         // relationship that could safely hide one.
+        // Plants are two crossed quads, not a box. A crop drawn as a cube wraps
+        // its texture onto the top and sides, so a wheat field reads as a wall
+        // of blocks with wheat printed on the lid.
+        if (block.cross) {
+          emitCross(target, block, x, y, z, tileSpan, inset);
+          continue;
+        }
+
         if (block.shape) {
           emitShape(target, block, x, y, z, tileSpan, inset);
           continue;
@@ -283,6 +291,85 @@ export function buildChunkMesh(sampleBlock, cx, cz, blockLight = null) {
   }
 
   return { opaque: opaque.toGeometry(), water: water.toGeometry() };
+}
+
+/**
+ * Emit a plant: two quads crossing diagonally through the cell, each drawn
+ * from both sides.
+ *
+ * This is how Minecraft draws grass, crops and saplings, and the reason is
+ * visual rather than technical — a plant rendered as a box shows its texture on
+ * the lid, so a field of wheat looks like cubes with wheat printed on top
+ * instead of stalks you can see between.
+ *
+ * The quads are inset from the cell walls so neighbouring plants do not sit
+ * flush against each other, and `height` lets a young crop be short without
+ * needing its own geometry.
+ */
+function emitCross(buf, block, x, y, z, tileSpan, inset) {
+  const tile = block.tiles[FACE_PY];
+  const tileCol = tile % ATLAS_COLS;
+  const tileRow = Math.floor(tile / ATLAS_COLS);
+  const u0 = tileCol * tileSpan;
+  const v0 = 1 - (tileRow + 1) * tileSpan;
+
+  // Plants take their light from the cell they occupy plus its open
+  // neighbours, the same as any other partial block.
+  let sky = lightAt(x, y, z);
+  for (const [dx, dy, dz] of SHAPE_LIGHT_PROBES) {
+    const neighbour = padded[padIndex(x + dx, y + dy, z + dz)];
+    const def = BLOCKS[neighbour];
+    if (def && def.opaque) continue;
+    const value = lightAt(x + dx, y + dy, z + dz);
+    if (value > sky) sky = value;
+  }
+  // No face tint: a plant has no single facing, and shading the two quads
+  // differently makes it flicker as you walk around it.
+  const shade = block.emissive ? 1 : sky;
+
+  const h = block.crossHeight ?? 1;
+  const m = 0.1;          // inset from the cell wall
+  const lo = m, hi = 1 - m;
+
+  // Two diagonals, each emitted twice with opposite winding so the plant is
+  // visible from every angle without needing a double-sided material.
+  const planes = [
+    [[lo, lo], [hi, hi]],   // -X-Z to +X+Z
+    [[hi, lo], [lo, hi]],   // +X-Z to -X+Z
+  ];
+
+  for (const [[ax, az], [bx, bz]] of planes) {
+    for (let side = 0; side < 2; side++) {
+      const start = buf.vertexCount;
+
+      // Corner order: bottom-a, bottom-b, top-b, top-a.
+      const corners = [
+        [ax, 0, az, 0, 0],
+        [bx, 0, bz, 1, 0],
+        [bx, h, bz, 1, 1],
+        [ax, h, az, 0, 1],
+      ];
+
+      for (const [cx, cy, cz, uu, vv] of corners) {
+        buf.positions.push(x + cx, y + cy, z + cz);
+        // A flat normal per plane; plants are unlit-ish so this only matters
+        // for anything sampling normals later.
+        buf.normals.push(0, 1, 0);
+        buf.colors.push(shade, shade, shade);
+        buf.uvs.push(
+          u0 + inset + uu * (tileSpan - 2 * inset),
+          v0 + inset + vv * (tileSpan - 2 * inset)
+        );
+      }
+
+      buf.vertexCount += 4;
+      if (side === 0) {
+        buf.indices.push(start, start + 1, start + 2, start, start + 2, start + 3);
+      } else {
+        buf.indices.push(start, start + 2, start + 1, start, start + 3, start + 2);
+      }
+    }
+  }
 }
 
 /**

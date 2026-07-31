@@ -460,10 +460,48 @@ the Comb is a compressed map of the overworld, same as the Nether.
 hollow cells, veined with crimson crystal that glows. No day cycle, no sun, no
 overworld wildlife — a permanent bone-white haze.
 
-**Shrines** sit on a coarse grid, roughly one per 12×12 chunks: a stepped brick
-platform, crystal-capped pillars, a throne, and a chest behind it holding the
-dimension's loot table (guaranteed combium ingots and shards, with diamond gear
-and a combium sword as rare rolls).
+**Materials.** Amber **resin seams** run through the comb stone — the dimension's
+renewable material, and the base for **wax**, **comb glass** and a **lantern**
+that outshines a torch. **Comb tile** and fluted **pillars** are the shrine's
+architecture, and both are craftable once you have bricks.
+
+**Flora and hazards.** Pale fronds scatter the plateau, **glowing fungus** lights
+the hollow cells from the floor up, and **crimson spine thickets** hurt to walk
+through — the Comb's one environmental hazard, and the reason to look where you
+are sprinting.
+
+**Natives.** **Comb mites** are small, fast, and come in groups of three to six;
+individually trivial, but the open plateau gives you nowhere to put your back.
+**Comb drifters** are placid and drop resin, so the dimension has something worth
+farming as well as something worth fearing. Overworld animals never wander in —
+each dimension draws from its own spawn pool.
+
+**Crystal spires** are tall landmarks scattered across the plateau, and they
+cluster two and a half times denser and taller near a shrine. That is the
+navigation: a horizon thick with spires means you are close.
+
+### Shrines and the throne
+
+**Shrines** are rare on purpose. They sit on a 32-chunk grid offset from the
+origin, and only about two thirds of anchor sites hold one — roughly one per
+1,600 chunks, about 650 blocks apart, and *never* near where the portal drops
+you. Finding one is a journey, not a stumble.
+
+Each is a tiled platform with fluted pillars under lantern caps, a brick wall
+with a glass clerestory, resin offerings set into the floor, a chest holding the
+dimension's loot table, and the throne.
+
+**The throne is the point of the dimension.** It sits cold and does nothing until
+you set a **Comb Heart** into it — and the only Hearts in the world drop from the
+Warden guarding that same shrine. Awakening one is permanent and one-time:
+
+- the throne lights up and stays lit
+- you are handed the **Crown of the Comb** — the strongest helmet in the game,
+  not craftable and not in any loot table
+- your **maximum health rises by two hearts, for good**, surviving death, saving
+  and reloading
+
+The extra hearts show as gold pips on a health bar that grows to fit them.
 
 **The Comb Warden** guards each one. 220 health, three phases that get faster and
 hit harder as it drops, a roar that shoves you back on every phase change, and a
@@ -739,8 +777,23 @@ once per shrine and survive a save/load round trip. The Warden escalates through
 three phases (8→10→12 damage, 1.6→0.9s cooldown), drops its loot table, and does
 not respawn. Buckets fill from sources only, pour water and lava, and milk a cow.
 
-**This batch** — 137 headless assertions across four suites, plus in-browser
-checks of each feature. Particles: shards take their colour from the broken
+**Plants and the Comb** — plants render as two crossed quads rather than a box.
+A box maps the texture onto its lid, so a wheat field read as cubes with wheat
+printed on top; the same bug made comb growth a solid cube you could walk
+through. Asserted: every plant is cross-rendered, none also carries a box shape
+(which would win over the cross path), and wheat gets taller each stage.
+
+Shrines: 32-chunk spacing on a grid offset from the origin, verified across 40
+seeds that none sits within three chunks of where the portal lands, and roughly
+1 per 1,600 chunks — an order of magnitude rarer than before. Spires measured at
+30% density near a shrine against 12% away, and taller with it. The throne
+refuses an empty hand and the wrong item, consumes exactly one Comb Heart, grants
+the Crown once, raises max health 20 → 24, and does nothing on a second use;
+the boost survives save, reload and death, and a save predating the field
+defaults cleanly to 20.
+
+**The batch before** — 137 headless assertions across four suites, plus
+in-browser checks of each feature. Particles: shards take their colour from the broken
 block, settle on ground, ghosts fall through it, the pool caps at capacity
 instead of growing. Farming: seeds drop from grass at the intended rate, a hoe
 tills only soil, seeds plant only on farmland, crops run all four stages, a ripe
