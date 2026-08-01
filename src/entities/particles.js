@@ -252,6 +252,24 @@ export class ParticleSystem {
     }
   }
 
+  /**
+   * A spore, drifting. Slow, weightless and long-lived, so a handful spawned
+   * per second fills the Comb's air without ever looking like a snowfall.
+   */
+  spore(x, y, z) {
+    this.spawn({
+      x, y, z,
+      vx: (Math.random() - 0.5) * 0.35,
+      vy: 0.08 + Math.random() * 0.14,
+      vz: (Math.random() - 0.5) * 0.35,
+      life: 6 + Math.random() * 5,
+      size: 0.035 + Math.random() * 0.025,
+      color: Math.random() < 0.25 ? 0xd8969c : 0xf4efe4,
+      ghost: true,
+      weightless: true,
+    });
+  }
+
   /** Motes drifting off a lit portal. */
   portalMotes(x, y, z, count = 2) {
     for (let n = 0; n < count; n++) {

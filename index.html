@@ -225,6 +225,33 @@
     pointer-events: none;
   }
   #locator.show { display: block; }
+
+  /* Shrine bearing, shown only while the compass is held. Sits centre-top so it
+     reads like an instrument rather than another corner stat. */
+  #compass {
+    position: absolute; left: 50%; top: 16px;
+    transform: translateX(-50%);
+    display: none;
+    align-items: center; gap: 10px;
+    font-size: 13px; line-height: 1.4;
+    white-space: pre;
+    text-align: right;
+    color: #f0ece2;
+    text-shadow: 1px 1px 2px #000;
+    background: rgba(20,14,16,0.55);
+    border: 1px solid rgba(194,50,60,0.55);
+    padding: 6px 12px;
+    border-radius: 4px;
+    pointer-events: none;
+  }
+  #compass.show { display: flex; }
+  #compassNeedle {
+    font-style: normal;
+    font-size: 20px;
+    color: #e0525c;
+    text-shadow: 0 0 6px rgba(224,82,92,0.9);
+    transition: transform 0.12s linear;
+  }
   /* Sits below the debug panel when both are up. */
   #debug.show ~ #locator.show { top: 108px; }
 
@@ -530,6 +557,7 @@
 
   <div id="debug"></div>
   <div id="locator"></div>
+  <div id="compass"><span></span><i id="compassNeedle">▲</i></div>
 </div>
 
 <!-- World select ---------------------------------------------------------->

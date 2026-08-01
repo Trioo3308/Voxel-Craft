@@ -15,7 +15,7 @@
 import * as THREE from 'three';
 import {
   ITEM_ID, WOOL, GRASS, DIRT, SAND, SNOW, STONE, DRY_GRASS, PODZOL, SWAMP_GRASS,
-  COMB_SOIL, COMB_STONE, COMB_BRICK, COMB_TILE,
+  COMB_SOIL, COMB_STONE, COMB_BRICK, COMB_TILE, COMB_MOSS, COMB_ASH, DEEP_COMB,
 } from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
 import { BOSS_LOOT } from './loot.js';
@@ -755,7 +755,10 @@ export const CHICKEN = {
 // ---------------------------------------------------------------------------
 
 /** Blocks a Comb creature will stand on. */
-const COMB_GROUND = new Set([COMB_SOIL.id, COMB_STONE.id, COMB_BRICK.id, COMB_TILE.id]);
+const COMB_GROUND = new Set([
+  COMB_SOIL.id, COMB_STONE.id, COMB_BRICK.id, COMB_TILE.id,
+  COMB_MOSS.id, COMB_ASH.id,
+]);
 
 /**
  * A mite. Small, quick, and never alone — the Comb's ambient threat.
@@ -778,8 +781,11 @@ export const COMB_MITE = {
     sightRange: 20,
     loseSightAfter: 7,
     attackRange: 1.0,
-    attackDamage: 2,
-    attackCooldown: 0.7,
+    // One point a bite. Seven of them at two points each killed a full-health
+    // player outright in testing, which is not what an ambient mob should do —
+    // a swarm should wear you down, not delete you.
+    attackDamage: 1,
+    attackCooldown: 0.9,
     burnsInSunlight: false,
     // Low to the ground and fast, so they pour over broken terrain.
     maxVerticalChase: 6,
@@ -788,9 +794,9 @@ export const COMB_MITE = {
   spawn: {
     atNight: true,
     dayTimeAllowed: true,
-    maxCount: 14,
-    weight: 6,
-    groupSize: [3, 6],
+    maxCount: 10,
+    weight: 5,
+    groupSize: [3, 5],
     canSpawnOn: (id) => COMB_GROUND.has(id),
   },
 
@@ -869,10 +875,119 @@ export const COMB_DRIFTER = {
   },
 };
 
+/**
+ * A stalker. Slow, heavy, and it does not chase — it waits until you are close
+ * and then closes hard.
+ *
+ * The mite is a swarm you can outrun; this is the opposite, so the Comb has two
+ * different kinds of pressure rather than more of the same.
+ */
+export const COMB_STALKER = {
+  name: 'comb_stalker',
+  displayName: 'Comb Stalker',
+  width: 0.9,
+  height: 2.3,
+  maxHealth: 34,
+  speed: 1.4,
+  armsForward: true,
+  voice: { name: 'stalker', voice: 'groan', pitch: 58, duration: 0.8 },
+  drops: [
+    { id: ITEM_ID.COMB_SHARD, min: 1, max: 3 },
+    { id: ITEM_ID.AMBER, min: 0, max: 1 },
+  ],
+
+  brain: {
+    hostile: true,
+    // Short sight: it notices you late, which is what makes it an ambush.
+    sightRange: 12,
+    loseSightAfter: 9,
+    attackRange: 2.1,
+    attackDamage: 6,
+    attackCooldown: 1.5,
+    burnsInSunlight: false,
+    chaseSpeed: 2.6,
+  },
+
+  spawn: {
+    atNight: true,
+    dayTimeAllowed: true,
+    maxCount: 5,
+    weight: 3,
+    groupSize: [1, 1],
+    canSpawnOn: (id) => COMB_GROUND.has(id) || id === DEEP_COMB.id,
+  },
+
+  buildModel() {
+    const group = new THREE.Group();
+    const shell = 0xdcd6ca;
+    const dark = 0xb8b0a2;
+    const glow = 0xc2323c;
+
+    const legLeft = limb(0.24, 1.0, 0.24, dark, -0.2, 1.0, 0);
+    const legRight = limb(0.24, 1.0, 0.24, dark, 0.2, 1.0, 0);
+    // Long arms held forward — it reaches before it arrives.
+    const armLeft = limb(0.18, 1.1, 0.18, shell, -0.5, 1.85, 0);
+    const armRight = limb(0.18, 1.1, 0.18, shell, 0.5, 1.85, 0);
+
+    const torso = box(0.74, 0.9, 0.4, shell, 0, 1.5, 0);
+    const ribs = box(0.8, 0.1, 0.44, glow, 0, 1.72, 0);
+    const head = box(0.44, 0.42, 0.42, shell, 0, 2.12, 0);
+    // No eyes — a blank crimson band instead.
+    const band = box(0.46, 0.12, 0.03, glow, 0, 2.14, 0.22);
+    const crest = box(0.16, 0.3, 0.16, glow, 0, 2.42, 0);
+
+    group.add(legLeft, legRight, armLeft, armRight, torso, ribs, head, band, crest);
+    return {
+      group,
+      parts: { legFrontLeft: legLeft, legFrontRight: legRight, armLeft, armRight, head },
+    };
+  },
+};
+
+/** A grub. Cave-dwelling, harmless, and the reason resin is renewable below ground. */
+export const COMB_GRUB = {
+  name: 'comb_grub',
+  displayName: 'Comb Grub',
+  width: 0.6,
+  height: 0.4,
+  maxHealth: 6,
+  speed: 0.8,
+  voice: { name: 'grub', voice: 'hum', pitch: 130, duration: 0.3 },
+  drops: [{ id: ITEM_ID.COMB_RESIN, min: 1, max: 2 }],
+  brain: PASSIVE_BRAIN,
+
+  spawn: {
+    atNight: true,
+    dayTimeAllowed: true,
+    maxCount: 8,
+    weight: 4,
+    groupSize: [2, 4],
+    canSpawnOn: (id) => id === DEEP_COMB.id || id === COMB_STONE.id,
+  },
+
+  buildModel() {
+    const group = new THREE.Group();
+    const pale = 0xf0e4cc;
+    const warm = 0xe0b878;
+
+    // A segmented body, fattest in the middle.
+    const segments = [];
+    for (let i = 0; i < 4; i++) {
+      const w = 0.34 - Math.abs(i - 1.5) * 0.05;
+      segments.push(box(w, w, 0.2, i % 2 ? warm : pale, 0, 0.2, 0.28 - i * 0.2));
+    }
+    const head = box(0.28, 0.26, 0.2, pale, 0, 0.2, 0.44);
+    const eye = box(0.16, 0.05, 0.03, 0xc2323c, 0, 0.24, 0.55);
+
+    group.add(...segments, head, eye);
+    return { group, parts: { head } };
+  },
+};
+
 export const MOB_TYPES = [ZOMBIE, SKELETON, SPIDER, CREEPER, PIG, COW, SHEEP, CHICKEN];
 
 /** Natives of the Comb. Spawned there instead of the overworld set. */
-export const COMB_MOB_TYPES = [COMB_MITE, COMB_DRIFTER];
+export const COMB_MOB_TYPES = [COMB_MITE, COMB_DRIFTER, COMB_STALKER, COMB_GRUB];
 
 /** Everything that can exist, including bosses, for lookups and saves. */
 export const ALL_MOB_TYPES = [...MOB_TYPES, ...COMB_MOB_TYPES, WARDEN];

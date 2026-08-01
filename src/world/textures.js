@@ -1242,6 +1242,147 @@ export const PAINTERS = {
     }
   },
 
+  // --- Comb expansion -------------------------------------------------------
+
+  [TILE.AMBER_ORE]: (set, rnd) => {
+    noiseFill(set, rnd, [96, 90, 84], 14);
+    speckle(set, rnd, [78, 72, 68], 18, 2);
+    // Amber pockets: warm blobs with a bright core.
+    for (const [cx, cy] of [[4, 5], [10, 9], [6, 12]]) {
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+        if (Math.abs(dx) + Math.abs(dy) > 2) continue;
+        const d = (rnd() - 0.5) * 24;
+        set(cx + dx, cy + dy, 226 + d, 158 + d, 52 + d);
+      }
+      set(cx, cy, 255, 214, 120);
+      set(cx - 1, cy - 1, 248, 196, 96);
+    }
+  },
+
+  [TILE.HIVE_WALL]: (set, rnd) => {
+    // Dense wax, stamped with a hexagonal cell grid.
+    noiseFill(set, rnd, [214, 172, 96], 12);
+    for (let cy = 1; cy < T; cy += 5) {
+      for (let cx = (cy % 10 === 1) ? 1 : 4; cx < T; cx += 6) {
+        for (let i = 0; i < 4; i++) {
+          set(cx + i, cy, 168, 128, 62);
+          set(cx, cy + i, 176, 134, 66);
+          if (cx + 4 < T) set(cx + 4, cy + i, 176, 134, 66);
+          if (cy + 4 < T) set(cx + i, cy + 4, 168, 128, 62);
+        }
+      }
+    }
+    speckle(set, rnd, [236, 198, 128], 10);
+  },
+
+  [TILE.HIVE_CORE]: (set, rnd) => {
+    // A glowing cell of jelly behind a wax rim.
+    noiseFill(set, rnd, [198, 152, 78], 10);
+    for (let y = 3; y < 13; y++) {
+      for (let x = 3; x < 13; x++) {
+        const dx = x - 7.5, dy = y - 7.5;
+        const r = Math.hypot(dx, dy);
+        if (r > 4.6) continue;
+        const d = (rnd() - 0.5) * 22;
+        if (r > 3.6) set(x, y, 176, 132, 60);
+        else set(x, y, 255, 206 + d, 96 + d);
+      }
+    }
+    set(7, 7, 255, 246, 190); set(8, 7, 255, 240, 176);
+  },
+
+  [TILE.RESIN_TORCH]: (set, rnd) => {
+    // Same crop as the torch: only columns 7..9 and rows 6..15 are ever drawn.
+    for (let y = 9; y < T; y++) {
+      const d = (rnd() - 0.5) * 14;
+      set(7, y, 134 + d, 100 + d, 56 + d);
+      set(8, y, 112 + d, 82 + d, 46 + d);
+    }
+    for (let y = 6; y < 9; y++) {
+      for (let x = 6; x < 10; x++) {
+        const d = (rnd() - 0.5) * 26;
+        set(x, y, 250 + d, 200 + d, 110 + d);
+      }
+    }
+    set(7, 6, 255, 244, 198); set(8, 6, 255, 236, 176);
+  },
+
+  [TILE.COMB_MOSS]: (set, rnd) => {
+    noiseFill(set, rnd, [176, 190, 156], 16);
+    speckle(set, rnd, [140, 164, 122], 30, 2);
+    speckle(set, rnd, [206, 216, 186], 16);
+  },
+
+  [TILE.COMB_ASH]: (set, rnd) => {
+    noiseFill(set, rnd, [156, 148, 146], 18);
+    speckle(set, rnd, [122, 114, 114], 28, 2);
+    speckle(set, rnd, [190, 182, 180], 14);
+  },
+
+  [TILE.DEEP_COMB]: (set, rnd) => {
+    // Darker and denser than surface comb stone.
+    noiseFill(set, rnd, [104, 100, 104], 16);
+    speckle(set, rnd, [80, 76, 82], 26, 2);
+    speckle(set, rnd, [132, 126, 132], 14, 2);
+  },
+
+  [TILE.CRYSTAL_CLUSTER]: (set, rnd) => {
+    // Several tall crimson shards rising together.
+    for (const [x, top] of [[3, 4], [7, 1], [11, 5], [9, 7]]) {
+      for (let y = T - 1; y >= top; y--) {
+        const d = (rnd() - 0.5) * 24;
+        const tip = (T - 1 - y) / (T - top);
+        set(x, y, 176 + tip * 70 + d, 40 + tip * 24 + d, 52 + tip * 30 + d);
+        if (x + 1 < T) set(x + 1, y, 146 + tip * 60 + d, 30 + d, 42 + d);
+      }
+      set(x, top - 1 < 0 ? 0 : top - 1, 255, 216, 216);
+    }
+  },
+
+  [TILE.AMBER_ITEM]: (set, rnd) => {
+    // A faceted drop of amber.
+    for (let y = 3; y < 13; y++) {
+      const inset = y < 5 ? 5 : y < 7 ? 4 : y < 11 ? 3 : 5;
+      for (let x = inset; x < T - inset; x++) {
+        const d = (rnd() - 0.5) * 22;
+        set(x, y, 230 + d, 162 + d, 56 + d);
+      }
+    }
+    for (let x = 6; x < 10; x++) set(x, 5, 250, 208, 120);
+    set(6, 6, 255, 232, 168);
+    for (let x = 6; x < 10; x++) set(x, 11, 190, 122, 34);
+  },
+
+  [TILE.ROYAL_JELLY]: (set, rnd) => {
+    // A viscous golden blob in a shallow dish.
+    for (let y = 5; y < 12; y++) {
+      const inset = y === 5 ? 4 : y === 11 ? 4 : 3;
+      for (let x = inset; x < T - inset; x++) {
+        const d = (rnd() - 0.5) * 18;
+        set(x, y, 250 + d, 214 + d, 96 + d);
+      }
+    }
+    for (let x = 5; x < 11; x++) set(x, 12, 176, 140, 58);
+    set(6, 6, 255, 246, 200); set(7, 6, 255, 240, 184);
+  },
+
+  [TILE.SHRINE_COMPASS]: (set, rnd) => {
+    // A pale case with a crimson needle.
+    for (let y = 2; y < 14; y++) {
+      for (let x = 2; x < 14; x++) {
+        const r = Math.hypot(x - 7.5, y - 7.5);
+        if (r > 6) continue;
+        const d = (rnd() - 0.5) * 14;
+        if (r > 4.8) set(x, y, 226 + d, 220 + d, 208 + d);
+        else set(x, y, 40 + d, 34 + d, 40 + d);
+      }
+    }
+    // Needle pointing up-right, and its counterweight.
+    for (let i = 0; i < 4; i++) set(7 + i, 8 - i, 224, 62, 70);
+    for (let i = 0; i < 3; i++) set(7 - i, 8 + i, 218, 212, 200);
+    set(7, 8, 255, 236, 180);
+  },
+
   // --- Comb materials ------------------------------------------------------
 
   [TILE.COMB_RESIN]: (set, rnd) => {

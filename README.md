@@ -508,6 +508,46 @@ each dimension draws from its own spawn pool.
 cluster two and a half times denser and taller near a shrine. That is the
 navigation: a horizon thick with spires means you are close.
 
+**Three regions.** The Comb was one uniform plateau, which made a long walk read
+as no progress at all. Now a slow noise field divides it into the **Pale
+Plateau**, **Moss Fields** and **Ashfall** — different ground, different flora,
+and ash is too barren to grow anything.
+
+**A deep stratum.** Below y 26 the comb stone gives way to darker, denser deep
+stone. Fungus lights the shallow cells; **crystal clusters** take over down here,
+so descending changes what the dark looks like. **Amber** is found only at this
+depth.
+
+**Hives** hang in the hollow cells, roughly one per 40 chunks — common enough to
+find while you are hunting for something genuinely rare. A wax shell around a
+hollow chamber, amber studding the walls, a cache below and a **hive core**
+hanging from the roof. Breaking the core is the only source of **royal jelly**,
+the strongest food in the game.
+
+**Two more natives.** **Comb stalkers** are slow, heavy and short-sighted — they
+notice you late and then close hard, which is the opposite pressure to the mites.
+**Comb grubs** live in the deep and drop resin, so the material is renewable
+below ground as well as above.
+
+**Resin torches** light the Comb without coal, which the dimension has none of.
+**Spore drift** fills its air — there is no weather here, and this is what stops
+it reading as completely dead.
+
+### Finding a shrine
+
+Shrines are one per ~1,600 chunks. Spires cluster near them, but that is a hint,
+not an answer — so the **shrine compass** makes it navigation rather than luck.
+
+Craft it from **amber**, a **combium ingot** and a **comb shard**. Amber only
+exists in the deep stratum and in hives, so the compass is a Comb craft made from
+Comb finds: raid hives, go deep, then go looking.
+
+Hold it and the HUD gives a live bearing and distance — *"Shrine 302m, bear right
+20°"* — with a needle that turns as you do. Shrine placement is a pure function
+of the seed, so the search walks the anchor grid outward without loading a single
+chunk and the answer is exact rather than approximate. It works from anywhere,
+including the overworld, and always finds one.
+
 ### Shrines and the throne
 
 **Shrines** are rare on purpose. They sit on a 32-chunk grid offset from the
@@ -807,6 +847,17 @@ identically from both sides, and shrine chests and the Warden are placed exactly
 once per shrine and survive a save/load round trip. The Warden escalates through
 three phases (8→10→12 damage, 1.6→0.9s cooldown), drops its loot table, and does
 not respawn. Buckets fill from sources only, pour water and lava, and milk a cow.
+
+**The Comb expansion** — all three regions appear (60/22/18%), hives generate at
+about one per 40 chunks with walls, a core and a cache, and the deep stratum,
+amber, crystal clusters and ash all generate. The compass finds a shrine from
+every position tested including far out in the overworld, reads "dead ahead" when
+you face one and "bear right 180°" when you turn your back, and hides itself when
+not held.
+
+Comb mites were tuned down after testing: seven of them at two damage a bite
+killed a full-health player outright, which is not what an ambient swarm should
+do. One damage, slower bites, smaller groups.
 
 **Husbandry, forestry and fishing** — leaves drop saplings at the intended rate,
 a sapling grows a tree with trunk and canopy, and a canopy whose trunk is removed

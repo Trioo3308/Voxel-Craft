@@ -17,6 +17,7 @@ import {
   BUILDING_FAMILIES, DOOR_CLOSED, BED, TORCH, CHEST,
   COMBIUM_ORE, COMBIUM_BLOCK, COMB_BRICK,
   COMB_WAX, COMB_TILE, COMB_PILLAR, COMB_LANTERN, COMB_GLASS, LADDER,
+  RESIN_TORCH, HIVE_WALL,
   ITEM_ID, TOOL_KINDS, ARMOR_PIECES, ARMOR_MATERIAL_NAMES,
   toolItemId, armorItemId, getDisplayName, getThing,
 } from '../world/blocks.js';
@@ -136,6 +137,17 @@ shaped(['.R.', 'RSR', '.R.'], { R: ITEM_ID.COMB_RESIN, S: ITEM_ID.COMB_SHARD },
        { id: COMB_LANTERN.id, count: 2 });
 shaped(['RRR', 'RSR', 'RRR'], { R: ITEM_ID.COMB_RESIN, S: ITEM_ID.COMBIUM_INGOT },
        { id: COMB_GLASS.id, count: 4 });
+
+// Amber is the Comb's navigational material. The compass needs a shard for the
+// needle and combium for the case, so it is a Comb craft made from Comb finds.
+shaped(['.A.', 'ACA', '.S.'],
+       { A: ITEM_ID.AMBER, C: ITEM_ID.COMBIUM_INGOT, S: ITEM_ID.COMB_SHARD },
+       { id: ITEM_ID.SHRINE_COMPASS, count: 1 });
+
+// Resin torches: light without needing coal, which the Comb has none of.
+shaped(['R', 'S'], { R: ITEM_ID.COMB_RESIN, S: ITEM_ID.STICK },
+       { id: RESIN_TORCH.id, count: 4 });
+shaped(['RR', 'RR'], { R: ITEM_ID.AMBER }, { id: HIVE_WALL.id, count: 4 });
 
 // --- Farming ----------------------------------------------------------------
 // Three wheat in a row. The first food you can make instead of hunt.

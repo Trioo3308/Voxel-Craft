@@ -58,6 +58,22 @@ export const DUNGEON_LOOT = table([
   { id: ITEM_ID.BOW, min: 1, max: 1, weight: 4 },
 ], 4);
 
+/**
+ * Hive caches. Comb-flavoured and useful, but nothing that shortcuts the
+ * dimension — the compass ingredients are here, so raiding hives is the
+ * intended route to finding a shrine.
+ */
+export const HIVE_LOOT = table([
+  { id: ITEM_ID.COMB_RESIN, min: 2, max: 6, weight: 0, always: true },
+
+  { id: ITEM_ID.AMBER, min: 1, max: 3, weight: 26 },
+  { id: ITEM_ID.COMB_RESIN, min: 2, max: 5, weight: 22 },
+  { id: ITEM_ID.COMB_SHARD, min: 2, max: 6, weight: 20 },
+  { id: ITEM_ID.ROYAL_JELLY, min: 1, max: 2, weight: 14 },
+  { id: ITEM_ID.COMBIUM_INGOT, min: 1, max: 2, weight: 10 },
+  { id: COMB_CRYSTAL.id, min: 1, max: 3, weight: 8 },
+], 3);
+
 /** Dropped by the Comb Warden. */
 export const BOSS_LOOT = table([
   { id: ITEM_ID.COMB_HEART, min: 1, max: 1, weight: 0, always: true },

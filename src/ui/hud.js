@@ -13,7 +13,7 @@
 import { getTileDataURL } from '../world/textures.js';
 import {
   getIconTile, getDisplayName, obtainableBlocks, obtainableItems,
-  getMaxStack, getDurability, getArmor, getTool, ARMOR_PIECES,
+  getMaxStack, getDurability, getArmor, getTool, getThing, ARMOR_PIECES,
 } from '../world/blocks.js';
 import { HOTBAR_SIZE, STORAGE_SIZE, Inventory } from '../player/inventory.js';
 import { findRecipe, consumeGrid, fuelValueFor, smeltResultFor, SMELT_SECONDS } from '../player/crafting.js';
@@ -49,6 +49,9 @@ export class HUD {
     this.debugEl = el('debug');
     this.locatorEl = el('locator');
     this._locatorTimer = 0;
+    this.compassEl = el('compass');
+    this.compassFillEl = el('compassNeedle');
+    this._compassTimer = 0;
     this.saveToastEl = el('saveToast');
 
     this.inventoryScreen = el('inventoryScreen');
@@ -498,6 +501,7 @@ export class HUD {
     }
 
     this._updateLocator(dt);
+    this._updateCompass(dt);
     this._updateStats();
     this._updateBreakBar();
     this._updateBossBar();
@@ -553,6 +557,53 @@ export class HUD {
 
     this.locatorEl.textContent =
       `${x}, ${y}, ${z}   ${facing}` + (biome ? `\n${biome}` : '');
+  }
+
+  /**
+   * Bearing and distance to the nearest Comb shrine, while holding the compass.
+   *
+   * Shown as a turn instruction rather than a raw heading — "bear left 40" is
+   * something you can act on without doing trigonometry, which is the whole
+   * point of the item.
+   */
+  _updateCompass(dt) {
+    const held = this.player.inventory.getSelected();
+    const item = held ? getThing(held.id) : null;
+    const active = !!(item && item.locatesShrines);
+
+    this.compassEl.classList.toggle('show', active);
+    if (!active) return;
+
+    this._compassTimer -= dt;
+    if (this._compassTimer > 0) return;
+    this._compassTimer = 0.15;
+
+    const label = this.compassEl.firstChild;
+    const target = this.game.nearestShrine();
+    if (!target) {
+      // Writing to the element itself would delete the needle along with the text.
+      label.textContent = 'The needle is still.';
+      this.compassFillEl.style.transform = 'rotate(0deg)';
+      return;
+    }
+
+    const dx = target.wx - this.player.position.x;
+    const dz = target.wz - this.player.position.z;
+    const distance = Math.hypot(dx, dz);
+
+    // Yaw 0 faces -Z. Positive `relative` means the shrine is to the right.
+    const bearing = Math.atan2(dx, -dz);
+    let relative = bearing - (-this.player.yaw);
+    relative = Math.atan2(Math.sin(relative), Math.cos(relative));
+    const degrees = Math.round(relative * 180 / Math.PI);
+
+    const turn = Math.abs(degrees) < 8
+      ? 'dead ahead'
+      : degrees > 0 ? `bear right ${degrees}°` : `bear left ${-degrees}°`;
+
+    label.textContent = `Shrine  ${Math.round(distance)}m\n${turn}`;
+    // The needle points at the shrine relative to where you are facing.
+    this.compassFillEl.style.transform = `rotate(${degrees}deg)`;
   }
 
   _updateStats() {

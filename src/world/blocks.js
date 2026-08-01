@@ -151,6 +151,19 @@ export const TILE = {
   FISH: 192,
   COOKED_FISH: 193,
 
+  // --- Comb expansion -------------------------------------------------------
+  AMBER_ORE: 194,
+  HIVE_WALL: 195,
+  HIVE_CORE: 196,
+  RESIN_TORCH: 197,
+  COMB_MOSS: 198,
+  COMB_ASH: 199,
+  DEEP_COMB: 200,
+  CRYSTAL_CLUSTER: 201,
+  AMBER_ITEM: 202,
+  ROYAL_JELLY: 203,
+  SHRINE_COMPASS: 204,
+
   // --- The Comb -------------------------------------------------------------
   COMB_RESIN: 173,
   COMB_RESIN_ITEM: 174,
@@ -482,6 +495,11 @@ export const ITEM_ID = {
   FISHING_ROD: 166,
   FISH: 167,
   COOKED_FISH: 168,
+
+  // --- Comb expansion -------------------------------------------------------
+  AMBER: 169,
+  ROYAL_JELLY: 170,
+  SHRINE_COMPASS: 171,
 
   // Gear runs are 30 and 24 wide. They have moved twice now — once for the hoe,
   // once to make room for named items — and saves remap by *name*, so this is
@@ -1015,6 +1033,66 @@ export const THRONE_AWAKENED = defineBlock(90, 'comb_throne_awakened', {
   obtainable: false,
 });
 
+// ---------------------------------------------------------------------------
+// Comb expansion — regions, hives and the deep
+// ---------------------------------------------------------------------------
+
+/** Amber, locked in the stone. What the shrine compass is made from. */
+export const AMBER_ORE = defineBlock(95, 'amber_ore', {
+  displayName: 'Amber Ore', tiles: TILE.AMBER_ORE, hardness: 3.0,
+  toolType: 'pickaxe', harvestLevel: 1, requiresTool: true,
+  drops: ITEM_ID.AMBER, dropCount: [1, 2],
+  lightEmission: 2,
+});
+
+/** Hive walls: dense wax, harder than the resin it is built from. */
+export const HIVE_WALL = defineBlock(96, 'hive_wall', {
+  displayName: 'Hive Wall', tiles: TILE.HIVE_WALL, hardness: 2.2, toolType: 'axe',
+});
+
+/**
+ * The heart of a hive. Breaking it is what releases the royal jelly, and it is
+ * the only source — so a hive is a place you raid rather than a place you pass.
+ */
+export const HIVE_CORE = defineBlock(97, 'hive_core', {
+  displayName: 'Hive Core', tiles: TILE.HIVE_CORE, hardness: 4.0,
+  toolType: 'axe', requiresTool: true,
+  drops: ITEM_ID.ROYAL_JELLY, dropCount: [2, 4],
+  emissive: true, lightEmission: 10,
+});
+
+/** A cheap Comb light source, made from resin rather than coal. */
+export const RESIN_TORCH = defineBlock(98, 'resin_torch', {
+  displayName: 'Resin Torch', tiles: TILE.RESIN_TORCH, hardness: 0.1,
+  shape: SHAPES.TORCH, emissive: true, solid: false,
+  lightEmission: 12,
+});
+
+/** Ground cover for the two surface regions that are not bare plateau. */
+export const COMB_MOSS = defineBlock(99, 'comb_moss', {
+  displayName: 'Comb Moss', tiles: TILE.COMB_MOSS, hardness: 0.5, toolType: 'shovel',
+});
+
+export const COMB_ASH = defineBlock(100, 'comb_ash', {
+  displayName: 'Comb Ash', tiles: TILE.COMB_ASH, hardness: 0.4, toolType: 'shovel',
+});
+
+/** The stratum below the hollow cells — darker, denser, and where amber lives. */
+export const DEEP_COMB = defineBlock(101, 'deep_comb_stone', {
+  displayName: 'Deep Comb Stone', tiles: TILE.DEEP_COMB, hardness: 2.4,
+  toolType: 'pickaxe', harvestLevel: 1, requiresTool: true,
+});
+
+/** Big crystal growths — brighter than the veins, and they drop more. */
+export const CRYSTAL_CLUSTER = defineBlock(102, 'crystal_cluster', {
+  displayName: 'Crystal Cluster', tiles: TILE.CRYSTAL_CLUSTER, hardness: 1.6,
+  toolType: 'pickaxe', harvestLevel: 1, requiresTool: true,
+  drops: ITEM_ID.COMB_SHARD, dropCount: [4, 7],
+  solid: false, opaque: false, cullSameType: false,
+  cross: true, crossHeight: 0.9,
+  emissive: true, lightEmission: 11,
+});
+
 /** Damp, overgrown stone — the tell that a room down here was built, not carved. */
 export const MOSSY_COBBLE = defineBlock(81, 'mossy_cobblestone', {
   displayName: 'Mossy Cobblestone', tiles: TILE.MOSSY_COBBLE, hardness: 2.0,
@@ -1053,6 +1131,8 @@ function defineItem(id, name, options = {}) {
     ranged: options.ranged ?? null,
     /** {fluid, igniter?} for buckets. */
     bucket: options.bucket ?? null,
+    /** Held item that gives a bearing to the nearest Comb shrine. */
+    locatesShrines: options.locatesShrines === true,
   };
   ITEMS[id - ITEM_ID_BASE] = item;
   return item;
@@ -1098,6 +1178,30 @@ export const SEEDS = defineItem(ITEM_ID.SEEDS, 'wheat_seeds', {
 /** The first food you can farm rather than hunt. */
 export const BREAD = defineItem(ITEM_ID.BREAD, 'bread', {
   displayName: 'Bread', tile: TILE.BREAD, food: 5, saturation: 6,
+});
+
+// --- Comb expansion ---------------------------------------------------------
+export const AMBER = defineItem(ITEM_ID.AMBER, 'amber', {
+  displayName: 'Amber', tile: TILE.AMBER_ITEM,
+});
+
+/** Strong, rare food. The only source is a hive core. */
+export const ROYAL_JELLY = defineItem(ITEM_ID.ROYAL_JELLY, 'royal_jelly', {
+  displayName: 'Royal Jelly', tile: TILE.ROYAL_JELLY, food: 8, saturation: 9,
+});
+
+/**
+ * Points at the nearest shrine.
+ *
+ * Shrines are one per ~1600 chunks by design, which is a long walk even when you
+ * know roughly where to go and an impossible one when you do not. This makes
+ * finding one navigation rather than luck: hold it and the HUD gives a live
+ * bearing and distance.
+ */
+export const SHRINE_COMPASS = defineItem(ITEM_ID.SHRINE_COMPASS, 'shrine_compass', {
+  displayName: 'Shrine Compass', tile: TILE.SHRINE_COMPASS, maxStack: 1,
+  /** Read by the HUD; the item itself holds no state. */
+  locatesShrines: true,
 });
 
 // --- Husbandry and fishing --------------------------------------------------

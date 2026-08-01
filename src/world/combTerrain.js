@@ -16,6 +16,7 @@ import {
   AIR, BEDROCK, COMB_STONE, COMB_SOIL, COMB_CRYSTAL, COMB_GROWTH,
   COMB_BRICK, THRONE, CHEST,
   COMB_RESIN, COMB_SPINE, PALE_FUNGUS, COMB_TILE, COMB_PILLAR, COMB_LANTERN, COMB_GLASS,
+  AMBER_ORE, HIVE_WALL, HIVE_CORE, COMB_MOSS, COMB_ASH, DEEP_COMB, CRYSTAL_CLUSTER,
 } from './blocks.js';
 
 /** Bump alongside TERRAIN_VERSION if Comb generation ever changes. */
@@ -35,6 +36,26 @@ const SHRINE_HINT_RADIUS = 6;
 
 /** Shifts the shrine grid off the world origin. */
 const SHRINE_ORIGIN_OFFSET = 13;
+
+/** Hives are common enough to find while hunting for something rarer. */
+export const HIVE_SPACING = 6; // chunks
+
+/** Everything below this is the deep stratum, where amber is found. */
+const DEEP_TOP = 26;
+
+/** The three surface regions. */
+export const REGION = { PLATEAU: 0, MOSSFIELD: 1, ASHFALL: 2 };
+export const REGION_NAMES = ['Pale Plateau', 'Moss Field', 'Ashfall'];
+
+/** Surface block per region. */
+const REGION_SURFACE = {
+  [REGION.PLATEAU]: COMB_SOIL.id,
+  [REGION.MOSSFIELD]: COMB_MOSS.id,
+  [REGION.ASHFALL]: COMB_ASH.id,
+};
+
+/** Surfaces flora will root in — ash is too barren. */
+const REGION_GROWABLE = new Set([COMB_SOIL.id, COMB_MOSS.id]);
 
 /**
  * The shrine anchor chunk nearest a given chunk.
@@ -76,6 +97,8 @@ export class CombTerrainGenerator {
     this.nGrowth = new Noise(this.seed + 5);
     this.nResin = new Noise(this.seed + 6);
     this.nFungus = new Noise(this.seed + 7);
+    this.nRegion = new Noise(this.seed + 8);
+    this.nAmber = new Noise(this.seed + 9);
 
     this._heightCache = new Map();
   }
@@ -114,6 +137,47 @@ export class CombTerrainGenerator {
   /** Amber resin seams. Commoner than crystal — this is the material you farm. */
   isResin(wx, wy, wz) {
     return this.nResin.perlin3(wx * 0.06, wy * 0.09, wz * 0.06) > 0.54;
+  }
+
+  /**
+   * Which of the three surface regions a column belongs to.
+   *
+   * The Comb was one uniform plateau, which made a long walk across it read as
+   * no progress at all. Three broad regions on a slow noise field give the
+   * horizon somewhere to change.
+   */
+  regionAt(wx, wz) {
+    const n = this.nRegion.fbm2(wx * 0.0022, wz * 0.0022, 3);
+    if (n < -0.10) return REGION.ASHFALL;
+    if (n > 0.12) return REGION.MOSSFIELD;
+    return REGION.PLATEAU;
+  }
+
+  /** Amber, only in the deep stratum. */
+  isAmber(wx, wy, wz) {
+    if (wy > DEEP_TOP) return false;
+    return this.nAmber.perlin3(wx * 0.12, wy * 0.12, wz * 0.12) > 0.70;
+  }
+
+  /**
+   * Is there a hive anchored in this chunk?
+   *
+   * Far commoner than shrines — roughly one per 36 chunks — so the Comb has
+   * something to find while you are hunting the thing that is genuinely rare.
+   */
+  hiveAt(cx, cz) {
+    if (((cx % HIVE_SPACING) + HIVE_SPACING) % HIVE_SPACING !== 0) return null;
+    if (((cz % HIVE_SPACING) + HIVE_SPACING) % HIVE_SPACING !== 0) return null;
+
+    const h = hash2i(cx, cz, this.seed ^ 0x81be);
+    if ((h & 0xff) < 96) return null;
+
+    const wx = cx * CHUNK_SX + 3 + (h % 9);
+    const wz = cz * CHUNK_SZ + 3 + ((h >>> 8) % 9);
+    // Hives hang in the hollow cells rather than sitting on the surface.
+    const surface = this.columnHeight(wx, wz);
+    const y = Math.max(8, surface - 12 - ((h >>> 16) % 10));
+    return { wx, wz, y, radius: 3 + ((h >>> 20) & 1) };
   }
 
   /**
@@ -180,22 +244,29 @@ export class CombTerrainGenerator {
         const wx = baseX + lx;
         const height = this.columnHeight(wx, wz);
 
+        const region = this.regionAt(wx, wz);
+        const surfaceBlock = REGION_SURFACE[region];
+
         for (let y = 0; y <= height; y++) {
           let id;
           if (y === 0) {
             id = BEDROCK.id;
-          } else if (y === height) {
-            id = COMB_SOIL.id;
           } else if (y > height - 4) {
-            id = COMB_SOIL.id;
+            // The top few blocks take the region's own soil.
+            id = y === height ? surfaceBlock : COMB_SOIL.id;
+          } else if (y <= DEEP_TOP) {
+            // A denser stratum under the comb cells — where amber lives.
+            id = DEEP_COMB.id;
           } else {
             id = COMB_STONE.id;
           }
 
-          // Carve the comb interior, then line it with crystal and resin.
+          // Carve the comb interior, then line it with crystal, resin and amber.
           if (y > 3 && y < height && this.isHollow(wx, y, wz)) {
             id = AIR;
-          } else if (id === COMB_STONE.id && this.isCrystal(wx, y, wz)) {
+          } else if (id === DEEP_COMB.id && this.isAmber(wx, y, wz)) {
+            id = AMBER_ORE.id;
+          } else if ((id === COMB_STONE.id || id === DEEP_COMB.id) && this.isCrystal(wx, y, wz)) {
             id = COMB_CRYSTAL.id;
           } else if (id === COMB_STONE.id && this.isResin(wx, y, wz)) {
             id = COMB_RESIN.id;
@@ -208,7 +279,7 @@ export class CombTerrainGenerator {
         const above = height + 1;
         if (above < CHUNK_SY &&
             voxels[voxelIndex(lx, above, lz)] === AIR &&
-            voxels[voxelIndex(lx, height, lz)] === COMB_SOIL.id) {
+            REGION_GROWABLE.has(voxels[voxelIndex(lx, height, lz)])) {
 
           const growth = this.nGrowth.perlin2(wx * 0.3, wz * 0.3);
           const hazard = this.nGrowth.perlin2(wx * 0.11 + 91.3, wz * 0.11 - 44.7);
@@ -225,22 +296,92 @@ export class CombTerrainGenerator {
           }
         }
 
-        // --- Fungus in the hollow cells ------------------------------------
-        // Grown on the floor of any open pocket, which is what gives the caves
-        // their own light instead of being pitch dark.
+        // --- Cave flora -----------------------------------------------------
+        // Fungus lights the shallow cells; crystal clusters take over in the
+        // deep stratum, so descending changes what the dark looks like.
         for (let y = 5; y < height - 1; y++) {
           if (voxels[voxelIndex(lx, y, lz)] !== AIR) continue;
           const below = voxels[voxelIndex(lx, y - 1, lz)];
-          if (below !== COMB_STONE.id && below !== COMB_SOIL.id) continue;
-          if (this.nFungus.perlin3(wx * 0.19, y * 0.19, wz * 0.19) < 0.42) continue;
-          voxels[voxelIndex(lx, y, lz)] = PALE_FUNGUS.id;
+          const deep = y <= DEEP_TOP;
+
+          if (deep) {
+            if (below !== DEEP_COMB.id && below !== COMB_CRYSTAL.id) continue;
+            if (this.nFungus.perlin3(wx * 0.13 + 51, y * 0.13, wz * 0.13 - 27) < 0.50) continue;
+            voxels[voxelIndex(lx, y, lz)] = CRYSTAL_CLUSTER.id;
+          } else {
+            if (below !== COMB_STONE.id && below !== COMB_SOIL.id) continue;
+            if (this.nFungus.perlin3(wx * 0.19, y * 0.19, wz * 0.19) < 0.42) continue;
+            voxels[voxelIndex(lx, y, lz)] = PALE_FUNGUS.id;
+          }
         }
       }
     }
 
     this._placeSpires(voxels, cx, cz, baseX, baseZ);
+    this._placeHives(voxels, cx, cz, baseX, baseZ);
     this._placeShrines(voxels, cx, cz, baseX, baseZ);
     return voxels;
+  }
+
+  /** Stamp any hive whose footprint reaches this chunk. */
+  _placeHives(voxels, cx, cz, baseX, baseZ) {
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const hive = this.hiveAt(cx + dx * HIVE_SPACING, cz + dz * HIVE_SPACING);
+        if (!hive) continue;
+        if (Math.abs(hive.wx - baseX) > 32 || Math.abs(hive.wz - baseZ) > 32) continue;
+        this._buildHive(voxels, baseX, baseZ, hive);
+      }
+    }
+  }
+
+  /**
+   * A wax shell around a hollow chamber, with the core hanging at its centre.
+   *
+   * Built shell-first then hollowed, so a hive that intersects a comb cell still
+   * has walls rather than bleeding into it.
+   */
+  _buildHive(voxels, baseX, baseZ, hive) {
+    const { wx, wz, y, radius } = hive;
+    const rnd = mulberry32(hash2i(wx, wz, this.seed ^ 0x2f7a));
+
+    const set = (x, py, z, id) => {
+      const lx = x - baseX, lz = z - baseZ;
+      if (lx < 0 || lx >= CHUNK_SX || lz < 0 || lz >= CHUNK_SZ) return;
+      if (py < 1 || py >= CHUNK_SY) return;
+      voxels[voxelIndex(lx, py, lz)] = id;
+    };
+
+    const height = radius + 2;
+    // Shell.
+    for (let dy = -1; dy <= height; dy++) {
+      for (let dz = -radius - 1; dz <= radius + 1; dz++) {
+        for (let dx = -radius - 1; dx <= radius + 1; dx++) {
+          if (dx * dx + dz * dz > (radius + 1) * (radius + 1)) continue;
+          set(wx + dx, y + dy, wz + dz, rnd() < 0.18 ? COMB_RESIN.id : HIVE_WALL.id);
+        }
+      }
+    }
+    // Hollow it.
+    for (let dy = 0; dy < height; dy++) {
+      for (let dz = -radius; dz <= radius; dz++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          if (dx * dx + dz * dz > radius * radius) continue;
+          set(wx + dx, y + dy, wz + dz, AIR);
+        }
+      }
+    }
+
+    // The core, hanging from the roof at the centre.
+    set(wx, y + height - 1, wz, HIVE_CORE.id);
+    // A cache below it.
+    set(wx, y, wz, CHEST.id);
+    // Amber studding the inner wall.
+    for (let i = 0; i < 4; i++) {
+      const a = rnd() * Math.PI * 2;
+      set(wx + Math.round(Math.cos(a) * radius), y + 1 + ((rnd() * (height - 1)) | 0),
+          wz + Math.round(Math.sin(a) * radius), AMBER_ORE.id);
+    }
   }
 
   /** Stamp any spire whose footprint reaches this chunk. */

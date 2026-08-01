@@ -32,11 +32,11 @@ import {
 import { audio } from './engine/audio.js';
 import { DIMENSIONS, dimensionInfo } from './world/dimensions.js';
 import {
-  CombTerrainGenerator, SHRINE_SPACING, SHRINE_LAYOUT, nearestShrineAnchor,
+  CombTerrainGenerator, SHRINE_SPACING, SHRINE_LAYOUT, nearestShrineAnchor, HIVE_SPACING,
 } from './world/combTerrain.js';
 import { DUNGEON_SPACING } from './world/terrain.js';
 import { ignitePortal, extinguishPortal, buildReturnPortal, destinationOf } from './world/portal.js';
-import { THRONE_LOOT, DUNGEON_LOOT, fillChest } from './entities/loot.js';
+import { THRONE_LOOT, DUNGEON_LOOT, HIVE_LOOT, fillChest } from './entities/loot.js';
 import { WARDEN } from './entities/mobTypes.js';
 
 /**
@@ -111,6 +111,7 @@ export class Game {
     this._shrinesDone = new Set();
     this._shrineTimer = 0;
     this._dungeonTimer = 0;
+    this._hiveTimer = 0;
     this._caveSoundTimer = 20;
     this._travelling = false;
 
@@ -526,6 +527,46 @@ export class Game {
     return true;
   }
 
+  /**
+   * Stock any hive cache near the player.
+   *
+   * Same pattern as shrines and dungeons: the generator builds it, this fills
+   * it once, and `_shrinesDone` (saved with the world) remembers which.
+   */
+  _maintainHives(dt) {
+    if (this.world.dimension !== DIMENSIONS.COMB || !this._shrineOracle) return;
+
+    this._hiveTimer -= dt;
+    if (this._hiveTimer > 0) return;
+    this._hiveTimer = 2.5;
+
+    const pcx = Math.floor(this.player.position.x / 16);
+    const pcz = Math.floor(this.player.position.z / 16);
+    const step = HIVE_SPACING;
+    const originX = Math.round(pcx / step) * step;
+    const originZ = Math.round(pcz / step) * step;
+
+    for (let gz = -1; gz <= 1; gz++) {
+      for (let gx = -1; gx <= 1; gx++) {
+        const hive = this._shrineOracle.hiveAt(originX + gx * step, originZ + gz * step);
+        if (!hive) continue;
+
+        const key = `h:${hive.wx},${hive.wz}`;
+        if (this._shrinesDone.has(key)) continue;
+        if (!this.world.isChunkLoaded(hive.wx, hive.wz)) continue;
+        if (this.world.getBlock(hive.wx, hive.y, hive.wz) !== CHEST.id) continue;
+
+        this._shrinesDone.add(key);
+        if (this.world.getBlockEntity(hive.wx, hive.y, hive.wz)) continue;
+        const entity = this.world.getBlockEntity(hive.wx, hive.y, hive.wz, () => ({
+          type: 'chest',
+          state: { slots: new Array(27).fill(null) },
+        }));
+        fillChest(entity.state.slots, HIVE_LOOT);
+      }
+    }
+  }
+
   /** Fill a dungeon's chests. Returns false if the room has not loaded yet. */
   _stockDungeon(room) {
     const { wx, wz, y, halfX, halfZ } = room;
@@ -546,6 +587,58 @@ export class Game {
       fillChest(entity.state.slots, DUNGEON_LOOT);
     }
     return found > 0;
+  }
+
+  /**
+   * The nearest Comb shrine to the player, or null.
+   *
+   * Shrine placement is a pure function of the seed, so this walks the anchor
+   * grid outward and asks — no chunk needs to be loaded, and the answer is exact
+   * rather than "somewhere over there". The search widens until it finds one, so
+   * the compass works from anywhere including the overworld.
+   *
+   * Cached per position, because the HUD asks several times a second and the
+   * answer only changes when you move to a different grid cell.
+   */
+  nearestShrine() {
+    if (!this._shrineOracle) {
+      if (!this.world) return null;
+      this._shrineOracle = new CombTerrainGenerator(this.world.seed);
+    }
+
+    const pcx = Math.floor(this.player.position.x / 16);
+    const pcz = Math.floor(this.player.position.z / 16);
+    const cacheKey = `${Math.floor(pcx / SHRINE_SPACING)},${Math.floor(pcz / SHRINE_SPACING)}`;
+    if (this._shrineCacheKey === cacheKey) return this._shrineCache;
+
+    const [ax, az] = nearestShrineAnchor(pcx, pcz);
+    let best = null;
+    let bestDistance = Infinity;
+
+    // Ring search outward from the player's own anchor. Six rings covers about
+    // 3000 blocks, which is far beyond any gap between shrines.
+    for (let ring = 0; ring <= 6 && !best; ring++) {
+      for (let gz = -ring; gz <= ring; gz++) {
+        for (let gx = -ring; gx <= ring; gx++) {
+          // Only the perimeter of each ring; the interior was covered already.
+          if (ring > 0 && Math.abs(gx) !== ring && Math.abs(gz) !== ring) continue;
+
+          const shrine = this._shrineOracle.shrineAt(
+            ax + gx * SHRINE_SPACING, az + gz * SHRINE_SPACING
+          );
+          if (!shrine) continue;
+
+          const distance = Math.hypot(
+            shrine.wx - this.player.position.x, shrine.wz - this.player.position.z
+          );
+          if (distance < bestDistance) { best = shrine; bestDistance = distance; }
+        }
+      }
+    }
+
+    this._shrineCacheKey = cacheKey;
+    this._shrineCache = best;
+    return best;
   }
 
   /** Fill a shrine's chest and post its guardian. */
@@ -599,6 +692,24 @@ export class Game {
       const p = player.position;
       const ground = this.world.getBlock(Math.floor(p.x), Math.floor(p.y) - 1, Math.floor(p.z));
       this.particles.footDust(p.x, p.y, p.z, ground, 2, 0.35);
+    }
+
+    // Spore drift: the Comb has no weather, so this is what stops its air
+    // reading as completely dead. Gated on the dimension rather than added to
+    // the weather system, which is about precipitation you can shelter from.
+    if (this.world.dimension === DIMENSIONS.COMB) {
+      this._sporeTimer = (this._sporeTimer ?? 0) - dt;
+      if (this._sporeTimer <= 0) {
+        this._sporeTimer = 0.09;
+        const p = player.position;
+        for (let n = 0; n < 2; n++) {
+          this.particles.spore(
+            p.x + (Math.random() - 0.5) * 26,
+            p.y + Math.random() * 12 - 2,
+            p.z + (Math.random() - 0.5) * 26
+          );
+        }
+      }
     }
 
     // Motes drifting off any portal within a few blocks.
@@ -893,9 +1004,12 @@ export class Game {
     // Per-world state that must not leak across sessions. The shrine oracle is
     // seeded, so a stale one would point at the previous world's shrines.
     this._shrineOracle = null;
+    this._shrineCacheKey = null;
+    this._shrineCache = null;
     this._shrinesDone = new Set();
     this._shrineTimer = 0;
     this._dungeonTimer = 0;
+    this._hiveTimer = 0;
     this._travelling = false;
     this._applyDimensionLook();
 
@@ -1178,6 +1292,7 @@ export class Game {
         dimension: this.world.dimension,
       });
       this._maintainShrines(dt);
+      this._maintainHives(dt);
       this._maintainDungeons(dt);
       this._updateEffects(dt);
 
