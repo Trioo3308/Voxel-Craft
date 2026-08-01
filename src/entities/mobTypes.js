@@ -984,7 +984,238 @@ export const COMB_GRUB = {
   },
 };
 
-export const MOB_TYPES = [ZOMBIE, SKELETON, SPIDER, CREEPER, PIG, COW, SHEEP, CHICKEN];
+// ---------------------------------------------------------------------------
+// The sustingus
+// ---------------------------------------------------------------------------
+
+/**
+ * A sustingus.
+ *
+ * No one has established what a sustingus is. It is a pale, wobbling, three-eyed
+ * mass that turns up in deep caves, has no discernible front, and does not
+ * appear to eat, sleep or go anywhere in particular.
+ *
+ * What it demonstrably *does* is sustain. Feed one and it attaches itself to
+ * you, and anything standing near an attuned sustingus heals steadily. That is
+ * the entire extent of current knowledge, and it is named for the only part of
+ * it anybody could describe.
+ */
+export const SUSTINGUS = {
+  name: 'sustingus',
+  displayName: 'Sustingus',
+  width: 0.8,
+  height: 0.7,
+  maxHealth: 14,
+  speed: 1.5,
+  voice: { name: 'sustingus', voice: 'burble', pitch: 96, duration: 0.5 },
+  drops: [{ id: ITEM_ID.SUSTINGUS_JELLY, min: 1, max: 3 }],
+
+  /** Any food will do. It is not fussy; it may not even be eating it. */
+  attunedBy: 'food',
+  /** Healing granted per second to anything nearby once attuned. */
+  sustainRate: 0.35,
+  sustainRadius: 7,
+
+  brain: {
+    ...PASSIVE_BRAIN,
+    // It does not flee. It is unclear that it notices being hit.
+    fleeWhenHurt: 0,
+  },
+
+  spawn: {
+    atNight: true,
+    dayTimeAllowed: true,
+    maxCount: 3,
+    weight: 1,
+    groupSize: [1, 1],
+    canSpawnOn: (id) => id === STONE.id || id === DEEP_COMB.id || id === COMB_STONE.id,
+  },
+
+  /**
+   * An attuned sustingus follows whoever fed it and keeps them alive. Untuned,
+   * it drifts about doing nothing anyone has been able to characterise.
+   */
+  ai(mob, dt, ctx) {
+    // Wobble: the only universally agreed-upon sustingus behaviour.
+    mob.memory.wobble = (mob.memory.wobble ?? Math.random() * 6) + dt * 2.6;
+    const squash = 1 + Math.sin(mob.memory.wobble) * 0.16;
+    mob.object3D.scale.set(2 - squash, squash, 2 - squash);
+
+    if (!mob.attuned) return;
+
+    const player = ctx.player;
+    const distance = mob.horizontalDistanceTo(player.position);
+
+    // Keeps pace, but does not crowd.
+    if (distance > 3.5) mob._steerToward(player.position, distance > 12 ? 1.8 : 1.1);
+
+    if (distance > this.sustainRadius) return;
+    mob.memory.sustainCarry = (mob.memory.sustainCarry ?? 0) + this.sustainRate * dt;
+    if (mob.memory.sustainCarry >= 1) {
+      mob.memory.sustainCarry -= 1;
+      if (player.survival.health < player.survival.maxHealth) {
+        player.survival.heal(1);
+        if (ctx.entities?.particles) {
+          ctx.entities.particles.sustain(mob.position.x, mob.position.y + 0.8, mob.position.z);
+        }
+      }
+    }
+  },
+
+  buildModel(mob) {
+    const group = new THREE.Group();
+    const attuned = !!(mob && mob.attuned);
+    // Attuned ones take on a warm glow; nobody knows why that is either.
+    const body = attuned ? 0xf2d9b0 : 0xdfe4dc;
+    const dark = attuned ? 0xd6b585 : 0xb9c2b6;
+
+    // A lumpy mass rather than a clean shape.
+    const base = box(0.72, 0.4, 0.72, body, 0, 0.2, 0);
+    const dome = box(0.58, 0.3, 0.58, body, 0, 0.5, 0);
+    const lump = box(0.3, 0.18, 0.3, dark, 0.16, 0.62, -0.1);
+
+    // Three eyes, deliberately not arranged symmetrically.
+    const eyeA = box(0.14, 0.14, 0.04, 0x1a1a20, -0.16, 0.5, 0.3);
+    const eyeB = box(0.1, 0.1, 0.04, 0x1a1a20, 0.14, 0.56, 0.3);
+    const eyeC = box(0.08, 0.08, 0.04, 0x1a1a20, 0.02, 0.34, 0.32);
+
+    // Stubby feet, if that is what they are.
+    const footL = limb(0.14, 0.12, 0.14, dark, -0.2, 0.12, 0.12);
+    const footR = limb(0.14, 0.12, 0.14, dark, 0.2, 0.12, 0.12);
+
+    group.add(base, dome, lump, eyeA, eyeB, eyeC, footL, footR);
+    return { group, parts: { legFrontLeft: footL, legFrontRight: footR, head: dome } };
+  },
+};
+
+/**
+ * Wolves.
+ *
+ * Wild ones keep their distance and snap if you crowd them. Feed one a bone and
+ * it is yours: it follows, it fights whatever hurts you, and crouching near it
+ * tells it to stay put. The taming state lives on the mob (`tamed`) rather than
+ * being a second species, so a tamed wolf keeps its health and position.
+ */
+export const WOLF = {
+  name: 'wolf',
+  displayName: 'Wolf',
+  width: 0.65,
+  height: 0.9,
+  maxHealth: 16,
+  speed: 3.4,
+  voice: { name: 'wolf', voice: 'bark', pitch: 210, duration: 0.22 },
+  drops: [],
+
+  /** Bones tame; nothing else does. */
+  tamedBy: ITEM_ID.BONE,
+  /** How hard a tamed wolf hits whatever it is set on. */
+  attackDamage: 4,
+  attackCooldown: 0.8,
+  followRadius: 14,
+
+  brain: {
+    ...PASSIVE_BRAIN,
+    // Wild wolves are wary rather than aggressive: they will not start it.
+    fleeWhenHurt: 6,
+    fleeSpeed: 2.6,
+  },
+
+  spawn: {
+    atNight: false,
+    dayTimeAllowed: true,
+    maxCount: 4,
+    weight: 2,
+    groupSize: [2, 3],
+    // Forest floor. Podzol is the spruce biome, which is where they belong.
+    canSpawnOn: (id) => id === GRASS.id || id === PODZOL.id,
+  },
+
+  /**
+   * A tamed wolf has two modes and no more: sitting where you left it, or at
+   * your heel and biting whatever bit you. Anything cleverer would need a
+   * pathfinder, and this one steers with the same primitive every other mob has.
+   */
+  ai(mob, dt, ctx) {
+    if (!mob.tamed) return;
+
+    if (mob.sitting) {
+      mob.velocity.x = 0;
+      mob.velocity.z = 0;
+      return;
+    }
+
+    const player = ctx.player;
+
+    // A target is set by whoever hurt the player; the wolf keeps it until the
+    // target dies or gets too far away to be its problem.
+    const target = mob.memory.target;
+    if (target && !target.dead) {
+      const distance = mob.horizontalDistanceTo(target.position);
+      if (distance > this.followRadius * 1.5) {
+        mob.memory.target = null;
+      } else {
+        mob._steerToward(target.position, 1.35);
+        mob.memory.biteCooldown = (mob.memory.biteCooldown ?? 0) - dt;
+        if (distance < 1.4 && mob.memory.biteCooldown <= 0) {
+          mob.memory.biteCooldown = this.attackCooldown;
+          target.takeDamage(this.attackDamage, { x: 0, y: 0.3, z: 0 });
+          audio.mobSound(this.voice, 'hurt', mob.distanceTo(player.eyePosition));
+        }
+        return;
+      }
+    }
+
+    // Otherwise: heel. Close enough is close enough — crowding looks broken.
+    const distance = mob.horizontalDistanceTo(player.position);
+    if (distance > 2.5) mob._steerToward(player.position, distance > 10 ? 1.5 : 1);
+  },
+
+  buildModel(mob) {
+    const tamed = !!(mob && mob.tamed);
+    const sitting = !!(mob && mob.sitting);
+    const group = new THREE.Group();
+    const coat = tamed ? 0xd8d4cc : 0x9c9890;
+    const dark = tamed ? 0xb0aaa0 : 0x6e6a64;
+
+    const legFrontLeft = limb(0.14, 0.32, 0.14, dark, -0.16, 0.32, 0.28);
+    const legFrontRight = limb(0.14, 0.32, 0.14, dark, 0.16, 0.32, 0.28);
+    const legBackLeft = limb(0.14, 0.32, 0.14, dark, -0.16, 0.32, -0.3);
+    const legBackRight = limb(0.14, 0.32, 0.14, dark, 0.16, 0.32, -0.3);
+
+    // Sitting drops the hindquarters rather than swapping in a second model.
+    if (sitting) {
+      legBackLeft.rotation.x = 1.2;
+      legBackRight.rotation.x = 1.2;
+    }
+
+    const body = box(0.5, 0.42, 0.82, coat, 0, sitting ? 0.44 : 0.5, sitting ? 0.06 : 0);
+    const head = box(0.4, 0.38, 0.38, coat, 0, sitting ? 0.72 : 0.66, 0.5);
+    const snout = box(0.19, 0.15, 0.16, dark, 0, sitting ? 0.66 : 0.6, 0.7);
+    const earLeft = box(0.1, 0.16, 0.06, dark, -0.13, sitting ? 0.94 : 0.88, 0.46);
+    const earRight = box(0.1, 0.16, 0.06, dark, 0.13, sitting ? 0.94 : 0.88, 0.46);
+    const tail = box(0.12, 0.12, 0.34, coat, 0, 0.6, -0.52);
+
+    // Eyes: red while wild, so "do not crowd this animal" is readable at range.
+    const eyeColor = tamed ? 0x1a1a1a : 0xc04040;
+    const eyeLeft = box(0.07, 0.07, 0.03, eyeColor, -0.1, sitting ? 0.78 : 0.72, 0.68);
+    const eyeRight = box(0.07, 0.07, 0.03, eyeColor, 0.1, sitting ? 0.78 : 0.72, 0.68);
+
+    group.add(
+      legFrontLeft, legFrontRight, legBackLeft, legBackRight,
+      body, head, snout, earLeft, earRight, tail, eyeLeft, eyeRight
+    );
+
+    // A tamed wolf wears a collar. Its one visible reward.
+    if (tamed) group.add(box(0.42, 0.09, 0.42, 0xc0392b, 0, sitting ? 0.66 : 0.62, 0.34));
+
+    return {
+      group,
+      parts: { legFrontLeft, legFrontRight, legBackLeft, legBackRight, head },
+    };
+  },
+};
+
+export const MOB_TYPES = [ZOMBIE, SKELETON, SPIDER, CREEPER, PIG, COW, SHEEP, CHICKEN, SUSTINGUS, WOLF];
 
 /** Natives of the Comb. Spawned there instead of the overworld set. */
 export const COMB_MOB_TYPES = [COMB_MITE, COMB_DRIFTER, COMB_STALKER, COMB_GRUB];

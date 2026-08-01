@@ -163,6 +163,26 @@ export const TILE = {
   AMBER_ITEM: 202,
   ROYAL_JELLY: 203,
   SHRINE_COMPASS: 204,
+  SUSTINGUS_JELLY: 205,
+  ROCKET: 206,
+  SKATEBOARD: 207,
+
+  // --- Rails, records, plates and food --------------------------------------
+  RAIL: 208,
+  SIGN: 209,
+  JUKEBOX_TOP: 210,
+  JUKEBOX_SIDE: 211,
+  PRESSURE_PLATE: 212,
+  MUSHROOM_RED: 213,
+  MUSHROOM_BROWN: 214,
+  BOAT: 215,
+  BOWL: 216,
+  MUSHROOM_STEW: 217,
+  APPLE: 218,
+  GOLDEN_APPLE: 219,
+  DISC_DRIFT: 220,
+  DISC_HOLLOW: 221,
+  DISC_GRIND: 222,
 
   // --- The Comb -------------------------------------------------------------
   COMB_RESIN: 173,
@@ -252,6 +272,14 @@ export const SHAPES = {
   CROP: [[0.0625, 0, 0.0625, 0.9375, 0.875, 0.9375]],
   // A ladder is a thin panel against the -Z face.
   LADDER: [[0, 0, 0, 1, 1, 0.125]],
+  // A rail is a low bar you grind along. Solid, so you can stand on it, but
+  // barely raised — you should be able to roll onto one, not have to hop it.
+  RAIL: [[0, 0, 0, 1, 0.125, 1]],
+  // A plate is thinner still, and reads as pressed when you are standing on it.
+  PLATE: [[0.0625, 0, 0.0625, 0.9375, 0.0625, 0.9375]],
+  PLATE_PRESSED: [[0.0625, 0, 0.0625, 0.9375, 0.03125, 0.9375]],
+  // A sign is a panel on a post.
+  SIGN: [[0.0625, 0.5, 0.4375, 0.9375, 1, 0.5625], [0.4375, 0, 0.4375, 0.5625, 0.5, 0.5625]],
 };
 
 /** Height of a shape's tallest box, used for step-up and headroom checks. */
@@ -501,11 +529,26 @@ export const ITEM_ID = {
   ROYAL_JELLY: 170,
   SHRINE_COMPASS: 171,
 
-  // Gear runs are 30 and 24 wide. They have moved twice now — once for the hoe,
-  // once to make room for named items — and saves remap by *name*, so this is
-  // safe as long as no name changes.
-  TOOL_BASE: 176,   // 176..205 (5 kinds x 6 materials)
-  ARMOR_BASE: 208,  // 208..231 (4 pieces x 6 material slots)
+  // --- Sustingus, rockets, skateboard ---------------------------------------
+  SUSTINGUS_JELLY: 172,
+  ROCKET: 173,
+  SKATEBOARD: 174,
+
+  // --- Boats, food and records ----------------------------------------------
+  BOAT: 175,
+  BOWL: 176,
+  MUSHROOM_STEW: 177,
+  APPLE: 178,
+  GOLDEN_APPLE: 179,
+  DISC_DRIFT: 180,
+  DISC_HOLLOW: 181,
+  DISC_GRIND: 182,
+
+  // Gear runs are 30 and 24 wide. They have moved three times now — for the
+  // hoe, for named-item room, and again here — and saves remap by *name*, so
+  // this is safe as long as no name changes.
+  TOOL_BASE: 184,   // 184..213 (5 kinds x 6 materials)
+  ARMOR_BASE: 216,  // 216..239 (4 pieces x 6 material slots)
 };
 
 // ---------------------------------------------------------------------------
@@ -935,6 +978,13 @@ for (const [leaf, sapling] of [
   ];
 }
 
+/**
+ * Only oak drops apples, and rarely — it should feel like a find rather than a
+ * reason to farm leaves, and it gives the three tree species something to tell
+ * them apart beyond colour.
+ */
+LEAVES.bonusDrops.push({ id: ITEM_ID.APPLE, chance: 0.035, min: 1, max: 1 });
+
 /** Blocks that hold leaves up. A leaf too far from one of these decays. */
 export const LEAF_SUPPORTS = new Set([LOG.id, ACACIA_LOG.id, SPRUCE_LOG.id]);
 
@@ -1099,6 +1149,66 @@ export const MOSSY_COBBLE = defineBlock(81, 'mossy_cobblestone', {
   toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
 });
 
+// ---------------------------------------------------------------------------
+// Rails, records, plates, signs and mushrooms
+// ---------------------------------------------------------------------------
+
+/**
+ * A grind rail.
+ *
+ * Solid so you can stand on it, but only an eighth of a block tall so you roll
+ * onto one rather than having to hop it — the whole point is that a line of
+ * rails is something you ride, not an obstacle.
+ */
+export const RAIL = defineBlock(103, 'rail', {
+  displayName: 'Grind Rail', tiles: TILE.RAIL, hardness: 0.7,
+  toolType: 'pickaxe', shape: SHAPES.RAIL, opaque: false,
+});
+
+/** Holds four lines of whatever you type. Text lives in a block entity. */
+export const SIGN = defineBlock(104, 'sign', {
+  displayName: 'Sign', tiles: TILE.SIGN, hardness: 0.6, toolType: 'axe',
+  shape: SHAPES.SIGN, opaque: false, solid: false,
+});
+
+/** Plays a record. Which record is playing lives in a block entity. */
+export const JUKEBOX = defineBlock(105, 'jukebox', {
+  displayName: 'Jukebox', hardness: 1.6, toolType: 'axe',
+  tiles: { top: TILE.JUKEBOX_TOP, bottom: TILE.PLANKS, side: TILE.JUKEBOX_SIDE },
+});
+
+/**
+ * Two blocks rather than one block with a flag: the pressed state is visible,
+ * so making it the id means it meshes, saves and syncs to the worker for free —
+ * the same trick the door and the throne use.
+ */
+export const PRESSURE_PLATE = defineBlock(106, 'pressure_plate', {
+  displayName: 'Pressure Plate', tiles: TILE.PRESSURE_PLATE, hardness: 0.5,
+  toolType: 'axe', shape: SHAPES.PLATE, opaque: false, solid: false,
+});
+
+export const PRESSURE_PLATE_PRESSED = defineBlock(107, 'pressure_plate_pressed', {
+  displayName: 'Pressure Plate', tiles: TILE.PRESSURE_PLATE, hardness: 0.5,
+  toolType: 'axe', shape: SHAPES.PLATE_PRESSED, opaque: false, solid: false,
+  drops: 106, obtainable: false,
+});
+
+export function isPlate(id) {
+  return id === PRESSURE_PLATE.id || id === PRESSURE_PLATE_PRESSED.id;
+}
+
+export const MUSHROOM_RED = defineBlock(108, 'mushroom_red', {
+  displayName: 'Red Mushroom', tiles: TILE.MUSHROOM_RED, hardness: 0.1,
+  solid: false, opaque: false, cullSameType: false,
+  cross: true, crossHeight: 0.4,
+});
+
+export const MUSHROOM_BROWN = defineBlock(109, 'mushroom_brown', {
+  displayName: 'Brown Mushroom', tiles: TILE.MUSHROOM_BROWN, hardness: 0.1,
+  solid: false, opaque: false, cullSameType: false,
+  cross: true, crossHeight: 0.4,
+});
+
 /** Every log/leaf pair, so terrain can pick a tree style per biome. */
 export const TREE_WOODS = {
   oak: { log: LOG.id, leaves: LEAVES.id },
@@ -1133,6 +1243,12 @@ function defineItem(id, name, options = {}) {
     bucket: options.bucket ?? null,
     /** Held item that gives a bearing to the nearest Comb shrine. */
     locatesShrines: options.locatesShrines === true,
+    /** Health restored on top of the hunger, for the rare restorative foods. */
+    healing: options.healing ?? 0,
+    /** Item left in your hand after eating — the bowl a stew came in. */
+    eatReturns: options.eatReturns ?? 0,
+    /** Which tune this record plays in a jukebox; null for everything else. */
+    disc: options.disc ?? null,
   };
   ITEMS[id - ITEM_ID_BASE] = item;
   return item;
@@ -1189,6 +1305,88 @@ export const AMBER = defineItem(ITEM_ID.AMBER, 'amber', {
 export const ROYAL_JELLY = defineItem(ITEM_ID.ROYAL_JELLY, 'royal_jelly', {
   displayName: 'Royal Jelly', tile: TILE.ROYAL_JELLY, food: 8, saturation: 9,
 });
+
+/**
+ * Sustingus jelly.
+ *
+ * Nobody has established what a sustingus is, and the jelly is no more
+ * forthcoming. It is edible, it keeps indefinitely, and it burns with enough
+ * enthusiasm to make it the fuel every rocket in this game runs on.
+ */
+export const SUSTINGUS_JELLY = defineItem(ITEM_ID.SUSTINGUS_JELLY, 'sustingus_jelly', {
+  displayName: 'Sustingus Jelly', tile: TILE.SUSTINGUS_JELLY, food: 4, saturation: 5,
+});
+
+/** Goes up, makes a noise, makes some colours. Also shoves a skateboard along. */
+export const ROCKET = defineItem(ITEM_ID.ROCKET, 'rocket', {
+  displayName: 'Rocket', tile: TILE.ROCKET, maxStack: 16,
+});
+
+/**
+ * Right click to drop in and ride.
+ *
+ * Deliberately not a `tool`: that descriptor is what makes an item wear out
+ * when you mine or swing with it, and a board that snapped because you dug a
+ * hole while carrying it would be nonsense. It never breaks.
+ */
+export const SKATEBOARD = defineItem(ITEM_ID.SKATEBOARD, 'skateboard', {
+  displayName: 'Skateboard', tile: TILE.SKATEBOARD, maxStack: 1,
+});
+
+// ---------------------------------------------------------------------------
+// Boats, food and records
+// ---------------------------------------------------------------------------
+
+/** Right click water to set it down, right click the boat to get in. */
+export const BOAT = defineItem(ITEM_ID.BOAT, 'boat', {
+  displayName: 'Boat', tile: TILE.BOAT, maxStack: 1,
+});
+
+export const BOWL = defineItem(ITEM_ID.BOWL, 'bowl', {
+  displayName: 'Bowl', tile: TILE.BOWL,
+});
+
+/**
+ * Worth more than bread and made from something you find rather than farm, so
+ * there is a reason to pick up the mushrooms you walk past.
+ */
+export const MUSHROOM_STEW = defineItem(ITEM_ID.MUSHROOM_STEW, 'mushroom_stew', {
+  displayName: 'Mushroom Stew', tile: TILE.MUSHROOM_STEW,
+  food: 6, saturation: 7, maxStack: 1,
+  /** Eating it leaves the bowl behind. */
+  eatReturns: ITEM_ID.BOWL,
+});
+
+/** Falls out of oak leaves now and then. The cheapest food in the game. */
+export const APPLE = defineItem(ITEM_ID.APPLE, 'apple', {
+  displayName: 'Apple', tile: TILE.APPLE, food: 4, saturation: 3,
+});
+
+/**
+ * The one food that heals rather than just feeds. Expensive on purpose — eight
+ * gold for a heal is meant to be a decision, not a habit.
+ */
+export const GOLDEN_APPLE = defineItem(ITEM_ID.GOLDEN_APPLE, 'golden_apple', {
+  displayName: 'Golden Apple', tile: TILE.GOLDEN_APPLE,
+  food: 4, saturation: 10, healing: 6,
+});
+
+/**
+ * Records. Not craftable — they are dungeon and shrine loot, so a jukebox is a
+ * reason to go somewhere rather than a reason to stand at a bench.
+ */
+export const DISC_DRIFT = defineItem(ITEM_ID.DISC_DRIFT, 'disc_drift', {
+  displayName: 'Music Disc — Drift', tile: TILE.DISC_DRIFT, maxStack: 1, disc: 'drift',
+});
+export const DISC_HOLLOW = defineItem(ITEM_ID.DISC_HOLLOW, 'disc_hollow', {
+  displayName: 'Music Disc — Hollow', tile: TILE.DISC_HOLLOW, maxStack: 1, disc: 'hollow',
+});
+export const DISC_GRIND = defineItem(ITEM_ID.DISC_GRIND, 'disc_grind', {
+  displayName: 'Music Disc — Grind', tile: TILE.DISC_GRIND, maxStack: 1, disc: 'grind',
+});
+
+/** Every record, in the order the loot tables roll them. */
+export const MUSIC_DISCS = [DISC_DRIFT, DISC_HOLLOW, DISC_GRIND];
 
 /**
  * Points at the nearest shrine.

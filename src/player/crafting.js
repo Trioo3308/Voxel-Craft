@@ -18,6 +18,7 @@ import {
   COMBIUM_ORE, COMBIUM_BLOCK, COMB_BRICK,
   COMB_WAX, COMB_TILE, COMB_PILLAR, COMB_LANTERN, COMB_GLASS, LADDER,
   RESIN_TORCH, HIVE_WALL,
+  RAIL, SIGN, JUKEBOX, PRESSURE_PLATE, MUSHROOM_RED, MUSHROOM_BROWN,
   ITEM_ID, TOOL_KINDS, ARMOR_PIECES, ARMOR_MATERIAL_NAMES,
   toolItemId, armorItemId, getDisplayName, getThing,
 } from '../world/blocks.js';
@@ -148,6 +149,47 @@ shaped(['.A.', 'ACA', '.S.'],
 shaped(['R', 'S'], { R: ITEM_ID.COMB_RESIN, S: ITEM_ID.STICK },
        { id: RESIN_TORCH.id, count: 4 });
 shaped(['RR', 'RR'], { R: ITEM_ID.AMBER }, { id: HIVE_WALL.id, count: 4 });
+
+// --- Rockets and the board ---------------------------------------------------
+// Sustingus jelly turns out to burn extremely well. Nobody is quite sure why.
+shaped(['J', 'G', 'S'],
+       { J: ITEM_ID.SUSTINGUS_JELLY, G: ITEM_ID.GUNPOWDER, S: ITEM_ID.STICK },
+       { id: ITEM_ID.ROCKET, count: 3 });
+
+// A deck, two trucks, four wheels.
+shaped(['PPP', 'I.I'], { P: PLANKS.id, I: ITEM_ID.IRON_INGOT },
+       { id: ITEM_ID.SKATEBOARD, count: 1 });
+
+// Rails, so you can build somewhere to skate rather than only finding one.
+shaped(['I.I', 'ISI', 'I.I'], { I: ITEM_ID.IRON_INGOT, S: ITEM_ID.STICK },
+       { id: RAIL.id, count: 8 });
+
+// --- Boats, signs, jukeboxes and plates --------------------------------------
+
+shaped(['P.P', 'PPP'], { P: PLANKS.id }, { id: ITEM_ID.BOAT, count: 1 });
+shaped(['PPP', 'PPP', '.S.'], { P: PLANKS.id, S: ITEM_ID.STICK },
+       { id: SIGN.id, count: 3 });
+shaped(['PP'], { P: PLANKS.id }, { id: PRESSURE_PLATE.id, count: 1 });
+
+// A jukebox needs a diamond for the stylus, so it sits just past the point
+// where you have spare diamonds — a treat, not a stepping stone.
+shaped(['PPP', 'PDP', 'PPP'], { P: PLANKS.id, D: ITEM_ID.DIAMOND },
+       { id: JUKEBOX.id, count: 1 });
+
+// --- Food ---------------------------------------------------------------------
+
+shaped(['P.P', '.P.'], { P: PLANKS.id }, { id: ITEM_ID.BOWL, count: 4 });
+// Either mushroom will do, and so will one of each.
+for (const [a, b] of [[MUSHROOM_RED.id, MUSHROOM_BROWN.id],
+                      [MUSHROOM_RED.id, MUSHROOM_RED.id],
+                      [MUSHROOM_BROWN.id, MUSHROOM_BROWN.id]]) {
+  shapeless([a, b, ITEM_ID.BOWL], { id: ITEM_ID.MUSHROOM_STEW, count: 1 });
+}
+
+// Eight gold around an apple. Deliberately steep: this is the only food that
+// heals, and cheap healing would flatten every fight in the game.
+shaped(['GGG', 'GAG', 'GGG'], { G: ITEM_ID.GOLD_INGOT, A: ITEM_ID.APPLE },
+       { id: ITEM_ID.GOLDEN_APPLE, count: 1 });
 
 // --- Farming ----------------------------------------------------------------
 // Three wheat in a row. The first food you can make instead of hunt.
@@ -402,9 +444,10 @@ export function makeFurnaceState() {
 /**
  * Advance a furnace. Runs whether or not its UI is open, so ores keep smelting
  * while you wander off.
+ * @param onSmelted called with the item id each time one finishes cooking
  * @returns {boolean} true if anything changed (so the UI can redraw)
  */
-export function tickFurnace(state, dt) {
+export function tickFurnace(state, dt, onSmelted = null) {
   const before = state.burnRemaining > 0;
   let changed = false;
 
@@ -441,6 +484,9 @@ export function tickFurnace(state, dt) {
       if (state.input.count <= 0) state.input = null;
       if (state.output) state.output.count += recipe.count;
       else state.output = { id: recipe.id, count: recipe.count };
+      // Reported rather than acted on: this module has no idea what an
+      // achievement is, and should not learn.
+      if (onSmelted) onSmelted(recipe.id);
     }
   } else if (state.cookProgress > 0) {
     // Progress decays when the fire goes out, rather than freezing forever.

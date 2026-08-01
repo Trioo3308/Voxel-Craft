@@ -18,16 +18,20 @@ import { World } from './world/world.js';
 import { Player } from './player/player.js';
 import { EntityManager } from './entities/entityManager.js';
 import { ParticleSystem } from './entities/particles.js';
+import { SignRenderer } from './world/signRenderer.js';
 import { Weather, WEATHER } from './engine/weather.js';
 import { HUD } from './ui/hud.js';
 import { SettingsScreen } from './ui/settings.js';
 import { TerrainGenerator } from './world/terrain.js';
 import { SaveManager, captureState, applyState, SAVE_FORMAT_VERSION } from './world/save.js';
 import { makeFurnaceState } from './player/crafting.js';
+import { Statistics, Achievements } from './player/progress.js';
 import {
   isLiquid, GRASS, DIRT, SAND, SNOW, STONE, DRY_GRASS, PODZOL, SWAMP_GRASS,
   CRAFTING_TABLE, isFurnaceBlock, isDoor, DOOR_CLOSED, DOOR_OPEN, BED, CHEST,
+  isPlate, PRESSURE_PLATE, PRESSURE_PLATE_PRESSED, SIGN, JUKEBOX, MUSIC_DISCS,
   PORTAL, COMBIUM_BLOCK, THRONE, THRONE_AWAKENED, ITEM_ID,
+  LOG, ACACIA_LOG, SPRUCE_LOG, DIAMOND_ORE, FURNACE, getItem, getDisplayName,
 } from './world/blocks.js';
 import { audio } from './engine/audio.js';
 import { DIMENSIONS, dimensionInfo } from './world/dimensions.js';
@@ -85,6 +89,17 @@ export class Game {
     this.player = new Player(null, this.renderer.camera, this.input, { x: 0.5, y: 100, z: 0.5 });
     this.entities = new EntityManager(this.renderer.scene, null);
     this.entities.onItemPickup = () => audio.pickup();
+
+    // Progress is per-world and saved with it, but the objects live for the
+    // lifetime of the game and are reloaded on each session — same as the
+    // player, so the HUD can hold a reference that never goes stale.
+    this.stats = new Statistics();
+    this.achievements = new Achievements(this.stats);
+    this.achievements.onUnlock = (achievement) => {
+      this.hud.showToast(`Achievement: ${achievement.title}`);
+      audio.achievement();
+    };
+
     this.hud = new HUD(this);
     // Remembers where settings was opened from, so closing returns there.
     this._settingsReturnState = 'menu';
@@ -109,6 +124,16 @@ export class Game {
      * prefixed "d:". Saved with the world so loot is never re-rolled.
      */
     this._shrinesDone = new Set();
+    /**
+     * Plates currently held down, mapped to the doors each one opened. Not
+     * saved: a plate with nobody on it is up, which is what a fresh load
+     * produces anyway.
+     */
+    this._platesDown = new Map();
+    /** Where the record currently playing is coming from, for its falloff. */
+    this._playingJukebox = null;
+    /** Last sampled position, for the distance-travelled counter. */
+    this._lastProgressPos = null;
     this._shrineTimer = 0;
     this._dungeonTimer = 0;
     this._hiveTimer = 0;
@@ -209,11 +234,85 @@ export class Game {
       if (this.particles) this.particles.splash(p.x, p.y, p.z);
     };
 
+    // Stepping on or off the board. The run total is only banked on dismount,
+    // so this is also where a finished run gets announced.
+    this.player.onBoardChanged = (riding, banked = 0) => {
+      const p = this.player.position;
+      const ground = this.world.getBlock(Math.floor(p.x), Math.floor(p.y) - 1, Math.floor(p.z));
+      if (this.particles) this.particles.footDust(p.x, p.y, p.z, ground, 8, 0.5);
+      if (riding) {
+        this.hud.showToast('Rolling — jump and steer for tricks');
+        this.achievements.unlock('skater');
+      } else if (banked > 0) {
+        this.hud.showToast(`Run banked: ${banked} style`);
+      }
+    };
+
+    // Watched rather than pushed: the board is a scoring machine that reports
+    // what happened, and this is the one place that turns that into progress.
+    this.player.onTrickLanded = (tricks) => {
+      for (const trick of tricks) {
+        if (trick.name === '720 Spin') this.achievements.unlock('sevenTwenty');
+        if (trick.name.includes('Grind')) this.achievements.unlock('grinder');
+      }
+    };
+
+    // Feeding one is the whole interaction, so it gets a line of its own.
+    this.player.onSustingusAttuned = (mob) => {
+      this.hud.showToast('The sustingus is attuned to you');
+      if (this.particles) {
+        this.particles.sustain(mob.position.x, mob.position.y + 0.8, mob.position.z, 18);
+      }
+    };
+
     this.player.survival.onDamage((amount) => {
-      if (!this.particles || amount <= 0) return;
-      const p = this.player.eyePosition;
-      this.particles.damage(p.x, p.y - 0.4, p.z, 6);
+      if (amount <= 0) return;
+      if (this.particles) {
+        const p = this.player.eyePosition;
+        this.particles.damage(p.x, p.y - 0.4, p.z, 6);
+      }
+      // Your wolves go for whatever just hit you. Set here rather than in the
+      // wolf's own AI because this is the only place that knows who it was.
+      const attacker = this.player.survival.lastDamageSource;
+      if (!attacker || !this.entities) return;
+      for (const mob of this.entities.mobs) {
+        if (!mob.tamed || mob.sitting || mob.dead) continue;
+        if (mob.horizontalDistanceTo(this.player.position) > mob.type.followRadius) continue;
+        // `lastDamageSource` is a mob *type*; find the nearest one of them.
+        mob.memory.target = this._nearestMobOfType(attacker, this.player.position, 12);
+      }
     });
+
+    this.player.onMobTamed = (mob) => {
+      this.hud.showToast(`${mob.type.displayName} tamed — right click to sit or follow`);
+      this.achievements.unlock('tamer');
+      if (this.particles) {
+        this.particles.sustain(mob.position.x, mob.position.y + 0.9, mob.position.z, 14);
+      }
+    };
+
+    this.player.onMobSit = (mob) => {
+      this.hud.showToast(mob.sitting ? 'Staying' : 'Following');
+    };
+
+    this.player.onBlockPlaced = () => this.stats.record('blocksPlaced');
+
+    this.player.onFishCaught = (spot) => {
+      this.stats.record('fishCaught');
+      this.achievements.unlock('angler');
+      if (this.particles && spot) this.particles.splash(spot.x, spot.y, spot.z);
+    };
+
+    this.player.onSheared = () => this.achievements.unlock('shepherd');
+
+    this.player.onBoatChanged = (aboard) => {
+      const p = this.player.position;
+      if (this.particles) this.particles.splash(p.x, p.y, p.z);
+      if (aboard) {
+        this.hud.showToast('Aboard — Space to step out');
+        this.achievements.unlock('sailor');
+      }
+    };
 
     // The entity manager already rolled the boss loot table; this is just the
     // fanfare, and it retires the shrine so the Warden does not come back.
@@ -221,6 +320,12 @@ export class Game {
       this.hud.showToast(`${mob.type.displayName} falls`);
       audio.explosion(mob.distanceTo(this.player.eyePosition));
       if (mob.memory.shrineKey) this._shrinesDone.add(mob.memory.shrineKey);
+      this.achievements.unlock('warden');
+    };
+
+    this.entities.onMobKilled = () => {
+      this.stats.record('mobsDefeated');
+      this.achievements.checkAll();
     };
 
     // Walking away must not cost you the boss: releasing the shrine key lets
@@ -255,6 +360,19 @@ export class Game {
         audio.door(opening);
         return true;
       }
+
+      // --- Signs: read, or edit if it is still blank ------------------------
+      if (blockId === SIGN.id) {
+        const entity = this.world.getBlockEntity(x, y, z, () => ({
+          type: 'sign',
+          state: { lines: ['', '', '', ''] },
+        }));
+        this._openContainer(() => this.hud.openSign(entity.state));
+        return true;
+      }
+
+      // --- Jukebox: put a record in, or take one out ------------------------
+      if (blockId === JUKEBOX.id) return this._useJukebox(x, y, z);
 
       // --- Chests -----------------------------------------------------------
       if (blockId === CHEST.id) {
@@ -291,6 +409,9 @@ export class Game {
       if (!target) return;
       if (this.particles) this.particles.blockBreak(target.x, target.y, target.z, blockId);
 
+      this.stats.record('blocksMined');
+      this._notePlayerMilestone('mined', blockId, target);
+
       // Whatever will not fit falls on the floor instead of evaporating.
       // `addExisting` reports the leftover count, and ignoring it meant breaking
       // a full furnace or chest with a full inventory destroyed the difference.
@@ -309,6 +430,11 @@ export class Game {
         for (const field of ['input', 'fuel', 'output']) recover(entity.state[field]);
       } else if (entity && blockId === CHEST.id) {
         for (const stack of entity.state.slots) recover(stack);
+      } else if (entity && blockId === JUKEBOX.id && entity.state.disc) {
+        // Breaking a loaded jukebox gives the record back and stops the music.
+        recover({ id: entity.state.disc, count: 1 });
+        audio.stopMusic();
+        this._playingJukebox = null;
       }
 
       // Breaking part of a frame collapses the whole portal, so a portal can
@@ -344,6 +470,7 @@ export class Game {
     }
     audio.ignite();
     this.hud.showToast('The portal opens');
+    this.achievements.unlock('portal');
     return true;
   }
 
@@ -389,9 +516,15 @@ export class Game {
     this.player._portalArmed = true;
 
     this._applyDimensionLook();
+    // Signs belong to the dimension they are in; the other world's meshes must
+    // not be left hanging in this one.
+    if (this.signRenderer) this.signRenderer.clear();
     this._setState('playing');
     this.input.requestLock();
     this.hud.showToast(dimensionInfo(to).name);
+    if (to === DIMENSIONS.COMB) this.achievements.unlock('comb');
+    // A teleport is not a walk, so the distance counter must not bank it.
+    this._lastProgressPos = null;
     this._travelling = false;
     this.saveWorld();
   }
@@ -492,6 +625,48 @@ export class Game {
    * the Crown, and raises your maximum health for good. One per throne, and
    * thrones are hundreds of blocks apart, so each one is an event.
    */
+  /**
+   * A jukebox holds exactly one record.
+   *
+   * Empty and holding a record: it goes in and starts playing. Loaded: the
+   * record pops out and the music stops. One button, both directions — the same
+   * shape as every other right-click interaction in the game.
+   */
+  _useJukebox(x, y, z) {
+    const entity = this.world.getBlockEntity(x, y, z, () => ({
+      type: 'jukebox',
+      state: { disc: 0 },
+    }));
+
+    if (entity.state.disc) {
+      // Eject. Whatever will not fit lands on the floor rather than vanishing.
+      const id = entity.state.disc;
+      entity.state.disc = 0;
+      audio.stopMusic();
+      this._playingJukebox = null;
+      const left = this.player.inventory.add(id, 1);
+      if (left > 0) this.player.throwItem(id, left, this.entities);
+      this.hud.showToast(`${getDisplayName(id)} ejected`);
+      return true;
+    }
+
+    const slot = this.player.inventory.getSelected();
+    const item = slot ? getItem(slot.id) : null;
+    if (!item || !item.disc) {
+      this.hud.showToast('The jukebox is empty');
+      return true;
+    }
+
+    entity.state.disc = slot.id;
+    this.player.inventory.consumeSelected(1);
+    audio.playMusic(item.disc);
+    this._playingJukebox = { x: x + 0.5, y: y + 0.5, z: z + 0.5 };
+    this.hud.showToast(`Now playing: ${item.displayName}`);
+    this.stats.record('discsPlayed');
+    this.achievements.unlock('dj');
+    return true;
+  }
+
   _useThrone(blockId, x, y, z) {
     if (blockId === THRONE_AWAKENED.id) {
       this.hud.showToast('The throne is already awake');
@@ -517,6 +692,7 @@ export class Game {
     audio.ignite();
     audio.mobSound({ name: 'throne', voice: 'hum', pitch: 120, duration: 1.4 }, 'idle', 0);
     this.hud.showToast('The throne awakens. You are crowned.');
+    this.achievements.unlock('throne');
 
     if (this.particles) {
       for (let i = 0; i < 5; i++) this.particles.portalMotes(x, y + 1, z, 6);
@@ -665,6 +841,150 @@ export class Game {
     warden.memory.home = { x: wx + 0.5, y: y + 1, z: wz + 0.5 };
     warden.memory.shrineKey = key;
     this.hud.showToast('Something guards this place');
+  }
+
+  /** Nearest living mob of a given type within `radius`, or null. */
+  _nearestMobOfType(type, point, radius) {
+    let best = null;
+    let bestDistance = radius;
+    for (const mob of this.entities.mobs) {
+      if (mob.dead || mob.type !== type) continue;
+      const distance = mob.horizontalDistanceTo(point);
+      if (distance >= bestDistance) continue;
+      bestDistance = distance;
+      best = mob;
+    }
+    return best;
+  }
+
+  /**
+   * The counters that only a running frame can see: how far you have walked,
+   * how many days you have lasted, and how loud the jukebox should be.
+   */
+  _updateProgress(dt) {
+    const p = this.player.position;
+    if (this._lastProgressPos) {
+      // Horizontal only, so standing in a lift does not count as a journey.
+      const moved = Math.hypot(p.x - this._lastProgressPos.x, p.z - this._lastProgressPos.z);
+      // Ignore teleports (portals, respawns) — they are not travel.
+      if (moved < 4) this.stats.record('distance', moved);
+      this._lastProgressPos.set(p.x, p.y, p.z);
+    } else {
+      this._lastProgressPos = p.clone();
+    }
+
+    this.stats.recordBest('days', Math.floor(this.sky.dayCount ?? 0));
+    this.stats.recordBest('bestCombo', this.player.board.lastBanked ?? 0);
+    this.stats.values.style = this.player.board.totalStyle;
+    this.achievements.checkAll();
+
+    // The record fades with distance from the box that is playing it.
+    if (audio.musicPlaying) {
+      if (this._playingJukebox) {
+        const j = this._playingJukebox;
+        audio.setMusicDistance(Math.hypot(p.x - j.x, p.y - j.y, p.z - j.z));
+      }
+    }
+  }
+
+  /**
+   * Turn a game event into whatever achievements it implies.
+   *
+   * Collected here rather than scattered through the handlers so the list of
+   * "what counts" is one thing to read, and so adding an achievement does not
+   * mean hunting through main.js for the right call site.
+   */
+  _notePlayerMilestone(kind, id, target) {
+    if (kind === 'mined') {
+      if (id === LOG.id || id === ACACIA_LOG.id || id === SPRUCE_LOG.id) {
+        this.achievements.unlock('wood');
+      }
+      if (id === DIAMOND_ORE.id) this.achievements.unlock('diamonds');
+      if (target && target.y <= 5) this.achievements.unlock('deep');
+    } else if (kind === 'crafted') {
+      this.stats.record('itemsCrafted');
+      if (id === CRAFTING_TABLE.id) this.achievements.unlock('bench');
+      if (id === FURNACE.id) this.achievements.unlock('furnace');
+      if (id === ITEM_ID.BREAD) this.achievements.unlock('farmer');
+      const item = getItem(id);
+      if (item && item.tool && item.tool.kind === 'pickaxe') this.achievements.unlock('pickaxe');
+    } else if (kind === 'smelted') {
+      if (id === ITEM_ID.IRON_INGOT) this.achievements.unlock('iron');
+      if (id === ITEM_ID.COMBIUM_INGOT) this.achievements.unlock('combium');
+    }
+    this.achievements.checkAll();
+  }
+
+  /**
+   * Pressure plates.
+   *
+   * A plate remembers the doors *it* opened and closes exactly those, so a door
+   * you opened by hand is not slammed shut when someone steps off a plate three
+   * blocks away. Mobs press plates too — a wandering pig letting itself in is
+   * the sort of thing worth keeping.
+   */
+  _updatePressurePlates() {
+    const pressed = new Set();
+    // The cell the feet are *in*, not the one below them: a plate is a thin
+    // non-solid block you stand inside, so you rest on whatever is under it and
+    // occupy the plate's own cell.
+    const feet = (pos) => `${Math.floor(pos.x)},${Math.floor(pos.y + 0.01)},${Math.floor(pos.z)}`;
+
+    const standers = [this.player.position];
+    if (this.entities) {
+      for (const mob of this.entities.mobs) if (!mob.dead) standers.push(mob.position);
+    }
+    for (const pos of standers) {
+      const key = feet(pos);
+      const [x, y, z] = key.split(',').map(Number);
+      if (isPlate(this.world.getBlock(x, y, z))) pressed.add(key);
+    }
+
+    // Newly stepped on.
+    for (const key of pressed) {
+      if (this._platesDown.has(key)) continue;
+      const [x, y, z] = key.split(',').map(Number);
+      this.world.setBlock(x, y, z, PRESSURE_PLATE_PRESSED.id);
+      this._platesDown.set(key, this._setNeighbourDoors(x, y, z, true));
+      audio.door(true);
+    }
+
+    // Newly stepped off.
+    for (const [key, opened] of this._platesDown) {
+      if (pressed.has(key)) continue;
+      const [x, y, z] = key.split(',').map(Number);
+      // Only restore a plate that is still a plate — it may have been mined.
+      if (isPlate(this.world.getBlock(x, y, z))) {
+        this.world.setBlock(x, y, z, PRESSURE_PLATE.id);
+        audio.door(false);
+      }
+      for (const [dx, dy, dz] of opened) {
+        if (this.world.getBlock(dx, dy, dz) === DOOR_OPEN.id) {
+          this.world.setBlock(dx, dy, dz, DOOR_CLOSED.id);
+        }
+      }
+      this._platesDown.delete(key);
+    }
+  }
+
+  /**
+   * Open or close every door touching a plate.
+   * @returns the positions actually changed, so they can be undone later.
+   */
+  _setNeighbourDoors(x, y, z, opening) {
+    const changed = [];
+    const want = opening ? DOOR_OPEN.id : DOOR_CLOSED.id;
+    const from = opening ? DOOR_CLOSED.id : DOOR_OPEN.id;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      // Doors are two tall, and a plate can sit level with either half.
+      for (const dy of [0, 1, -1]) {
+        const bx = x + dx, by = y + dy, bz = z + dz;
+        if (this.world.getBlock(bx, by, bz) !== from) continue;
+        this.world.setBlock(bx, by, bz, want);
+        changed.push([bx, by, bz]);
+      }
+    }
+    return changed;
   }
 
   /**
@@ -998,8 +1318,11 @@ export class Game {
     // with it rather than carried over.
     if (this.particles) this.particles.dispose();
     this.particles = new ParticleSystem(this.renderer.scene, this.world);
+    if (this.signRenderer) this.signRenderer.dispose();
+    this.signRenderer = new SignRenderer(this.renderer.scene, this.world);
     this.entities.particles = this.particles;
     this.world.onLeafDecayed = this.world_onLeafDecayed;
+    this.world.onSmelted = (itemId) => this._notePlayerMilestone('smelted', itemId, null);
 
     // Per-world state that must not leak across sessions. The shrine oracle is
     // seeded, so a stale one would point at the previous world's shrines.
@@ -1007,6 +1330,18 @@ export class Game {
     this._shrineCacheKey = null;
     this._shrineCache = null;
     this._shrinesDone = new Set();
+    this._platesDown = new Map();
+    this._lastProgressPos = null;
+    this._playingJukebox = null;
+    audio.stopMusic();
+    // Progress is per-world. `applyState` fills these back in for a saved
+    // world; a new one starts blank rather than inheriting the last one's.
+    this.stats = new Statistics();
+    this.achievements.stats = this.stats;
+    this.achievements.earned = new Set();
+    this.player.board.totalStyle = 0;
+    this.player.board.lastBanked = 0;
+    this.sky.dayCount = 0;
     this._shrineTimer = 0;
     this._dungeonTimer = 0;
     this._hiveTimer = 0;
@@ -1189,6 +1524,7 @@ export class Game {
   }
 
   _onDeath(cause) {
+    this.stats.record('deaths');
     const messages = {
       fall: 'You hit the ground too hard.',
       mob: 'You were slain.',
@@ -1246,7 +1582,12 @@ export class Game {
     const playing = this.state === 'playing';
 
     // --- Global hotkeys ----------------------------------------------------
-    if (playing || this.state === 'container') {
+    // Typing in the sign editor must not also fire hotkeys: every letter of it
+    // is somebody's keybind. Escape still closes, because otherwise a text
+    // field would be a trap.
+    if (input.textFieldFocused && this.state === 'container') {
+      if (input.wasPressed('Escape')) this._closeContainer();
+    } else if (playing || this.state === 'container') {
       if (input.actionWasPressed('debug')) this.hud.toggleDebug();
 
       if (input.actionWasPressed('mute')) {
@@ -1270,7 +1611,10 @@ export class Game {
         }
       }
 
-      if (input.actionWasPressed('inventory')) {
+      if (input.actionWasPressed('progress')) {
+        if (this.state === 'container') this._closeContainer();
+        else this._openContainer(() => this.hud.openProgress());
+      } else if (input.actionWasPressed('inventory')) {
         if (this.state === 'container') this._closeContainer();
         else this._openContainer(() => this.hud.openInventory());
       } else if (input.wasPressed('Escape') && this.state === 'container') {
@@ -1294,7 +1638,10 @@ export class Game {
       this._maintainShrines(dt);
       this._maintainHives(dt);
       this._maintainDungeons(dt);
+      this._updatePressurePlates();
       this._updateEffects(dt);
+      this._updateProgress(dt);
+      if (this.signRenderer) this.signRenderer.update(dt, this.player.position, SIGN.id);
 
       this._autosaveTimer += dt;
       if (this._autosaveTimer >= AUTOSAVE_INTERVAL) {

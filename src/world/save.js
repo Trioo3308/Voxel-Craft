@@ -204,6 +204,8 @@ export async function captureState(game, meta = {}) {
       saturation: player.survival.saturation,
       /** Raised permanently by awakening a Comb throne. */
       maxHealth: player.survival.maxHealth,
+      /** Lifetime skateboard style points. A score, so it never resets. */
+      style: player.board ? player.board.totalStyle : 0,
     },
 
     inventory: {
@@ -218,6 +220,11 @@ export async function captureState(game, meta = {}) {
     },
 
     time: game.sky.time,
+    /** Dawns survived, for the statistics screen. */
+    dayCount: game.sky.dayCount,
+    /** Achievements earned, by name — never by index. See progress.js. */
+    achievements: game.achievements ? game.achievements.serialize() : [],
+    stats: game.stats ? game.stats.serialize() : {},
     /** Which dimension the player logged out in. */
     dimension: game.world.dimension,
     /** `{ [dimensionId]: chunkEditList }` — see World.exportEdits. */
@@ -261,6 +268,11 @@ export async function applyState(game, save) {
   player.survival.hunger = p.hunger;
   player.survival.saturation = p.saturation;
   player.survival.dead = false;
+  // Old saves have no score; a fresh board starts at zero anyway.
+  if (player.board) {
+    player.board.dismount();
+    player.board.totalStyle = p.style ?? 0;
+  }
 
   const restoreSlots = (saved, target) => {
     for (let i = 0; i < target.length; i++) {
@@ -278,6 +290,11 @@ export async function applyState(game, save) {
   player.inventory.touch();
 
   game.sky.setTime(save.time ?? 0.1);
+  game.sky.dayCount = save.dayCount ?? 0;
+
+  // Progress predates neither field, so old saves simply start empty.
+  if (game.achievements) game.achievements.load(save.achievements);
+  if (game.stats) game.stats.load(save.stats);
 
   // Remap the block edits before handing them to the worker. Every dimension's
   // edits go through the same palette, since ids are global.
@@ -314,6 +331,14 @@ export async function applyState(game, save) {
         const id = translate(stack.id);
         return id === AIR ? null : { ...stack, id };
       });
+    }
+
+    // The record in a jukebox is an item id like any other, so it remaps too.
+    // A record that no longer exists leaves the box empty rather than holding
+    // a stale number that would resolve to something else entirely.
+    if (typeof state.disc === 'number' && state.disc !== 0) {
+      const id = translate(state.disc);
+      state.disc = id === AIR ? 0 : id;
     }
 
     game.world.blockEntities.set(entity.key, { type: entity.type, state, wasLit: false });

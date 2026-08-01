@@ -1383,6 +1383,250 @@ export const PAINTERS = {
     set(7, 8, 255, 236, 180);
   },
 
+  [TILE.SUSTINGUS_JELLY]: (set, rnd) => {
+    // A pale wobbling glob that refuses to hold a shape.
+    for (let y = 4; y < 13; y++) {
+      const inset = y === 4 ? 5 : y === 5 ? 3 : y === 12 ? 4 : 2;
+      for (let x = inset; x < T - inset; x++) {
+        const d = (rnd() - 0.5) * 20;
+        set(x, y, 216 + d, 226 + d, 206 + d);
+      }
+    }
+    // Three dark specks, because it has three of everything else too.
+    set(6, 7, 60, 66, 62); set(10, 8, 60, 66, 62); set(8, 10, 60, 66, 62);
+    for (let x = 5; x < 9; x++) set(x, 5, 240, 248, 232);
+  },
+
+  [TILE.ROCKET]: (set, rnd) => {
+    // A tube with a nose cone and fins, plus a fuse.
+    for (let y = 5; y < 13; y++) {
+      for (let x = 6; x < 10; x++) {
+        const d = (rnd() - 0.5) * 14;
+        set(x, y, x < 8 ? 226 + d : 196 + d, 216 + d, 208 + d);
+      }
+    }
+    // Nose.
+    for (let i = 0; i < 3; i++) {
+      for (let x = 6 + i; x < 10 - i; x++) set(x, 4 - i, 208, 62, 68);
+    }
+    // Fins and fuse.
+    for (let y = 10; y < 13; y++) { set(5, y, 178, 54, 60); set(10, y, 178, 54, 60); }
+    for (let y = 13; y < 16; y++) set(8, y, 120, 100, 70);
+    set(8, 15, 255, 200, 90);
+  },
+
+  [TILE.SKATEBOARD]: (set, rnd) => {
+    // A deck seen at an angle, with trucks and wheels hanging off it.
+    const deckY = (x) => 9 - Math.round((x - 2) * 0.35);
+    for (let x = 2; x < 14; x++) {
+      const y = deckY(x);
+      const d = (rnd() - 0.5) * 16;
+      // Grip tape on top, then the two plies of the deck itself.
+      set(x, y - 1, 52 + d, 48 + d, 52 + d);
+      set(x, y, 168 + d, 116 + d, 66 + d);
+      set(x, y + 1, 140 + d, 94 + d, 52 + d);
+    }
+    // Kicked-up tail and nose.
+    set(1, deckY(2), 178, 126, 74); set(1, deckY(2) - 1, 178, 126, 74);
+    set(14, deckY(14), 178, 126, 74); set(14, deckY(14) - 1, 178, 126, 74);
+
+    // Wheels hang directly under the deck, one truck-height below it, so the
+    // board reads as one object rather than a plank with dice under it.
+    for (const wx of [4, 11]) {
+      const y = deckY(wx) + 2;
+      set(wx, y, 150, 150, 158); set(wx + 1, y, 150, 150, 158);       // truck
+      set(wx, y + 1, 236, 228, 208); set(wx + 1, y + 1, 236, 228, 208); // wheel
+      set(wx, y + 2, 198, 190, 172); set(wx + 1, y + 2, 198, 190, 172);
+    }
+  },
+
+  // --- Rails, records, plates and food --------------------------------------
+
+  [TILE.RAIL]: (set, rnd) => {
+    // Sleepers under a pair of polished steel bars, seen from above.
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 12;
+      set(x, y, 96 + d, 74 + d, 48 + d);
+    }
+    for (let y = 0; y < T; y += 4) {
+      for (let x = 0; x < T; x++) {
+        const d = (rnd() - 0.5) * 10;
+        set(x, y, 122 + d, 94 + d, 60 + d);
+      }
+    }
+    for (const x of [4, 11]) {
+      for (let y = 0; y < T; y++) {
+        const d = (rnd() - 0.5) * 16;
+        set(x, y, 190 + d, 194 + d, 202 + d);
+        set(x + 1, y, 148 + d, 152 + d, 160 + d);
+      }
+    }
+  },
+
+  [TILE.SIGN]: (set, rnd) => {
+    // A pale plank with scratched-on lines of writing.
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 14;
+      set(x, y, 190 + d, 152 + d, 96 + d);
+    }
+    for (let x = 0; x < T; x++) { set(x, 0, 150, 116, 70); set(x, T - 1, 150, 116, 70); }
+    for (const y of [4, 7, 10]) {
+      const width = 4 + Math.floor(rnd() * 7);
+      for (let x = 3; x < 3 + width; x++) set(x, y, 92, 68, 40);
+    }
+  },
+
+  [TILE.JUKEBOX_TOP]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 14;
+      set(x, y, 122 + d, 84 + d, 54 + d);
+    }
+    // The record itself, with a light label at the spindle.
+    for (let y = 2; y < 14; y++) for (let x = 2; x < 14; x++) {
+      const dx = x - 7.5, dy = y - 7.5, r = Math.hypot(dx, dy);
+      if (r > 5.6) continue;
+      if (r < 1.4) { set(x, y, 214, 202, 172); continue; }
+      // Grooves.
+      const g = Math.round(r) % 2 === 0 ? 44 : 28;
+      set(x, y, g, g, g + 6);
+    }
+  },
+
+  [TILE.JUKEBOX_SIDE]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 14;
+      set(x, y, 108 + d, 74 + d, 48 + d);
+    }
+    // A speaker grille and a brass corner band.
+    for (let y = 4; y < 12; y++) for (let x = 4; x < 12; x++) {
+      const on = (x + y) % 2 === 0;
+      set(x, y, on ? 52 : 38, on ? 46 : 34, on ? 42 : 32);
+    }
+    for (let x = 0; x < T; x++) { set(x, 1, 186, 146, 74); set(x, 14, 186, 146, 74); }
+  },
+
+  [TILE.PRESSURE_PLATE]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const edge = x < 2 || y < 2 || x > 13 || y > 13;
+      const d = (rnd() - 0.5) * 12;
+      set(x, y, (edge ? 128 : 164) + d, (edge ? 92 : 120) + d, (edge ? 56 : 72) + d);
+    }
+  },
+
+  [TILE.MUSHROOM_RED]: (set, rnd) => {
+    // Cap on a short pale stalk.
+    for (let y = 9; y < 15; y++) for (let x = 6; x < 10; x++) {
+      const d = (rnd() - 0.5) * 12;
+      set(x, y, 226 + d, 220 + d, 202 + d);
+    }
+    for (let y = 4; y < 10; y++) {
+      const inset = y === 4 ? 5 : y === 5 ? 3 : y >= 9 ? 3 : 2;
+      for (let x = inset; x < T - inset; x++) set(x, y, 186, 48, 44);
+    }
+    for (const [x, y] of [[5, 6], [9, 5], [11, 7], [7, 8]]) set(x, y, 238, 234, 224);
+  },
+
+  [TILE.MUSHROOM_BROWN]: (set, rnd) => {
+    for (let y = 9; y < 15; y++) for (let x = 6; x < 10; x++) {
+      const d = (rnd() - 0.5) * 12;
+      set(x, y, 208 + d, 196 + d, 172 + d);
+    }
+    for (let y = 5; y < 10; y++) {
+      const inset = y === 5 ? 4 : y >= 9 ? 3 : 2;
+      for (let x = inset; x < T - inset; x++) {
+        const d = (rnd() - 0.5) * 18;
+        set(x, y, 146 + d, 106 + d, 66 + d);
+      }
+    }
+  },
+
+  [TILE.BOAT]: (set, rnd) => {
+    // A hull in profile, wider at the top, with an oar across it.
+    for (let y = 7; y < 13; y++) {
+      const inset = y < 9 ? 1 : y < 11 ? 2 : 4;
+      for (let x = inset; x < T - inset; x++) {
+        const d = (rnd() - 0.5) * 16;
+        set(x, y, 156 + d, 108 + d, 62 + d);
+      }
+    }
+    for (let x = 1; x < 15; x++) set(x, 7, 190, 140, 84);   // gunwale
+    for (let x = 5; x < 11; x++) set(x, 8, 96, 66, 38);     // the seat, in shadow
+    for (let i = 0; i < 8; i++) set(3 + i, 5 - Math.round(i * 0.4), 176, 132, 78); // oar
+  },
+
+  [TILE.BOWL]: (set, rnd) => {
+    for (let y = 8; y < 13; y++) {
+      const inset = y < 11 ? 3 : 5;
+      for (let x = inset; x < T - inset; x++) {
+        const d = (rnd() - 0.5) * 14;
+        set(x, y, 150 + d, 104 + d, 62 + d);
+      }
+    }
+    for (let x = 3; x < 13; x++) set(x, 8, 106, 72, 42); // the hollow, in shadow
+  },
+
+  [TILE.MUSHROOM_STEW]: (set, rnd) => {
+    for (let y = 8; y < 13; y++) {
+      const inset = y < 11 ? 3 : 5;
+      for (let x = inset; x < T - inset; x++) {
+        const d = (rnd() - 0.5) * 14;
+        set(x, y, 150 + d, 104 + d, 62 + d);
+      }
+    }
+    for (let x = 3; x < 13; x++) {
+      const d = (rnd() - 0.5) * 20;
+      set(x, 8, 152 + d, 108 + d, 62 + d);
+      set(x, 7, 168 + d, 122 + d, 72 + d);
+    }
+    // Bits floating in it.
+    for (const [x, y] of [[5, 7], [9, 8], [11, 7]]) set(x, y, 190, 60, 52);
+  },
+
+  [TILE.APPLE]: (set, rnd) => {
+    for (let y = 5; y < 14; y++) {
+      const inset = y === 5 ? 5 : y === 6 ? 4 : y === 13 ? 5 : 3;
+      for (let x = inset; x < T - inset; x++) {
+        const d = (rnd() - 0.5) * 22;
+        set(x, y, 198 + d, 52 + d, 48 + d);
+      }
+    }
+    for (let y = 7; y < 11; y++) set(5, y, 232, 118, 104); // highlight
+    set(8, 4, 110, 80, 44); set(8, 3, 110, 80, 44);        // stalk
+    set(9, 3, 92, 158, 70); set(10, 3, 92, 158, 70);       // leaf
+  },
+
+  [TILE.GOLDEN_APPLE]: (set, rnd) => {
+    for (let y = 5; y < 14; y++) {
+      const inset = y === 5 ? 5 : y === 6 ? 4 : y === 13 ? 5 : 3;
+      for (let x = inset; x < T - inset; x++) {
+        const d = (rnd() - 0.5) * 22;
+        set(x, y, 232 + d, 186 + d, 62 + d);
+      }
+    }
+    for (let y = 7; y < 11; y++) set(5, y, 255, 238, 168);
+    set(8, 4, 150, 116, 52); set(8, 3, 150, 116, 52);
+    set(9, 3, 214, 236, 150); set(10, 3, 214, 236, 150);
+  },
+
+  // The three records differ only in label colour, so they share a painter.
+  ...Object.fromEntries([
+    [TILE.DISC_DRIFT, [92, 150, 214]],
+    [TILE.DISC_HOLLOW, [206, 198, 178]],
+    [TILE.DISC_GRIND, [212, 96, 60]],
+  ].map(([tile, label]) => [tile, (set, rnd) => {
+    for (let y = 1; y < 15; y++) for (let x = 1; x < 15; x++) {
+      const dx = x - 7.5, dy = y - 7.5, r = Math.hypot(dx, dy);
+      if (r > 6.8) continue;
+      if (r < 2.2) { set(x, y, label[0], label[1], label[2]); continue; }
+      if (r < 0.9) { set(x, y, 20, 20, 24); continue; }
+      const g = Math.round(r) % 2 === 0 ? 46 : 30;
+      const d = (rnd() - 0.5) * 6;
+      set(x, y, g + d, g + d, g + 8 + d);
+    }
+    set(7, 7, 18, 18, 22); set(8, 7, 18, 18, 22);
+    set(7, 8, 18, 18, 22); set(8, 8, 18, 18, 22);
+  }])),
+
   // --- Comb materials ------------------------------------------------------
 
   [TILE.COMB_RESIN]: (set, rnd) => {

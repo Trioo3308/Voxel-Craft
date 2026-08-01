@@ -20,8 +20,12 @@ import { findRecipe, consumeGrid, fuelValueFor, smeltResultFor, SMELT_SECONDS } 
 import { BIOME_NAMES } from '../world/terrain.js';
 import { dimensionInfo } from '../world/dimensions.js';
 import Settings from '../settings.js';
+import { audio } from '../engine/audio.js';
 
 const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+
+/** As many characters as fit legibly on a sign in the world. */
+const SIGN_LINE_LENGTH = 15;
 
 const HEART = '❤️';
 const DRUMSTICK = '🍗';
@@ -52,6 +56,23 @@ export class HUD {
     this.compassEl = el('compass');
     this.compassFillEl = el('compassNeedle');
     this._compassTimer = 0;
+    this.styleBox = el('styleBox');
+    this.styleTricks = el('styleTricks');
+    this.stylePoints = el('stylePoints');
+    this.styleTotal = el('styleTotal');
+
+    this.signScreen = el('signScreen');
+    this.signInputs = [0, 1, 2, 3].map((i) => el(`signLine${i}`));
+    this.activeSign = null;
+    this.progressScreen = el('progressScreen');
+    this.progressCount = el('progressCount');
+    this.achievementList = el('achievementList');
+    this.statList = el('statList');
+
+    /** Result text kept on screen after a run ends. See `_updateStyle`. */
+    this._styleHeld = null;
+    /** Last board event sequence drawn, so each one is reacted to once. */
+    this._styleSeen = 0;
     this.saveToastEl = el('saveToast');
 
     this.inventoryScreen = el('inventoryScreen');
@@ -455,6 +476,10 @@ export class HUD {
     }
 
     consumeGrid(grid);
+    // The game owns the achievement list; the HUD only reports what happened.
+    if (this.game._notePlayerMilestone) {
+      this.game._notePlayerMilestone('crafted', recipe.id, null);
+    }
   }
 
   /** Return a crafting grid's contents to the inventory (on close). */
@@ -502,6 +527,7 @@ export class HUD {
 
     this._updateLocator(dt);
     this._updateCompass(dt);
+    this._updateStyle(dt);
     this._updateStats();
     this._updateBreakBar();
     this._updateBossBar();
@@ -604,6 +630,68 @@ export class HUD {
     label.textContent = `Shrine  ${Math.round(distance)}m\n${turn}`;
     // The needle points at the shrine relative to where you are facing.
     this.compassFillEl.style.transform = `rotate(${degrees}deg)`;
+  }
+
+  /**
+   * The trick combo readout.
+   *
+   * Shown while riding and for a couple of seconds after a landing or a bail,
+   * so the number you just earned is still on screen when you look at it.
+   */
+  _updateStyle(dt) {
+    const board = this.player.board;
+    if (!board) return;
+
+    const visible = board.riding || board.displayTimer > 0;
+    this.styleBox.classList.toggle('show', visible);
+    if (!visible) {
+      this._styleHeld = null;
+      // Stay caught up while hidden, so a stale event cannot fire on reappear.
+      this._styleSeen = board.eventSeq;
+      return;
+    }
+
+    // React to anything that happened since the last draw. Bails and banks both
+    // end the run, so their text is held on screen for the rest of the display
+    // window — otherwise the number you just scored would flash by in one frame.
+    const fresh = board.eventSeq !== this._styleSeen;
+    const event = fresh ? board.lastEvent : null;
+    this._styleSeen = board.eventSeq;
+    if (event) {
+      this.styleBox.classList.remove('pop', 'bail');
+      // Reflow so the animation restarts even on back-to-back landings.
+      void this.styleBox.offsetWidth;
+
+      if (event.type === 'bail') {
+        this.styleBox.classList.add('bail');
+        this._styleHeld = { tricks: 'BAILED', points: event.lost > 0 ? `-${event.lost}` : '' };
+        audio.skateBail();
+      } else {
+        this.styleBox.classList.add('pop');
+        if (event.type === 'land') audio.skateLand(event.combo);
+        if (event.type === 'bank') {
+          this._styleHeld = { tricks: 'RUN BANKED', points: `+${event.gained}` };
+        }
+      }
+    }
+
+    const combo = board.describeCombo();
+    if (combo) {
+      // A live chain always wins: landing a new trick replaces the old result.
+      this._styleHeld = null;
+      this.styleTricks.textContent = combo.names;
+      this.stylePoints.innerHTML =
+        `${combo.total}<span class="mult"> x${combo.multiplier}</span>`;
+    } else if (this._styleHeld) {
+      this.styleTricks.textContent = this._styleHeld.tricks;
+      this.stylePoints.textContent = this._styleHeld.points;
+    } else {
+      // Between runs: just the lifetime total.
+      this.styleTricks.textContent = '';
+      this.stylePoints.textContent = '';
+    }
+
+    this.styleTotal.textContent = `STYLE ${board.totalStyle}`;
   }
 
   _updateStats() {
@@ -897,12 +985,91 @@ export class HUD {
     this.refreshAll();
   }
 
+  // -------------------------------------------------------------------------
+  // Signs
+  // -------------------------------------------------------------------------
+
+  /**
+   * The sign editor.
+   *
+   * Four plain text inputs writing straight into the block entity's state, so
+   * there is no apply step and nothing to lose — closing the screen is the
+   * whole commit. Lines are capped at 15 characters because that is what fits
+   * on a sign in the world at a readable size.
+   */
+  openSign(state) {
+    this.activeSign = state;
+    for (let i = 0; i < this.signInputs.length; i++) {
+      this.signInputs[i].value = state.lines[i] ?? '';
+    }
+    this.signScreen.classList.add('show');
+    // Focus the first line, so you can just start typing.
+    this.signInputs[0].focus();
+    this.signInputs[0].select();
+  }
+
+  closeSign() {
+    if (this.activeSign) {
+      for (let i = 0; i < this.signInputs.length; i++) {
+        this.activeSign.lines[i] = this.signInputs[i].value.slice(0, SIGN_LINE_LENGTH);
+      }
+    }
+    this.activeSign = null;
+    this.signScreen.classList.remove('show');
+  }
+
+  // -------------------------------------------------------------------------
+  // Achievements and statistics
+  // -------------------------------------------------------------------------
+
+  /** Rebuild and show the progress screen. Cheap: both lists are short. */
+  openProgress() {
+    const { achievements, stats } = this.game;
+
+    const { earned, total } = achievements.progress;
+    this.progressCount.textContent = `${earned} / ${total}`;
+
+    this.achievementList.innerHTML = '';
+    for (const row of achievements.rows()) {
+      const li = document.createElement('li');
+      li.className = row.earned ? 'earned' : 'locked';
+      const title = document.createElement('span');
+      title.className = 'achTitle';
+      title.textContent = row.title;
+      const hint = document.createElement('span');
+      hint.className = 'achHint';
+      hint.textContent = row.hint;
+      li.append(title, hint);
+      this.achievementList.appendChild(li);
+    }
+
+    this.statList.innerHTML = '';
+    for (const [label, value] of stats.rows()) {
+      const li = document.createElement('li');
+      const name = document.createElement('span');
+      name.textContent = label;
+      const amount = document.createElement('span');
+      amount.className = 'statValue';
+      amount.textContent = value;
+      li.append(name, amount);
+      this.statList.appendChild(li);
+    }
+
+    this.progressScreen.classList.add('show');
+  }
+
+  closeProgress() {
+    this.progressScreen.classList.remove('show');
+  }
+
   /** Close whatever container is open. */
   closeAllContainers() {
     if (this.inventoryScreen.classList.contains('show')) this.closeInventory();
     if (this.craftingScreen.classList.contains('show')) this.closeCraftingTable();
     if (this.furnaceScreen.classList.contains('show')) this.closeFurnace();
     if (this.chestScreen.classList.contains('show')) this.closeChest();
+    if (this.signScreen.classList.contains('show')) this.closeSign();
+    if (this.progressScreen.classList.contains('show')) this.closeProgress();
   }
 
   get anyContainerOpen() {
@@ -910,7 +1077,9 @@ export class HUD {
       this.inventoryScreen.classList.contains('show') ||
       this.craftingScreen.classList.contains('show') ||
       this.furnaceScreen.classList.contains('show') ||
-      this.chestScreen.classList.contains('show')
+      this.chestScreen.classList.contains('show') ||
+      this.signScreen.classList.contains('show') ||
+      this.progressScreen.classList.contains('show')
     );
   }
 

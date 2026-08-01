@@ -44,6 +44,13 @@ export const Settings = {
     jumpVelocity: 8.4,
     /** Vertical speed while on a ladder — deliberate, not a jump. */
     climbSpeed: 3.4,
+    /** Top speed on a skateboard: faster than a sprint, slower to reach. */
+    boardSpeed: 9.5,
+    /**
+     * Boat speed. Faster than a sprint on land, which is the reason to build
+     * one — swimming is 2.4, so this is more than three times quicker.
+     */
+    boatSpeed: 7.5,
     gravity: 28,
     terminalVelocity: 60,
     /** Ground friction / air control (0..1, higher = snappier). */

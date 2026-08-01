@@ -109,6 +109,7 @@ that broadcast would go.
 | `Shift` | Crouch — shorter hitbox, and you cannot walk off a ledge |
 | `Ctrl` | Sprint (works while jumping) |
 | `Q` / `Sprint+Q` | Drop one item / the whole stack |
+| `L` | Achievements and statistics |
 | `M` | Mute sound |
 | `F1` | Settings — full control list, and rebind anything |
 
@@ -403,6 +404,98 @@ matcher has no concept of, so it is checked before the recipe table.
 
 **A locator readout** shows position, facing and biome — the world is infinite
 with no map, and without it "walk back to the portal" is guesswork.
+
+**Food** is a small ladder of its own. Bread is the farmable staple; **mushroom
+stew** is worth more and is made from what you find on forest floors rather than
+what you grow, and eating it leaves the bowl behind. Oak leaves drop the odd
+**apple** (about one in thirty), and eight gold ingots around one makes a
+**golden apple** — the only food in the game that restores health as well as
+hunger, priced so that using one is a decision.
+
+**Wolves** spawn in forests. A wild one keeps its distance and has red eyes;
+feed it a bone and it is yours — it follows you, bites whatever hurts you, and
+right-clicking toggles between staying put and heeling. The taming state lives
+on the animal rather than being a second species, so a tamed wolf keeps the
+health and position it already had.
+
+**Boats** cross water at 7.5 blocks/second against 2.4 swimming. Right-click
+water with one to get in, `Space` to step out and take it with you. Like the
+fishing bobber, a boat is state on the player rather than a free-floating
+entity: it never needs to be hit, collided with, or outlive the person in it.
+
+---
+
+## Skating
+
+A **skateboard** (three planks and two iron) turns movement into a scoring game.
+Right-click to drop in, right-click again to step off.
+
+- **Speed.** 9.5 blocks/second, faster than a sprint but much slower to build up
+  and much slower to turn. An ollie pops 28% higher than a jump.
+- **Tricks** are read from what you are already doing rather than from dedicated
+  buttons: hold left or right in the air for a kickflip or heelflip, forward or
+  back for a nose or tail grab, and swing the mouse for spins — 180 through 720.
+  Hang in the air past 1.1 seconds and the hang time itself scores.
+- **Combos.** Each landed trick raises the multiplier by one, capped at 8. The
+  chain stays open for 2.5 seconds on the ground, and banks itself when it
+  expires or when you step off.
+- **Bails.** Land from more than 10 blocks up and you lose the whole chain. Under
+  that, a landing on the board costs no fall damage at all — the board absorbs
+  it, which is what makes the big-air tricks worth attempting.
+- **Rails.** Craft grind rails from iron and sticks. Rolling along one grinds:
+  style accrues per *second*, the rail holds your speed instead of bleeding it
+  off, and it keeps the combo open — so a rail is how you link two jumps
+  together. A four-second grind is an "Endless Grind" and scores accordingly.
+- **Rockets** (sustingus jelly, gunpowder and a stick) are the launcher. On foot
+  one goes straight up and bursts into fireworks; on the board it shoves you
+  along your heading. Straight up that is 5.8 blocks and 1.25 seconds of hang
+  time, comfortably past the Big Air threshold — the numbers are picked against
+  gravity rather than by feel, because the first version was weaker than an
+  ordinary jump and therefore pointless.
+
+**Skate parks** generate rarely on flat ground: a levelled pad, a bowl whose
+walls are rideable ramps, two rails spanning it and a torch on each corner. Like
+dungeons they are gated on the terrain version, and more urgently — a park
+flattens ground at the surface, which is exactly where people build.
+
+---
+
+## Records, signs and plates
+
+**Jukeboxes** (planks around a diamond) play **music discs**, which are the only
+items in the game that cannot be crafted: they are dungeon and shrine loot, so a
+jukebox is a reason to go somewhere. There are three, each a different tune, and
+each is synthesised from a short interval table at runtime — like every other
+sound here, there is no audio file anywhere in the project. A record fades with
+distance and stops when you take it out or break the box.
+
+**Signs** hold four lines of text you type in, stored as a block entity and
+saved with the world. They cannot go through the chunk mesher — the text changes
+without the block changing — so each visible sign gets one textured quad, built
+from a canvas, only within 32 blocks and only redrawn when the text actually
+changes.
+
+**Pressure plates** open every door they touch while something is standing on
+them, and close them again on the way off — mobs included. A plate remembers the
+doors *it* opened and closes exactly those, so a door you opened by hand is not
+slammed shut when someone steps off a plate three blocks away.
+
+---
+
+## Achievements and statistics
+
+`L` opens a list of 25 achievements and eleven lifetime counters — blocks mined
+and placed, distance walked, mobs defeated, days survived, best single skate run,
+lifetime style. Both are saved per world.
+
+Achievements are stored **by name, never by index**, for the same reason block
+ids are remapped by name on load: reordering or inserting one must not silently
+re-grant or revoke somebody's progress. A name from a newer build is dropped on
+load rather than kept as a number that would later mean something else.
+
+Counting goals ("mine 1,000 blocks", "walk 10,000 blocks") declare a `check`
+against the statistics rather than needing a call site of their own, so adding
+one is a single entry in a list.
 
 ---
 
@@ -784,6 +877,18 @@ These are deliberate scope choices, not bugs:
   whatever wanders in is ordinary cave spawning.
 - **Weather is global, not regional.** One storm covers the whole world at once
   — only *what falls* is decided locally, per biome.
+- **A boat is state on the player, not an entity.** It cannot be left floating
+  for later, pushed around, or shared — you carry it, put it down, and take it
+  with you. Same trade as the fishing bobber, for the same reason.
+- **Signs face one way.** Like ladders, they render against a fixed axis
+  regardless of which side you placed them on.
+- **Pressure plates only drive doors.** There is no wiring, no signal
+  propagation and nothing else to connect them to; this is the first piece of
+  world logic you can build with, not a redstone system.
+- **A jukebox plays one record on a loop** until you take it out. There is no
+  queue and no track-finished event.
+- **Wolves are the only tameable animal**, and a tamed one cannot be healed,
+  bred, or told to do anything beyond sit and heel.
 
 ---
 
@@ -888,6 +993,52 @@ refuses an empty hand and the wrong item, consumes exactly one Comb Heart, grant
 the Crown once, raises max health 20 → 24, and does nothing on a second use;
 the boost survives save, reload and death, and a save predating the field
 defaults cleanly to 20.
+
+**The sustingus, rockets and the skateboard** — 58 headless assertions plus a
+full in-browser pass. Each spin milestone scores exactly one spin and the biggest
+one wins; a flip registers once per jump rather than once per frame; the
+multiplier caps at 8; standing still banks a chain rather than losing it, and a
+hard landing bails and pays nothing. A rocket fired straight up while riding was
+measured at 5.6 blocks and 1.25 seconds — enough to clear Big Air — against 2.8
+blocks at 45° and a fast, low 7-block launch fired level.
+
+Three bugs worth recording. The rotation tracker discarded the first frame of a
+spin, which is a rounding error everywhere except exactly on a milestone
+boundary — a clean 540 scored as a 360. There is now a regression case with a
+margin *tighter* than one frame. The combo readout relied on the HUD reading a
+one-frame flag before the board cleared it, which meant a run banked outside the
+update loop (stepping off the board does exactly that) could be wiped before
+anything had shown it; events now carry a sequence number the HUD compares
+against. And the rocket boost was originally weaker than an ordinary jump —
+gravity is 28, so the first value bought 0.8 blocks against a jump's 2.1 — which
+is what comes of picking a number by feel instead of against the physics.
+
+**Rails, parks, progress, boats, wolves, signs, records, plates and food** —
+110 headless assertions plus an in-browser pass on each. Grinding starts on
+contact and stops on leaving, ignores a rail you are parked on or merely brushed,
+holds the combo open, and pays by the second: a five-second grind measured 550
+against 110 for one second, with the name changing to match. In-browser, a
+20-block rail carried the player its whole length at a held 9.5 blocks/second.
+
+Terrain went to **v4** for skate parks and mushrooms, and v3 worlds were checked
+to generate with neither — a park levels ground at the *surface*, which is
+exactly where people build, so the gate matters more here than it did for
+dungeons. Parks are deterministic per cell, land only where the ground is
+already nearly flat, and are written identically from every chunk that touches
+them.
+
+Pressure plates opened both halves of a door and closed them again on stepping
+off; the first version checked the block *below* the feet rather than the one
+they are in, which is right for a solid block and wrong for a thin one you stand
+inside. Boats needed their own water-finding: `raycastVoxels` deliberately
+ignores fluids, so a boat walks the ray itself looking for a water cell with air
+above it. Measured at 7.5 blocks/second down a channel against 4.3 walking.
+
+Signs round-trip their text through the save and render it in the world from a
+canvas; jukeboxes insert, play, fade with distance, eject, and hand the record
+back when broken. The **gear ids moved for the fourth time** to make room for
+boats, bowls, apples and records — a world saved under the previous numbering
+was loaded and every tool, item and the style score came back intact.
 
 **The batch before** — 137 headless assertions across four suites, plus
 in-browser checks of each feature. Particles: shards take their colour from the broken

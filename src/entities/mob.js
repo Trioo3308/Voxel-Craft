@@ -66,6 +66,11 @@ export class Mob {
     /** Sheep only: sheared until the wool grows back. */
     this.sheared = false;
     this.woolRegrow = 0;
+    /** Sustingus only: fed, and now sustaining whoever fed it. */
+    this.attuned = false;
+    /** Wolf only: tamed with a bone, and told to stay put. */
+    this.tamed = false;
+    this.sitting = false;
 
     this.attackCooldown = 0;
     /** Per-instance melee overrides; null falls back to `type.brain`. */

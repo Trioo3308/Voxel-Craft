@@ -12,11 +12,13 @@ import { moveWithCollision, isInLiquid, collidesWithWorld, isSupported } from '.
 import { raycastVoxels } from './raycast.js';
 import { Inventory } from './inventory.js';
 import { Survival, EXHAUSTION } from './survival.js';
+import { Skateboard, BAIL_FALL_DISTANCE } from './skateboard.js';
 import {
   AIR, getBlock, getItem, isLiquid, getSoundMaterial, getRanged, getBucket, getFluid,
   ITEM_ID, WATER, LAVA, PORTAL,
   GRASS, DIRT, DRY_GRASS, PODZOL, SWAMP_GRASS,
   FARMLAND, FARMLAND_MOIST, isFarmland, WHEAT_STAGES, wheatStage,
+  RAIL,
 } from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
 
@@ -40,6 +42,22 @@ const FISH_WAIT_MAX = 22;
 const FISH_BITE_WINDOW = 1.4;
 /** Walk further than this from your line and you lose it. */
 const FISH_MAX_DISTANCE = 14;
+
+/**
+ * How hard a rocket shoves you along your heading while riding.
+ *
+ * Measured against the numbers that matter rather than picked: gravity is 28,
+ * so straight up this buys `18^2 / (2*28)` = 5.8 blocks and 1.29s of hang time,
+ * comfortably past the 1.1s the board pays Big Air for. The first value tried
+ * here was weaker than an ordinary jump, which made the rocket pointless.
+ */
+const ROCKET_BOOST = 18;
+
+/**
+ * Floor on the vertical kick, so a rocket fired level still gets you off the
+ * ground instead of scraping you along it. Matches a normal jump.
+ */
+const ROCKET_LIFT = 8.4;
 
 export class Player {
   /**
@@ -79,6 +97,12 @@ export class Player {
 
     this.inventory = new Inventory();
     this.survival = new Survival();
+    /** Riding state, tricks and style score. */
+    this.board = new Skateboard();
+    /** Sitting in a boat. See `_tryBoat`. */
+    this.boating = false;
+    /** Last board event forwarded to `onTrickLanded`, so each fires once. */
+    this._seenTrickSeq = 0;
     // Taking a hit wears down every worn piece, as in Minecraft.
     this.survival.onArmorHit = () => this.inventory.damageArmor(1);
     this.survival.onDamage(() => audio.playerHurt());
@@ -168,6 +192,7 @@ export class Player {
     if (!this.survival.dead) {
       this._updateMovement(dt);
       this._updateEnvironment(dt);
+      this._updateBoard(dt);
       this._updateFishing(dt);
       this._updatePortal(dt);
       this._updateTarget();
@@ -276,7 +301,12 @@ export class Player {
     const targetVZ = dirZ * speed;
 
     // Exponential smoothing gives frame-rate independent acceleration.
-    const responsiveness = this.flying ? 14 : this.onGround ? 16 : 3.5;
+    // A board accelerates and sheds speed far more slowly than boots do — that
+    // sluggishness *is* the handling, and it is what makes carrying speed into a
+    // jump something you have to plan rather than something you just do.
+    const responsiveness = this.flying ? 14
+      : this.board.riding ? (this.onGround ? 3.2 : 1.4)
+      : this.onGround ? 16 : 3.5;
     const blend = 1 - Math.exp(-responsiveness * dt);
     this.velocity.x += (targetVX - this.velocity.x) * blend;
     this.velocity.z += (targetVZ - this.velocity.z) * blend;
@@ -338,7 +368,12 @@ export class Player {
 
   _currentSpeed() {
     if (this.flying) return this.input.isActionDown('sprint') ? P.flySpeed * 2 : P.flySpeed;
+    // Checked before the liquid case: the point of a boat is that water stops
+    // slowing you down.
+    if (this.boating) return P.boatSpeed;
     if (this.inLiquid) return P.walkSpeed * 0.55;
+    // A board is faster than a sprint and does not care whether you are sneaking.
+    if (this.board.riding) return P.boardSpeed;
     if (this.sneaking) return P.sneakSpeed;
     if (this.sprinting) return P.sprintSpeed;
     return P.walkSpeed;
@@ -378,16 +413,26 @@ export class Player {
       return;
     }
 
-    if (this.inLiquid) {
+    if (this.boating) {
+      // A boat floats: it is held at the surface rather than allowed to sink,
+      // which is the whole difference between a boat and swimming. Space steps
+      // out onto whatever you have pulled up alongside.
+      this.velocity.y += (this._surfaceOffset() - this.velocity.y * 0.25) * 12 * dt;
+      this.velocity.y = Math.max(-2.5, Math.min(2.5, this.velocity.y));
+      this.fallDistance = 0;
+      if (wantsUp) this._leaveBoat();
+    } else if (this.inLiquid) {
       // Swimming: gentle buoyancy, and Space paddles upward.
       this.velocity.y += (wantsUp ? 6 : -3.5) * dt * 4;
       this.velocity.y = Math.max(-3, Math.min(4, this.velocity.y));
       this.fallDistance = 0;
     } else {
       if (wantsUp && this.onGround) {
-        this.velocity.y = P.jumpVelocity;
+        // An ollie pops higher than a jump — you need the hang time for tricks.
+        this.velocity.y = this.board.riding ? P.jumpVelocity * 1.28 : P.jumpVelocity;
         this.survival.addExhaustion(this.sprinting ? EXHAUSTION.sprintJump : EXHAUSTION.jump);
-        audio.jump();
+        if (this.board.riding) audio.skatePop();
+        else audio.jump();
       }
       this._applyGravity(dt);
     }
@@ -431,7 +476,11 @@ export class Player {
       if (!this.flying && !this.inLiquid) {
         if (this.fallDistance > 0.8) audio.fall(this.fallDistance);
         if (this.fallDistance > 0.6 && this.onLand) this.onLand(this.fallDistance);
-        if (this.fallDistance > Settings.survival.fallDamageThreshold) {
+        // Landing a jump on the board costs nothing — the board takes it. Only
+        // a drop big enough to bail hurts. Without this, every rocket launch
+        // would cost health for going as high as the trick list wants you to.
+        const cushioned = this.board.riding && this.fallDistance <= BAIL_FALL_DISTANCE;
+        if (!cushioned && this.fallDistance > Settings.survival.fallDamageThreshold) {
           const damage = Math.floor(this.fallDistance - Settings.survival.fallDamageThreshold);
           if (damage > 0) this.survival.damage(damage, 'fall');
         }
@@ -630,7 +679,13 @@ export class Player {
     // MouseEvent.button: 0 = left, 1 = middle, 2 = right.
     if (input.isMouseDown(2) && this._placeCooldown === 0) {
       // Sneaking suppresses station UIs so you can still build against them.
-      if (this._tryFish()) {
+      if (this._tryRocket(ctx)) {
+        this._placeCooldown = 0.35;
+      } else if (this._tryBoat()) {
+        this._placeCooldown = 0.4;
+      } else if (this._tryBoard()) {
+        this._placeCooldown = 0.4;
+      } else if (this._tryFish()) {
         this._placeCooldown = 0.4;
       } else if (!this.sneaking && this._tryUseBlock()) {
         this._placeCooldown = 0.4;
@@ -874,6 +929,48 @@ export class Player {
       audio.blockBreak('wool');
       this.didSwing = true;
       if (!this.creative) this.inventory.damageHeldTool(1);
+      if (this.onSheared) this.onSheared(mob);
+      return true;
+    }
+
+    // --- Attuning a sustingus ------------------------------------------------
+    // It accepts any food. Whether it eats it is an open question.
+    if (mob.type.attunedBy === 'food' && !mob.attuned) {
+      const item = getItem(slot.id) ?? getBlock(slot.id);
+      if (!item || !item.food) return false;
+      mob.attuned = true;
+      if (mob.refreshModel) mob.refreshModel();
+      if (!this.creative) this.inventory.consumeSelected(1);
+      audio.mobSound(mob.type.voice, 'idle', 0);
+      this.didSwing = true;
+      if (this.onSustingusAttuned) this.onSustingusAttuned(mob);
+      return true;
+    }
+
+    // --- Taming a wolf --------------------------------------------------------
+    if (mob.type.tamedBy !== undefined && !mob.tamed) {
+      if (slot.id !== mob.type.tamedBy) return false;
+      mob.tamed = true;
+      mob.sitting = false;
+      if (mob.refreshModel) mob.refreshModel();
+      if (!this.creative) this.inventory.consumeSelected(1);
+      audio.mobSound(mob.type.voice, 'idle', 0);
+      this.didSwing = true;
+      if (this.onMobTamed) this.onMobTamed(mob);
+      return true;
+    }
+
+    // --- Sit / heel -----------------------------------------------------------
+    // Right-clicking your own wolf with anything toggles it, which is why this
+    // sits after taming and before breeding: an untamed wolf ignores you, and a
+    // tamed one never wants breeding wheat.
+    if (mob.tamed) {
+      mob.sitting = !mob.sitting;
+      mob.memory.target = null;
+      if (mob.refreshModel) mob.refreshModel();
+      audio.mobSound(mob.type.voice, 'idle', 0);
+      this.didSwing = true;
+      if (this.onMobSit) this.onMobSit(mob);
       return true;
     }
 
@@ -966,6 +1063,234 @@ export class Player {
     this.fishBiteTimer = FISH_BITE_WINDOW;
     audio.splash();
     if (this.onFishBite) this.onFishBite(this.fishingSpot);
+  }
+
+  /**
+   * Fire a rocket.
+   *
+   * On the board it is a boost along your heading; on foot it goes up. Same
+   * item, same button — the difference is entirely context, so there is nothing
+   * extra to learn.
+   */
+  _tryRocket(ctx) {
+    const slot = this.inventory.getSelected();
+    if (!slot || slot.id !== ITEM_ID.ROCKET) return false;
+    if (!ctx.entities) return false;
+
+    const boarding = this.board.riding;
+    const direction = boarding
+      ? this.getLookDirection().clone().normalize()
+      : new THREE.Vector3(0, 1, 0);
+
+    ctx.entities.launchRocket(
+      new THREE.Vector3(this.position.x, this.position.y + 1.2, this.position.z),
+      direction
+    );
+
+    if (boarding) {
+      // A hard shove along where you are looking. This is what makes big air
+      // reachable, and therefore what makes the trick list worth having: aim up
+      // for hang time to spin in, aim flat for speed.
+      this.velocity.addScaledVector(direction, ROCKET_BOOST);
+      this.velocity.y = Math.max(this.velocity.y, ROCKET_LIFT);
+      // Rocketing up should not then count as a bail on the way down.
+      this.fallDistance = 0;
+    }
+
+    if (!this.creative) this.inventory.consumeSelected(1);
+    this.didSwing = true;
+    return true;
+  }
+
+  /**
+   * Boats.
+   *
+   * Modelled as a state on the player rather than as a free-floating entity,
+   * for the same reason the fishing bobber is: a boat never needs to be hit,
+   * collided with, or outlive the person in it. What you actually want from a
+   * boat — crossing open water quickly, sitting on the surface instead of
+   * wallowing through it — is all here, and a separate entity would be a lot of
+   * machinery for a hull that is only ever under one person.
+   */
+  _tryBoat() {
+    const slot = this.inventory.getSelected();
+
+    if (this.boating) {
+      // Right click steps out and takes the boat with you.
+      this._leaveBoat();
+      return true;
+    }
+
+    if (!slot || slot.id !== ITEM_ID.BOAT) return false;
+    // You have to be looking at water within reach — no boating on land.
+    const target = this._waterSurfaceInSight();
+    if (!target) return false;
+
+    this.position.set(target.x + 0.5, target.y + 0.4, target.z + 0.5);
+    this.velocity.set(0, 0, 0);
+    this.boating = true;
+    if (!this.creative) this.inventory.consumeSelected(1);
+    audio.splash();
+    if (this.onBoatChanged) this.onBoatChanged(true);
+    return true;
+  }
+
+  /**
+   * The water surface the player is pointing at, or null.
+   *
+   * `raycastVoxels` deliberately ignores fluids — you cannot mine or build on
+   * water, so a block raycast that stopped at it would break every other
+   * interaction. A boat is the one thing that *wants* to hit water, so it walks
+   * the ray itself and looks for a water cell with open air above it, which is
+   * what "the surface" means.
+   */
+  _waterSurfaceInSight() {
+    const origin = this.eyePosition;
+    const direction = this.getLookDirection();
+    const STEP = 0.25;
+
+    for (let t = STEP; t <= P.reach; t += STEP) {
+      const x = Math.floor(origin.x + direction.x * t);
+      const y = Math.floor(origin.y + direction.y * t);
+      const z = Math.floor(origin.z + direction.z * t);
+      if (this.world.getBlock(x, y, z) !== WATER.id) continue;
+      // Walk up to the top of the column: pointing into deep water should still
+      // put the boat on the surface, not three blocks under it.
+      let surfaceY = y;
+      while (this.world.getBlock(x, surfaceY + 1, z) === WATER.id) surfaceY++;
+      // And there must be room to sit in.
+      if (this.world.getBlock(x, surfaceY + 1, z) !== AIR) return null;
+      return { x, y: surfaceY, z };
+    }
+    return null;
+  }
+
+  /** Step out, and get the boat back. */
+  _leaveBoat() {
+    if (!this.boating) return;
+    this.boating = false;
+    // Creative never consumed one, so it must not be handed one back.
+    if (!this.creative) this.inventory.add(ITEM_ID.BOAT, 1);
+    audio.splash();
+    if (this.onBoatChanged) this.onBoatChanged(false);
+  }
+
+  /**
+   * How far the boat should rise or sink to sit on the surface.
+   *
+   * Positive means "there is water above my feet, climb"; negative means the
+   * boat has drifted over air and should settle. Returning a signed nudge
+   * rather than snapping to a height keeps the hull bobbing instead of
+   * teleporting when the water level steps down.
+   */
+  _surfaceOffset() {
+    const x = Math.floor(this.position.x), z = Math.floor(this.position.z);
+    const feet = Math.floor(this.position.y);
+    const atFeet = this.world.getBlock(x, feet, z) === WATER.id;
+    const above = this.world.getBlock(x, feet + 1, z) === WATER.id;
+    if (above) return 3;      // submerged — rise
+    if (atFeet) return 0.4;   // right at the surface — hold
+    return -3;                // over air — settle
+  }
+
+  /** Drop the board and step on, or step off. */
+  _tryBoard() {
+    const slot = this.inventory.getSelected();
+    if (this.board.riding) {
+      // Any right click while riding steps off, unless you are holding
+      // something that has its own use.
+      if (slot && slot.id !== ITEM_ID.SKATEBOARD) return false;
+      const banked = this.board.dismount();
+      audio.skatePop();
+      if (this.onBoardChanged) this.onBoardChanged(false, banked);
+      return true;
+    }
+
+    if (!slot || slot.id !== ITEM_ID.SKATEBOARD) return false;
+    if (!this.onGround) return false;
+
+    this.board.mount();
+    audio.skatePop();
+    if (this.onBoardChanged) this.onBoardChanged(true);
+    return true;
+  }
+
+  /**
+   * Feed the board what it needs to score, and apply its handling.
+   *
+   * The trick system reads the movement you are already making, so this only
+   * has to report state — it never decides what a trick is.
+   */
+  _updateBoard(dt) {
+    const input = this.input;
+    const locked = input.locked;
+    const onRail = this.board.riding && this._standingOnRail();
+
+    this.board.update(dt, {
+      onGround: this.onGround,
+      onRail,
+      yaw: this.yaw,
+      fallDistance: this.fallDistance,
+      speed: Math.hypot(this.velocity.x, this.velocity.z),
+      heldForward: locked
+        ? (input.isActionDown('forward') ? 1 : 0) - (input.isActionDown('back') ? 1 : 0)
+        : 0,
+      heldLateral: locked
+        ? (input.isActionDown('right') ? 1 : 0) - (input.isActionDown('left') ? 1 : 0)
+        : 0,
+    });
+
+    // Anything the board just scored, reported once.
+    const event = this.board.lastEvent;
+    if (event && event.type === 'land' && this.board.eventSeq !== this._seenTrickSeq) {
+      this._seenTrickSeq = this.board.eventSeq;
+      if (this.onTrickLanded) this.onTrickLanded(event.tricks);
+    }
+
+    if (!this.board.riding) return;
+
+    if (this.board.grinding) {
+      // A rail is frictionless: hold the speed you arrived with rather than
+      // bleeding it off, so a long rail is a ride instead of a slow stop.
+      const speed = Math.hypot(this.velocity.x, this.velocity.z);
+      if (speed > 0.1 && speed < P.boardSpeed) {
+        const scale = Math.min(P.boardSpeed, speed + 8 * dt) / speed;
+        this.velocity.x *= scale;
+        this.velocity.z *= scale;
+      }
+      audio.skateGrind(speed);
+    } else if (this.onGround) {
+      // Rolling sound scales with speed.
+      audio.skateRoll(Math.hypot(this.velocity.x, this.velocity.z));
+    }
+
+    // Falling into water or lava ends the run.
+    if (this.inLiquid) {
+      // A bail wipes the chain first, so there is nothing left to bank.
+      this.board.bail();
+      this.board.dismount();
+      if (this.onBoardChanged) this.onBoardChanged(false, 0);
+    }
+  }
+
+  /**
+   * Is there a rail directly under our feet?
+   *
+   * Checked at both corners of the hitbox as well as the centre, because a rail
+   * is one block wide and riding along the seam between two of them should
+   * still count — otherwise a grind flickers off every time you drift.
+   */
+  _standingOnRail() {
+    if (!this.onGround) return false;
+    const y = Math.floor(this.position.y - 0.1);
+    const half = P.width / 2;
+    for (const [ox, oz] of [[0, 0], [-half, -half], [half, -half], [-half, half], [half, half]]) {
+      const id = this.world.getBlock(
+        Math.floor(this.position.x + ox), y, Math.floor(this.position.z + oz)
+      );
+      if (id === RAIL.id) return true;
+    }
+    return false;
   }
 
   /** Right-click a cow with an empty bucket for milk. */
@@ -1133,6 +1458,13 @@ export class Player {
     if (!food) return false;
     if (!this.survival.eat(food)) return false;
     if (!this.creative) this.inventory.consumeSelected(1);
+
+    // A few foods do more than fill the bar.
+    if (food.healing > 0) this.survival.heal(food.healing);
+    // Stew leaves the bowl. Consumed first, so the bowl lands in the slot the
+    // stew just vacated rather than being pushed to the end of the inventory.
+    if (food.eatReturns) this.inventory.add(food.eatReturns, 1);
+
     audio.eat();
     return true;
   }

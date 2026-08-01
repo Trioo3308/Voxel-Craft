@@ -25,6 +25,7 @@ export const ACTIONS = [
 
   { id: 'inventory', label: 'Inventory',    default: 'KeyE',        group: 'Actions',  desc: 'Open your inventory and crafting grid' },
   { id: 'drop',      label: 'Drop item',    default: 'KeyQ',        group: 'Actions',  desc: 'Throw one; hold Sprint for the whole stack' },
+  { id: 'progress',  label: 'Progress',     default: 'KeyL',        group: 'Actions',  desc: 'Achievements and statistics' },
 
   { id: 'creative',  label: 'Game mode',    default: 'KeyG',        group: 'Options',  desc: 'Switch between survival and creative' },
   { id: 'fly',       label: 'Fly',          default: 'KeyF',        group: 'Options',  desc: 'Toggle flight (creative only)' },

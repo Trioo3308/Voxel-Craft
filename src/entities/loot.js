@@ -33,6 +33,8 @@ export const THRONE_LOOT = table([
   { id: toolItemId('pickaxe', 'diamond'), min: 1, max: 1, weight: 5 },
   { id: armorItemId('chestplate', 'diamond'), min: 1, max: 1, weight: 4 },
   { id: toolItemId('sword', 'combium'), min: 1, max: 1, weight: 2 },
+  // The Comb's own record. Nowhere else has it.
+  { id: ITEM_ID.DISC_HOLLOW, min: 1, max: 1, weight: 3 },
 ], 5);
 
 /**
@@ -56,6 +58,10 @@ export const DUNGEON_LOOT = table([
   { id: toolItemId('pickaxe', 'iron'), min: 1, max: 1, weight: 5 },
   { id: armorItemId('helmet', 'iron'), min: 1, max: 1, weight: 4 },
   { id: ITEM_ID.BOW, min: 1, max: 1, weight: 4 },
+  // Records are the only thing in the game you cannot craft, which is the whole
+  // point of them: a jukebox is a reason to go and look in a dungeon.
+  { id: ITEM_ID.DISC_DRIFT, min: 1, max: 1, weight: 3 },
+  { id: ITEM_ID.DISC_GRIND, min: 1, max: 1, weight: 3 },
 ], 4);
 
 /**

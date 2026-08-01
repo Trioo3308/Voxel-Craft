@@ -13,7 +13,7 @@ import {
   AIR, GRASS, DIRT, STONE, SAND, GRAVEL, LOG, LEAVES, WATER, BEDROCK, SNOW,
   COAL_ORE, IRON_ORE, GOLD_ORE, REDSTONE_ORE, LAPIS_ORE, DIAMOND_ORE, EMERALD_ORE, COMBIUM_ORE,
   DRY_GRASS, PODZOL, SWAMP_GRASS, CLAY, SANDSTONE, TREE_WOODS,
-  COBBLE, MOSSY_COBBLE, CHEST,
+  COBBLE, MOSSY_COBBLE, CHEST, RAIL, TORCH, MUSHROOM_RED, MUSHROOM_BROWN,
 } from './blocks.js';
 import Settings from '../settings.js';
 
@@ -22,7 +22,7 @@ import Settings from '../settings.js';
  * Saved worlds record the version they were created with, and the loader
  * refuses to silently regenerate them under different rules — see world/save.js.
  */
-export const TERRAIN_VERSION = 3;
+export const TERRAIN_VERSION = 4;
 
 /**
  * Dungeons sit on a coarse grid, so at most one exists per region. Exported
@@ -30,6 +30,14 @@ export const TERRAIN_VERSION = 3;
  * copies of the number would drift apart.
  */
 export const DUNGEON_SPACING = 10; // chunks
+
+/**
+ * Skate parks, on their own coarse grid.
+ *
+ * Wider than the dungeon grid because a park is a destination: finding one
+ * should be an event, and two in sight of each other would spoil that.
+ */
+export const SKATEPARK_SPACING = 24; // chunks
 
 export const BIOME = {
   OCEAN: 0,
@@ -426,6 +434,11 @@ export class TerrainGenerator {
     // they had; new ones get dungeons everywhere.
     if (this.version >= 3) this._placeDungeons(voxels, cx, cz, baseX, baseZ);
 
+    // ---- Pass 1c: skate parks (v4+) ---------------------------------------
+    // Gated for the same reason as dungeons, and more urgently: a park flattens
+    // ground at the surface, which is exactly where people build.
+    if (this.version >= 4) this._placeSkateparks(voxels, cx, cz, baseX, baseZ);
+
     // ---- Pass 2: trees ----------------------------------------------------
     // Scan a margin around the chunk so trunks rooted just outside still drop
     // their canopy into this chunk.
@@ -439,7 +452,48 @@ export class TerrainGenerator {
       }
     }
 
+    // ---- Pass 3: mushrooms (v4+) ------------------------------------------
+    if (this.version >= 4) this._placeMushrooms(voxels, baseX, baseZ);
+
     return voxels;
+  }
+
+  /**
+   * Mushrooms on shaded forest floor.
+   *
+   * Placed after the trees so they can test for a canopy overhead — a mushroom
+   * out in an open field would look wrong, and the shade test is what makes
+   * them feel like they belong to the woods rather than being sprinkled.
+   */
+  _placeMushrooms(voxels, baseX, baseZ) {
+    for (let lz = 0; lz < CHUNK_SZ; lz++) {
+      for (let lx = 0; lx < CHUNK_SX; lx++) {
+        const wx = baseX + lx, wz = baseZ + lz;
+        const h = hash2i(wx, wz, this.seed ^ 0x5b20);
+        // ~1.2% of eligible columns. Enough that a walk through a wood turns up
+        // a few, not so many that they carpet it.
+        if ((h & 0xffff) > 780) continue;
+
+        const surface = this.columnHeight(wx, wz);
+        if (surface <= this.seaLevel) continue;
+        const y = surface + 1;
+        if (y + 1 >= CHUNK_SY) continue;
+
+        const ground = voxels[voxelIndex(lx, surface, lz)];
+        if (ground !== GRASS.id && ground !== PODZOL.id && ground !== SWAMP_GRASS.id) continue;
+        if (voxels[voxelIndex(lx, y, lz)] !== AIR) continue;
+
+        // Needs something overhead: leaves, or the gloom under a hill.
+        let shaded = false;
+        for (let dy = 2; dy <= 8 && y + dy < CHUNK_SY; dy++) {
+          if (voxels[voxelIndex(lx, y + dy, lz)] !== AIR) { shaded = true; break; }
+        }
+        if (!shaded) continue;
+
+        voxels[voxelIndex(lx, y, lz)] =
+          (h >>> 16) % 2 === 0 ? MUSHROOM_RED.id : MUSHROOM_BROWN.id;
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -487,6 +541,123 @@ export class TerrainGenerator {
         if (Math.abs(room.wx - baseX) > 40 || Math.abs(room.wz - baseZ) > 40) continue;
         this._buildDungeon(voxels, baseX, baseZ, room);
       }
+    }
+  }
+
+  /**
+   * Where the skate park in this grid cell is, or null.
+   *
+   * Pure function of (cell, seed), like every other structure here, so the same
+   * park is written identically from whichever chunk happens to touch it.
+   */
+  skateparkAt(cx, cz) {
+    if (cx % SKATEPARK_SPACING !== 0 || cz % SKATEPARK_SPACING !== 0) return null;
+    if (this.version < 4) return null;
+
+    const h = hash2i(cx, cz, this.seed ^ 0x5ca7);
+    // Roughly two cells in five, so they are rare without being mythical.
+    if ((h & 0xff) < 152) return null;
+
+    const wx = cx * CHUNK_SX + 8 + (h % 6);
+    const wz = cz * CHUNK_SZ + 8 + ((h >>> 8) % 6);
+
+    const surface = this.columnHeight(wx, wz);
+    // Not in the sea, and not clinging to a mountainside — a park needs to sit
+    // on ground that is nearly flat already, or levelling it would gouge a
+    // crater out of the landscape.
+    if (surface <= this.seaLevel + 1) return null;
+    const half = 9;
+    for (const [ox, oz] of [[-half, -half], [half, -half], [-half, half], [half, half], [0, 0]]) {
+      if (Math.abs(this.columnHeight(wx + ox, wz + oz) - surface) > 3) return null;
+    }
+
+    return { wx, wz, y: surface, half };
+  }
+
+  /** Stamp any skate park whose footprint reaches this chunk. */
+  _placeSkateparks(voxels, cx, cz, baseX, baseZ) {
+    // Round down to the grid, then check this cell and its neighbours — a park
+    // is wider than a chunk, so the one that covers us may be anchored away.
+    const cellX = Math.floor(cx / SKATEPARK_SPACING) * SKATEPARK_SPACING;
+    const cellZ = Math.floor(cz / SKATEPARK_SPACING) * SKATEPARK_SPACING;
+    for (let dz = 0; dz <= 1; dz++) {
+      for (let dx = 0; dx <= 1; dx++) {
+        const park = this.skateparkAt(
+          cellX + dx * SKATEPARK_SPACING,
+          cellZ + dz * SKATEPARK_SPACING
+        );
+        if (!park) continue;
+        if (Math.abs(park.wx - baseX) > 48 || Math.abs(park.wz - baseZ) > 48) continue;
+        this._buildSkatepark(voxels, baseX, baseZ, park);
+      }
+    }
+  }
+
+  /**
+   * A stone bowl with rails across it.
+   *
+   * Built as: a flat slab of ground, a dished-out bowl in the middle whose
+   * walls are the ramps, and two rails on posts spanning it. That is the
+   * minimum that makes the trick system worth using — somewhere to build speed,
+   * something to launch off, and something to grind.
+   */
+  _buildSkatepark(voxels, baseX, baseZ, park) {
+    const { wx, wz, y, half } = park;
+    const rnd = mulberry32(hash2i(wx, wz, this.seed ^ 0x9a11));
+
+    const set = (x, py, z, id) => {
+      const lx = x - baseX;
+      const lz = z - baseZ;
+      if (lx < 0 || lx >= CHUNK_SX || lz < 0 || lz >= CHUNK_SZ) return;
+      if (py < 1 || py >= CHUNK_SY) return;
+      voxels[voxelIndex(lx, py, lz)] = id;
+    };
+
+    const bowlDepth = 3;
+
+    for (let dz = -half; dz <= half; dz++) {
+      for (let dx = -half; dx <= half; dx++) {
+        const x = wx + dx, z = wz + dz;
+
+        // Level the pad: fill up to the deck height, clear everything above.
+        for (let py = y - 4; py <= y; py++) set(x, py, z, STONE.id);
+        for (let py = y + 1; py <= y + 8; py++) set(x, py, z, AIR);
+
+        // The bowl. Depth eases in from the lip so the walls are rideable
+        // ramps rather than a pit you fall into.
+        const edge = Math.max(Math.abs(dx), Math.abs(dz));
+        const inset = half - 2 - edge;
+        if (inset <= 0) continue;
+        const depth = Math.min(bowlDepth, inset);
+        for (let d = 0; d < depth; d++) set(x, y - d, z, AIR);
+        set(x, y - depth, z, rnd() < 0.12 ? COBBLE.id : STONE.id);
+      }
+    }
+
+    // Deck surface: cobble at the lip so the edge you drop in from reads.
+    for (let dz = -half; dz <= half; dz++) {
+      for (let dx = -half; dx <= half; dx++) {
+        const edge = Math.max(Math.abs(dx), Math.abs(dz));
+        if (edge < half - 1) continue;
+        set(wx + dx, y, wz + dz, rnd() < 0.3 ? COBBLE.id : STONE.id);
+      }
+    }
+
+    // Two rails on posts, spanning the bowl at deck height — the thing you
+    // actually came here for.
+    for (const railZ of [-3, 3]) {
+      for (let dx = -half + 2; dx <= half - 2; dx++) {
+        set(wx + dx, y + 1, wz + railZ, RAIL.id);
+        // A post every four blocks, so the rail is not floating.
+        if ((dx + half) % 4 === 0) {
+          for (let py = y; py > y - bowlDepth; py--) set(wx + dx, py, wz + railZ, COBBLE.id);
+        }
+      }
+    }
+
+    // A torch on each corner of the deck, so a park is findable at night.
+    for (const [ox, oz] of [[-half, -half], [half, -half], [-half, half], [half, half]]) {
+      set(wx + ox, y + 1, wz + oz, TORCH.id);
     }
   }
 

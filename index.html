@@ -245,6 +245,87 @@
     pointer-events: none;
   }
   #compass.show { display: flex; }
+
+  /* Trick combo readout. Right-hand side so it never fights the compass. */
+  #styleBox {
+    position: absolute; right: 14px; top: 64px;
+    text-align: right;
+    display: none;
+    pointer-events: none;
+    text-shadow: 2px 2px 3px #000;
+  }
+  #styleBox.show { display: block; }
+  #styleTricks {
+    font-size: 15px; color: #ffe08a; letter-spacing: 0.5px;
+    max-width: 320px;
+  }
+  #stylePoints {
+    font-size: 26px; font-weight: bold; color: #fff;
+    line-height: 1.1;
+  }
+  #stylePoints .mult { color: #ff9d4d; font-size: 20px; }
+  #styleTotal { font-size: 12px; color: #b8b2a6; margin-top: 2px; }
+  /* A quick pulse when a trick lands, so the number reads as a hit. */
+  #styleBox.pop #stylePoints { animation: stylePop 0.28s ease-out; }
+  @keyframes stylePop {
+    0%   { transform: scale(1.35); color: #ffd24d; }
+    100% { transform: scale(1); color: #fff; }
+  }
+  #styleBox.bail #stylePoints { color: #ff6b6b; }
+
+  /* --- Sign editor -------------------------------------------------------- */
+  .signPanel { max-width: 420px; }
+  .signBoard {
+    background: #8f6d43;
+    border: 3px solid #6b4f2e;
+    border-radius: 4px;
+    padding: 12px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .signLine {
+    width: 100%;
+    background: rgba(0,0,0,0.18);
+    border: 1px solid #6b4f2e;
+    border-radius: 2px;
+    color: #2b1d0e;
+    font: inherit;
+    font-size: 16px;
+    text-align: center;
+    padding: 5px 6px;
+    outline: none;
+  }
+  .signLine:focus { border-color: #f0d9a8; background: rgba(255,255,255,0.14); }
+
+  /* --- Achievements and statistics ---------------------------------------- */
+  .progressPanel { max-width: 700px; }
+  .progressCount { font-size: 14px; color: #b8b2a6; margin-left: 8px; }
+  .progressColumns { display: flex; gap: 18px; align-items: flex-start; }
+  .progressColumn { flex: 1; min-width: 0; }
+  .achievementList, .statList {
+    list-style: none; margin: 0; padding: 0;
+    max-height: 46vh; overflow-y: auto;
+  }
+  .achievementList li {
+    display: flex; flex-direction: column;
+    padding: 6px 8px; margin-bottom: 4px;
+    border-radius: 3px;
+    border-left: 3px solid #4a4a4a;
+    background: rgba(255,255,255,0.04);
+  }
+  .achievementList li.earned {
+    border-left-color: #7cc46b;
+    background: rgba(124,196,107,0.12);
+  }
+  .achievementList li.locked .achTitle { color: #8a857c; }
+  .achTitle { font-size: 14px; color: #f0ead8; }
+  .achHint { font-size: 11px; color: #9d978c; margin-top: 2px; }
+  .statList li {
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 5px 8px;
+    font-size: 13px; color: #c9c3b6;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .statValue { color: #f0ead8; }
   #compassNeedle {
     font-style: normal;
     font-size: 20px;
@@ -558,6 +639,11 @@
   <div id="debug"></div>
   <div id="locator"></div>
   <div id="compass"><span></span><i id="compassNeedle">▲</i></div>
+  <div id="styleBox">
+    <div id="styleTricks"></div>
+    <div id="stylePoints"></div>
+    <div id="styleTotal"></div>
+  </div>
 </div>
 
 <!-- World select ---------------------------------------------------------->
@@ -787,6 +873,38 @@
       <div class="invGrid" id="chestHotbarGrid"></div>
     </div>
     <p class="subtitle" style="margin:14px 0 0">Press <b>E</b> or <b>Esc</b> to close. Contents stay in the chest.</p>
+  </div>
+</div>
+
+<div id="signScreen" class="overlay">
+  <div class="panel signPanel">
+    <h2 style="text-align:left">Sign</h2>
+    <div class="signBoard">
+      <input id="signLine0" class="signLine" maxlength="15" autocomplete="off" spellcheck="false">
+      <input id="signLine1" class="signLine" maxlength="15" autocomplete="off" spellcheck="false">
+      <input id="signLine2" class="signLine" maxlength="15" autocomplete="off" spellcheck="false">
+      <input id="signLine3" class="signLine" maxlength="15" autocomplete="off" spellcheck="false">
+    </div>
+    <p class="subtitle" style="margin:14px 0 0">Press <b>Esc</b> to close. The text is saved with the world.</p>
+  </div>
+</div>
+
+<div id="progressScreen" class="overlay">
+  <div class="panel progressPanel">
+    <h2 style="text-align:left">
+      Progress <span id="progressCount" class="progressCount"></span>
+    </h2>
+    <div class="progressColumns">
+      <div class="progressColumn">
+        <div class="invLabel">Achievements</div>
+        <ul id="achievementList" class="achievementList"></ul>
+      </div>
+      <div class="progressColumn">
+        <div class="invLabel">Statistics</div>
+        <ul id="statList" class="statList"></ul>
+      </div>
+    </div>
+    <p class="subtitle" style="margin:14px 0 0">Press <b>L</b> or <b>Esc</b> to close.</p>
   </div>
 </div>
 

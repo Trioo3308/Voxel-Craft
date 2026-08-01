@@ -13,6 +13,7 @@ import { ItemEntity } from './itemEntity.js';
 import { rollLoot } from './loot.js';
 import { dimensionInfo } from '../world/dimensions.js';
 import { Arrow } from './projectile.js';
+import { Rocket } from './rocket.js';
 import { AIR, BLOCKS, getMaxStack } from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
 
@@ -175,15 +176,26 @@ export class EntityManager {
   }
 
   _updateProjectiles(dt, ctx) {
+    // Rockets share this list: both are things that fly, tick and remove
+    // themselves, and the loop needs nothing else from them.
+    const context = { ...ctx, particles: this.particles };
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
-      const arrow = this.projectiles[i];
-      arrow.update(dt, ctx);
-      if (!arrow.removed) continue;
+      const projectile = this.projectiles[i];
+      projectile.update(dt, context);
+      if (!projectile.removed) continue;
 
-      this.scene.remove(arrow.mesh);
-      arrow.dispose();
+      this.scene.remove(projectile.mesh);
+      projectile.dispose();
       this.projectiles.splice(i, 1);
     }
+  }
+
+  /** Launch a firework rocket. */
+  launchRocket(position, direction) {
+    const rocket = new Rocket(this.world, position, direction);
+    this.projectiles.push(rocket);
+    this.scene.add(rocket.mesh);
+    return rocket;
   }
 
   /** Fire a projectile from `mob` toward `target`, leading the shot slightly. */
@@ -565,6 +577,10 @@ export class EntityManager {
   // -------------------------------------------------------------------------
 
   _dropLoot(mob) {
+    // Counted here rather than at the damage site: this is the one place that
+    // runs exactly once per mob that actually died.
+    if (this.onMobKilled) this.onMobKilled(mob);
+
     // A `lootTable` (bosses) rolls weighted rewards; a plain `drops` list is the
     // fixed everyday case. Either may be present.
     if (mob.type.lootTable) {

@@ -38,6 +38,8 @@ export class SkyCycle {
   constructor(renderer, startTime = 0.1) {
     this.renderer = renderer;
     this.time = startTime;
+    /** Dawns since the world was made. Saved, so it survives a reload. */
+    this.dayCount = 0;
     this.cycleLength = Settings.survival.dayLengthSeconds;
     this.paused = false;
 
@@ -81,6 +83,8 @@ export class SkyCycle {
 
   /** Jump forward to the next sunrise / sunset. */
   skipToNextPhase() {
+    // Sleeping through to dawn is still a day survived.
+    if (this.isNight) this.dayCount++;
     this.setTime(this.isNight ? 0.02 : 0.52);
   }
 
@@ -130,7 +134,11 @@ export class SkyCycle {
     }
 
     if (!this.paused) {
-      this.time = (this.time + dt / this.cycleLength) % 1;
+      const advanced = this.time + dt / this.cycleLength;
+      // Every wrap past 1 is another dawn. Counted here rather than derived
+      // from elapsed time, so sleeping through a night still counts as a day.
+      if (advanced >= 1) this.dayCount++;
+      this.time = advanced % 1;
     }
 
     const h = this.sunHeight;

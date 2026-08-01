@@ -121,6 +121,13 @@ export class World {
      */
     this.blockEntities = new Map();
 
+    /**
+     * Reported when a furnace finishes an item, so the game can count it. The
+     * world does not know or care what anything does with that.
+     * @type {((itemId: number) => void)|null}
+     */
+    this.onSmelted = null;
+
     this.fluids = new FluidSimulator(this);
     this._tickAccumulator = 0;
 
@@ -611,7 +618,7 @@ export class World {
 
     for (const [key, entity] of this.blockEntities) {
       if (entity.type !== 'furnace') continue;
-      tickFurnace(entity.state, dt);
+      tickFurnace(entity.state, dt, this.onSmelted);
 
       // Swap the block between lit and unlit so the glow shows in the world.
       // Only on an actual transition, since each swap costs a chunk remesh.

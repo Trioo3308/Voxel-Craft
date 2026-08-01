@@ -270,6 +270,78 @@ export class ParticleSystem {
     });
   }
 
+  /** Soft green motes rising off an attuned sustingus while it heals you. */
+  sustain(x, y, z, count = 4) {
+    for (let n = 0; n < count; n++) {
+      this.spawn({
+        x: x + (Math.random() - 0.5) * 0.8,
+        y: y + (Math.random() - 0.5) * 0.4,
+        z: z + (Math.random() - 0.5) * 0.8,
+        vx: (Math.random() - 0.5) * 0.4,
+        vy: 0.7 + Math.random() * 0.5,
+        vz: (Math.random() - 0.5) * 0.4,
+        life: 0.8 + Math.random() * 0.5,
+        size: 0.05,
+        color: Math.random() < 0.5 ? 0x9ee08a : 0xe8f0b4,
+        ghost: true,
+        buoyant: true,
+      });
+    }
+  }
+
+  /**
+   * A firework burst: a shell of sparks in one or two colours, plus the smoke
+   * they leave behind.
+   */
+  firework(x, y, z, colors, count = 70) {
+    for (let n = 0; n < count; n++) {
+      // Points on a sphere, so the burst is a shell rather than a blob.
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const speed = 5 + Math.random() * 4;
+      this.spawn({
+        x, y, z,
+        vx: Math.sin(phi) * Math.cos(theta) * speed,
+        vy: Math.cos(phi) * speed,
+        vz: Math.sin(phi) * Math.sin(theta) * speed,
+        life: 0.7 + Math.random() * 0.7,
+        size: 0.07 + Math.random() * 0.05,
+        color: colors[(Math.random() * colors.length) | 0],
+        ghost: true,
+      });
+    }
+    for (let n = 0; n < 10; n++) {
+      this.spawn({
+        x, y, z,
+        vx: (Math.random() - 0.5) * 2,
+        vy: Math.random() * 1.2,
+        vz: (Math.random() - 0.5) * 2,
+        life: 1.4 + Math.random(),
+        size: 0.1,
+        color: 0x555055,
+        ghost: true,
+        buoyant: true,
+      });
+    }
+  }
+
+  /** The trail behind a climbing rocket. */
+  rocketTrail(x, y, z) {
+    for (let n = 0; n < 3; n++) {
+      this.spawn({
+        x: x + (Math.random() - 0.5) * 0.2,
+        y, z: z + (Math.random() - 0.5) * 0.2,
+        vx: (Math.random() - 0.5) * 0.8,
+        vy: -1 - Math.random(),
+        vz: (Math.random() - 0.5) * 0.8,
+        life: 0.3 + Math.random() * 0.3,
+        size: 0.06,
+        color: Math.random() < 0.5 ? 0xffc357 : 0x8a8a8a,
+        ghost: true,
+      });
+    }
+  }
+
   /** Motes drifting off a lit portal. */
   portalMotes(x, y, z, count = 2) {
     for (let n = 0; n < count; n++) {

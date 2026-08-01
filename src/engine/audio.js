@@ -28,6 +28,54 @@ const MATERIALS = {
   liquid: { freq: 700,  q: 0.5, decay: 0.22, gain: 0.30, noise: 'pink' },
 };
 
+/**
+ * The records.
+ *
+ * A tune is a list of `[semitonesFromRoot, beats]` pairs; `null` is a rest.
+ * Writing them as intervals rather than frequencies means a tune can be
+ * transposed by changing one number, and it keeps each one down to a few lines
+ * — which matters, because there are no audio files anywhere in this project.
+ */
+const TUNES = {
+  // Slow, unhurried, minor pentatonic. Something to build to.
+  drift: {
+    bpm: 76, root: 220, wave: 'triangle', lowpass: 2200,
+    melody: [[0, 2], [3, 1], [5, 1], [7, 2], [5, 2], [3, 1], [0, 1], [3, 4],
+             [7, 2], [10, 1], [7, 1], [5, 2], [3, 2], [0, 4], [null, 2]],
+    bass: [[-24, 4], [-24, 4], [-17, 4], [-17, 4], [-19, 4], [-19, 4], [-24, 4], [-24, 4]],
+  },
+  // Sparse and wide. Written for the Comb, and it is shrine loot.
+  hollow: {
+    bpm: 60, root: 196, wave: 'sine', lowpass: 1400,
+    melody: [[0, 3], [null, 1], [7, 2], [10, 2], [null, 2], [5, 3], [null, 1],
+             [3, 2], [0, 4], [null, 2], [12, 2], [10, 2], [7, 4]],
+    bass: [[-24, 8], [-19, 8], [-22, 8], [-24, 8]],
+  },
+  // Fast and driving. The one you put on before a run.
+  grind: {
+    bpm: 132, root: 262, wave: 'square', lowpass: 3000,
+    melody: [[0, 1], [0, 0.5], [3, 0.5], [5, 1], [3, 1], [7, 1], [5, 0.5], [3, 0.5],
+             [0, 1], [null, 1], [10, 1], [7, 0.5], [5, 0.5], [3, 1], [0, 2],
+             [7, 0.5], [8, 0.5], [7, 0.5], [5, 0.5], [3, 2]],
+    bass: [[-12, 1], [-12, 1], [-5, 1], [-5, 1], [-7, 1], [-7, 1], [-12, 2]],
+  },
+};
+
+/** Equal temperament, so a tune only has to name intervals. */
+function noteFreq(root, semitones) {
+  return root * Math.pow(2, semitones / 12);
+}
+
+/** Total length of a note list, in beats. */
+function tuneBeats(notes) {
+  let beats = 0;
+  for (const [, length] of notes) beats += length;
+  return beats;
+}
+
+/** Past this many blocks a jukebox is inaudible. */
+const MUSIC_RANGE = 26;
+
 export class AudioEngine {
   constructor() {
     /** @type {AudioContext|null} */
@@ -37,6 +85,11 @@ export class AudioEngine {
     this.volume = 0.7;
     this._noiseBuffers = {};
     this._lastPlay = new Map();
+
+    /** Jukebox playback: the tune, its own gain node, and the loop timer. */
+    this._music = null;
+    this._musicGain = null;
+    this._musicTimer = null;
   }
 
   // -------------------------------------------------------------------------
@@ -387,6 +440,22 @@ export class AudioEngine {
                     type: 'sine', lowpass: base * 4, attack: 0.35 });
         break;
 
+      case 'burble': // sustingus — a wet, uncertain noise from no obvious mouth
+        this.tone({ freq: base, endFreq: base * 1.6, duration: duration * 0.5, gain: level * 0.8,
+                    type: 'sine', lowpass: base * 4, attack: 0.03 });
+        this.tone({ freq: base * 1.4, endFreq: base * 0.7, duration: duration * 0.7, gain: level * 0.6,
+                    type: 'sine', lowpass: base * 3, delay: duration * 0.35, attack: 0.05,
+                    vibrato: { rate: 9, depth: base * 0.12 } });
+        this.noise({ freq: base * 6, q: 1.4, decay: 0.12, gain: level * 0.2, kind: 'pink',
+                     type: 'lowpass', delay: duration * 0.2 });
+        break;
+
+      case 'bark': // wolf — one clipped bark, with the breath after it
+        this.tone({ freq: base * 1.3, endFreq: base * 0.7, duration: duration * 0.5, gain: level,
+                    type: 'sawtooth', lowpass: base * 6, attack: 0.006 });
+        this.noise({ freq: base * 4, q: 1.2, decay: duration * 0.5, gain: level * 0.5, kind: 'pink' });
+        break;
+
       default:
         this.tone({ freq: base, duration, gain: level, type: 'triangle', lowpass: base * 4 });
     }
@@ -580,6 +649,210 @@ export class AudioEngine {
     this._ambience.wind.gain.gain.setTargetAtTime(0, now, 0.3);
     this._ambience.cave.gain.gain.setTargetAtTime(0, now, 0.3);
     if (this._rainGain) this._rainGain.gain.setTargetAtTime(0, now, 0.3);
+  }
+
+  /** A rocket leaving the ground: a hiss that climbs. */
+  rocketLaunch() {
+    if (!this.ready) return;
+    this.noise({ freq: 900, q: 0.5, decay: 0.7, gain: 0.16, kind: 'pink', type: 'bandpass' });
+    this.tone({ freq: 220, endFreq: 900, duration: 0.7, gain: 0.08, type: 'sawtooth', lowpass: 2200 });
+  }
+
+  /**
+   * A firework going off. The crack comes first and the crackle after, which is
+   * what separates it from an explosion.
+   */
+  fireworkBurst(distance = 0) {
+    if (!this.ready) return;
+    const falloff = Math.max(0, Math.pow(1 - Math.min(1, distance / 90), 1.4));
+    if (falloff <= 0.02) return;
+
+    this.noise({ freq: 1600, q: 0.5, decay: 0.22, gain: 0.34 * falloff });
+    this.tone({ freq: 120, endFreq: 40, duration: 0.5, gain: 0.22 * falloff, type: 'sine' });
+    // The crackle: a scatter of tiny pops over the next half second.
+    for (let i = 0; i < 14; i++) {
+      this.noise({
+        freq: 2600 + Math.random() * 2600, q: 8, decay: 0.03,
+        gain: 0.1 * falloff, delay: 0.08 + Math.random() * 0.5,
+      });
+    }
+  }
+
+  /** Board wheels on the ground — a continuous roll while you ride. */
+  skateRoll(speed) {
+    if (!this.ready) return;
+    if (!this._throttle('skate', 0.09)) return;
+    const level = Math.min(1, speed / 9);
+    this.noise({
+      freq: 260 + speed * 40, q: 1.6, decay: 0.14,
+      gain: 0.05 + level * 0.07, kind: 'pink', type: 'bandpass',
+    });
+  }
+
+  /** The pop of an ollie. */
+  skatePop() {
+    if (!this.ready) return;
+    this.noise({ freq: 1500, q: 3, decay: 0.07, gain: 0.2 });
+    this.tone({ freq: 300, endFreq: 140, duration: 0.1, gain: 0.12, type: 'square', lowpass: 1400 });
+  }
+
+  /** Landing a trick cleanly — pitch rises with the combo. */
+  skateLand(combo = 1) {
+    if (!this.ready) return;
+    const base = 420 + Math.min(8, combo) * 90;
+    this.noise({ freq: 900, q: 2, decay: 0.09, gain: 0.16, kind: 'pink' });
+    this.tone({ freq: base, endFreq: base * 1.5, duration: 0.14, gain: 0.13,
+                type: 'triangle', lowpass: base * 5 });
+  }
+
+  /**
+   * Grinding a rail: metal on metal, brighter and thinner than rolling, with a
+   * tone on top so it reads as continuous rather than as rough ground.
+   */
+  skateGrind(speed) {
+    if (!this.ready) return;
+    if (!this._throttle('grind', 0.07)) return;
+    const level = Math.min(1, speed / 9);
+    this.noise({
+      freq: 2400 + speed * 90, q: 5, decay: 0.12,
+      gain: 0.05 + level * 0.06, kind: 'white', type: 'bandpass',
+    });
+    this.tone({ freq: 1150 + speed * 30, duration: 0.09, gain: 0.025,
+                type: 'sawtooth', lowpass: 4200 });
+  }
+
+  /** Bailing. */
+  skateBail() {
+    if (!this.ready) return;
+    this.noise({ freq: 420, q: 0.8, decay: 0.35, gain: 0.24, kind: 'pink', type: 'lowpass' });
+    this.tone({ freq: 200, endFreq: 70, duration: 0.4, gain: 0.16, type: 'sawtooth', lowpass: 800 });
+  }
+
+  // -------------------------------------------------------------------------
+  // Records
+  // -------------------------------------------------------------------------
+
+  /**
+   * Start a record, looping until it is stopped.
+   *
+   * The whole tune is scheduled up front — the Web Audio clock is sample
+   * accurate, whereas a per-note timer would drift audibly within a few bars —
+   * and a timer only fires to schedule the next repeat.
+   */
+  playMusic(name) {
+    const tune = TUNES[name];
+    if (!tune || !this.ready) return false;
+
+    this.stopMusic();
+
+    this._musicGain = this.ctx.createGain();
+    this._musicGain.gain.value = 0.5;
+    this._musicGain.connect(this.master);
+    this._music = name;
+
+    const beat = 60 / tune.bpm;
+    const bars = Math.max(tuneBeats(tune.melody), tuneBeats(tune.bass)) * beat;
+
+    const schedule = () => {
+      if (this._music !== name) return;
+      this._scheduleTune(tune, beat);
+      // Re-arm slightly early so the loop joins without a gap.
+      this._musicTimer = setTimeout(schedule, (bars - 0.1) * 1000);
+    };
+    schedule();
+    return true;
+  }
+
+  /** Lay one pass of a tune onto the audio clock. */
+  _scheduleTune(tune, beat) {
+    const voice = (notes, { wave, gain, octave = 0, sustain = 0.9 }) => {
+      let at = 0;
+      for (const [semi, length] of notes) {
+        const seconds = length * beat;
+        if (semi !== null) {
+          this._musicNote({
+            freq: noteFreq(tune.root, semi + octave * 12),
+            duration: seconds * sustain,
+            delay: at, gain, type: wave, lowpass: tune.lowpass,
+          });
+        }
+        at += seconds;
+      }
+    };
+
+    voice(tune.melody, { wave: tune.wave, gain: 0.16 });
+    voice(tune.bass, { wave: 'triangle', gain: 0.13, sustain: 0.75 });
+  }
+
+  /** A tone routed through the music gain rather than straight to master. */
+  _musicNote({ freq, duration, delay, gain, type, lowpass }) {
+    if (!this.ready || !this._musicGain) return;
+    const t = this.ctx.currentTime + delay;
+
+    const osc = this.ctx.createOscillator();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+
+    const env = this.ctx.createGain();
+    env.gain.setValueAtTime(0, t);
+    env.gain.linearRampToValueAtTime(gain, t + 0.02);
+    env.gain.setValueAtTime(gain, t + duration * 0.6);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + duration);
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = lowpass;
+    filter.Q.value = 0.7;
+
+    osc.connect(filter);
+    filter.connect(env);
+    env.connect(this._musicGain);
+    osc.start(t);
+    osc.stop(t + duration + 0.05);
+  }
+
+  /** Take the record off. */
+  stopMusic() {
+    this._music = null;
+    if (this._musicTimer !== null) {
+      clearTimeout(this._musicTimer);
+      this._musicTimer = null;
+    }
+    if (this._musicGain) {
+      // Fade rather than cut, or already-scheduled notes click as they land.
+      const g = this._musicGain;
+      if (this.ready) {
+        g.gain.setValueAtTime(g.gain.value, this.ctx.currentTime);
+        g.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 0.15);
+        setTimeout(() => g.disconnect(), 400);
+      } else {
+        g.disconnect();
+      }
+      this._musicGain = null;
+    }
+  }
+
+  get musicPlaying() {
+    return this._music !== null;
+  }
+
+  /** Fade the record out with distance, so a jukebox is a place, not a mood. */
+  setMusicDistance(distance) {
+    if (!this._musicGain || !this.ready) return;
+    const level = Math.max(0, 1 - distance / MUSIC_RANGE);
+    this._musicGain.gain.setTargetAtTime(0.5 * level * level, this.ctx.currentTime, 0.2);
+  }
+
+  /** An achievement: a short rising arpeggio, distinct from anything else. */
+  achievement() {
+    if (!this.ready) return;
+    const base = 523;
+    [0, 4, 7, 12].forEach((semi, i) => {
+      this.tone({
+        freq: base * Math.pow(2, semi / 12), duration: 0.22, gain: 0.11,
+        type: 'triangle', delay: i * 0.075, lowpass: 4000,
+      });
+    });
   }
 
   /** Bowstring being drawn — pitch rises with charge. */
