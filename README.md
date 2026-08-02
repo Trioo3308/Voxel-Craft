@@ -1096,6 +1096,20 @@ and bed in an existing world failed to resolve and loaded as **air**. A rename
 is a compatibility event, and `RENAMED` in save.js is where it gets paid for. A
 world saved by the previous shipped build is now loaded item by item as a test.
 
+The cave update shipped with **stalagmites growing all over the grass**. The
+decoration pass looks for air with a solid block under it — which is a perfect
+description of a cave floor and an equally perfect description of an open field.
+It scanned y2–60 with no check that it was underground.
+
+Worth recording *why the tests missed it*. Dripstone is non-solid, so
+`columnHeight` was unaffected, `getSurfaceY` was unaffected, every surface-block
+census still read `grass 26%, podzol 41%` exactly as before, and the suite's
+"dripstone grows in the caves" assertion passed — it counted dripstone without
+ever asking where. A headless surface check confirmed the ground was intact and
+holes had actually gone *down*. It took flying up and looking at the world. The
+suite now asserts decoration never appears within the cave cover depth of the
+surface, which is the assertion that was missing rather than a new one.
+
 **The sustingus, rockets and the skateboard** — 58 headless assertions plus a
 full in-browser pass. Each spin milestone scores exactly one spin and the biggest
 one wins; a flip registers once per jump rather than once per frame; the

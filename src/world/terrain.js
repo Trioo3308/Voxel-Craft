@@ -338,8 +338,14 @@ export class TerrainGenerator {
    * out 1D "worm" tunnels rather than the swiss-cheese blobs a single field
    * would give.
    */
-  isCave(wx, wy, wz) {
-    if (this.version >= 5) return this._isCaveV5(wx, wy, wz);
+  /**
+   * @param surface optional pre-computed column height. The chunk loop already
+   *   knows it, and looking it up again per voxel means a string key and a Map
+   *   probe 32,768 times per chunk — which measured as most of the cost the v5
+   *   rules added.
+   */
+  isCave(wx, wy, wz, surface = null) {
+    if (this.version >= 5) return this._isCaveV5(wx, wy, wz, surface);
 
     if (wy < 4 || wy > 58) return false;
     const a = this.nCaveA.perlin3(wx * 0.028, wy * 0.055, wz * 0.028);
@@ -371,14 +377,14 @@ export class TerrainGenerator {
    * The thresholds are measured against the generator, not guessed — see the
    * diagnostics in the scratchpad and the numbers quoted in the README.
    */
-  _isCaveV5(wx, wy, wz) {
+  _isCaveV5(wx, wy, wz, knownSurface = null) {
     if (wy < 2) return false;
 
     // Fade out as the surface is approached, so caves do not open craters in
     // hillsides. Measured against *depth below this column*, not an absolute
     // height: keyed to absolute y, the same rule that left a comfortable roof
     // under a plateau punched straight through the floor of a valley.
-    const surface = this.columnHeight(wx, wz);
+    const surface = knownSurface ?? this.columnHeight(wx, wz);
     const cover = surface - wy;
     if (cover < CAVE_MIN_COVER) return false;
     const surfaceFade = cover < CAVE_FADE_COVER
@@ -393,9 +399,14 @@ export class TerrainGenerator {
 
     // --- Open caverns -------------------------------------------------------
     // One low-frequency field: where it peaks, the rock is simply gone. These
-    // are rare but large, and they are what a cave system is *for*.
-    const cavern = this.nCavern.perlin3(wx * 0.013, wy * 0.021, wz * 0.013);
-    if (cavern > 0.46 - depth * 0.08 && surfaceFade > 0.6) return true;
+    // are rare but large, and they are what a cave system is *for*. The cheap
+    // fade test gates the noise call rather than being ANDed after it — three
+    // cave systems is three times the sampling, and this pays for one of them
+    // near the surface where caverns are not allowed anyway.
+    if (surfaceFade > 0.6) {
+      const cavern = this.nCavern.perlin3(wx * 0.013, wy * 0.021, wz * 0.013);
+      if (cavern > 0.46 - depth * 0.08) return true;
+    }
 
     // --- The original worm pair --------------------------------------------
     const a = this.nCaveA.perlin3(wx * 0.028, wy * 0.055, wz * 0.028);
@@ -535,8 +546,10 @@ export class TerrainGenerator {
               if (ore) id = ore;
             }
 
-            // Caves carve everything except bedrock.
-            if (this.isCave(wx, y, wz)) {
+            // Caves carve everything except bedrock. `height` is passed through
+            // so the cave rule does not re-derive a column this loop already
+            // has.
+            if (this.isCave(wx, y, wz, height)) {
               if (y < sea && submerged) id = WATER.id;
               else if (this.isLavaLake(wx, y, wz)) id = LAVA.id;
               else id = AIR;
@@ -604,7 +617,15 @@ export class TerrainGenerator {
     for (let lz = 0; lz < CHUNK_SZ; lz++) {
       for (let lx = 0; lx < CHUNK_SX; lx++) {
         const wx = baseX + lx, wz = baseZ + lz;
-        for (let y = 2; y < 60; y++) {
+        // Only decorate what is actually underground. Without this the pass
+        // finds the open sky above the ground — air with a solid block under
+        // it, which is exactly what a cave floor looks like — and grows
+        // stalagmites all over the grass. It survived the first review because
+        // dripstone is non-solid, so `columnHeight` and every solid-top check
+        // still read perfectly normal; you had to *look* at the world.
+        const roof = this.columnHeight(wx, wz) - CAVE_MIN_COVER;
+
+        for (let y = 2; y < Math.min(roof, 60); y++) {
           if (voxels[voxelIndex(lx, y, lz)] !== AIR) continue;
 
           const floor = solid(lx, y - 1, lz);
