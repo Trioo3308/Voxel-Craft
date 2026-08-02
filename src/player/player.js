@@ -18,7 +18,7 @@ import {
   ITEM_ID, WATER, LAVA, PORTAL,
   GRASS, DIRT, DRY_GRASS, PODZOL, SWAMP_GRASS,
   FARMLAND, FARMLAND_MOIST, isFarmland, WHEAT_STAGES, wheatStage,
-  RAIL,
+  RAIL, isDoor, isBed, doorBlock, bedBlock, FACINGS, facingFromLook,
 } from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
 
@@ -1435,13 +1435,34 @@ export class Player {
     // …or a mob.
     if (ctx.entities && ctx.entities.anyMobIntersectsBlock(x, y, z)) return false;
 
-    // Doors are two blocks tall; refuse the placement unless both fit.
     const def = getBlock(held);
-    if (def.name === 'door') {
-      const above = this.world.getBlock(x, y + 1, z);
-      if (above !== AIR && !isLiquid(above)) return false;
-      if (!this.world.setBlock(x, y, z, held)) return false;
-      this.world.setBlock(x, y + 1, z, held);
+    const free = (bx, by, bz) => {
+      const id = this.world.getBlock(bx, by, bz);
+      return id === AIR || isLiquid(id);
+    };
+
+    if (isDoor(held)) {
+      // Two blocks tall, and turned to face whoever is placing it — a door with
+      // no facing puts its panel on a fixed side of the cell, which is what
+      // made walking into one feel like clipping through it.
+      const facing = this._placementFacing();
+      if (!free(x, y + 1, z)) return false;
+      const bottom = doorBlock(facing, false).id;
+      if (!this.world.setBlock(x, y, z, bottom)) return false;
+      this.world.setBlock(x, y + 1, z, bottom);
+    } else if (isBed(held)) {
+      // A bed is a foot and a head laid along the way you are facing. Both
+      // halves need floor under them, or you get a bed hanging over a drop.
+      const facing = this._placementFacing();
+      const { dx, dz } = FACINGS[facing];
+      const hx = x + dx, hz = z + dz;
+      if (!free(hx, y, hz)) return false;
+      if (!getBlock(this.world.getBlock(x, y - 1, z)).solid) return false;
+      if (!getBlock(this.world.getBlock(hx, y - 1, hz)).solid) return false;
+      if (ctx.entities && ctx.entities.anyMobIntersectsBlock(hx, y, hz)) return false;
+      if (this._intersectsBlock(hx, y, hz)) return false;
+      if (!this.world.setBlock(x, y, z, bedBlock(facing, false).id)) return false;
+      this.world.setBlock(hx, y, hz, bedBlock(facing, true).id);
     } else if (!this.world.setBlock(x, y, z, held)) {
       return false;
     }
@@ -1451,6 +1472,17 @@ export class Player {
     this.didSwing = true;
     if (this.onBlockPlaced) this.onBlockPlaced(held);
     return true;
+  }
+
+  /**
+   * Which way a door or bed you are placing should point.
+   *
+   * The facing the player is looking *along*, so a door fills the gap you are
+   * walking through and a bed lies away from you rather than across you.
+   */
+  _placementFacing() {
+    const look = this.getLookDirection();
+    return facingFromLook(look.x, look.z);
   }
 
   _tryEat() {

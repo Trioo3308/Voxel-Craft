@@ -184,6 +184,18 @@ export const TILE = {
   DISC_HOLLOW: 221,
   DISC_GRIND: 222,
 
+  // --- Beds, and the caves ---------------------------------------------------
+  BED_HEAD_TOP: 223,
+  DEEPSLATE: 224,
+  DEEPSLATE_COBBLE: 225,
+  DRIPSTONE: 226,
+  GLOW_LICHEN: 227,
+  GEODE_SHELL: 228,
+  GEODE_CRYSTAL: 229,
+  CAVE_CRYSTAL: 230,
+  GLOW_BERRY: 231,
+  CAVE_LANTERN: 232,
+
   // --- The Comb -------------------------------------------------------------
   COMB_RESIN: 173,
   COMB_RESIN_ITEM: 174,
@@ -259,9 +271,19 @@ export const SHAPES = {
   STAIR: [[0, 0, 0, 1, 0.5, 1], [0, 0.5, 0, 1, 1, 0.5]],
   // Post plus two rails; 1.5 high so mobs cannot hop it.
   FENCE: [[0.375, 0, 0.375, 0.625, 1.5, 0.625]],
-  // Thin panel against the -Z face, and the rotated open position.
-  DOOR_CLOSED: [[0, 0, 0, 1, 1, 0.1875]],
-  DOOR_OPEN: [[0, 0, 0, 0.1875, 1, 1]],
+  /**
+   * Door panels, one per side of the block.
+   *
+   * A door used to have exactly two shapes — a panel on -Z when closed and one
+   * on -X when open — with no notion of which way it had been placed. Approach
+   * such a door from the east and the panel is off to one side of the cell, so
+   * you walk *into* the block, stop halfway, and appear to clip through it.
+   * Four panels and a facing is what fixes that.
+   */
+  PANEL_NZ: [[0, 0, 0, 1, 1, 0.1875]],
+  PANEL_PZ: [[0, 0, 0.8125, 1, 1, 1]],
+  PANEL_NX: [[0, 0, 0, 0.1875, 1, 1]],
+  PANEL_PX: [[0.8125, 0, 0, 1, 1, 1]],
   BED: [[0, 0, 0, 1, 0.5625, 1]],
   TORCH: [[0.4375, 0, 0.4375, 0.5625, 0.625, 0.5625]],
   CHEST: [[0.0625, 0, 0.0625, 0.9375, 0.875, 0.9375]],
@@ -373,6 +395,15 @@ function defineBlock(id, name, options = {}) {
     sapling: options.sapling ?? null,
     /** Light this block emits, 0..15. */
     lightEmission: options.lightEmission ?? 0,
+    /**
+     * Facing index into FACINGS, for the blocks that have one. Null rather than
+     * undefined so `!== null` is a reliable "is this a door" test — facing 0 is
+     * a real facing and would fail a truthiness check.
+     */
+    doorFacing: options.doorFacing ?? null,
+    doorOpen: options.doorOpen ?? false,
+    bedFacing: options.bedFacing ?? null,
+    bedHead: options.bedHead ?? false,
     displayName: options.displayName ?? name,
   };
 
@@ -471,85 +502,76 @@ export const LAVA = BLOCKS[LAVA_FLUID.sourceId];
 // Item ids
 // ---------------------------------------------------------------------------
 // Declared before the ore blocks so their `drops` can name the item they yield.
-export const ITEM_ID_BASE = 128;
+//
+// Raised from 128 to 256 when doors and beds gained facings: four rotations
+// times two states each is sixteen block ids on its own, and only eighteen were
+// left under the old split. Voxels are a Uint8Array, so a block id can be
+// anything up to 255 — 128 was never a storage limit, only the line that told
+// `isBlockId` which side of the fence an id was on. Saves remap by name, so
+// moving the line costs existing worlds nothing.
+export const ITEM_ID_BASE = 256;
 
-export const ITEM_ID = {
-  PORKCHOP: 128,
-  ROTTEN_FLESH: 129,
-  STICK: 130,
-  COAL: 131,
-  IRON_INGOT: 132,
-  GOLD_INGOT: 133,
-  DIAMOND: 134,
-  REDSTONE: 135,
-  LAPIS: 136,
-  EMERALD: 137,
-  COOKED_PORKCHOP: 138,
-  BEEF: 139,
-  COOKED_BEEF: 140,
-  MUTTON: 141,
-  COOKED_MUTTON: 142,
-  CHICKEN_RAW: 143,
-  CHICKEN_COOKED: 144,
-  LEATHER: 145,
-  FEATHER: 146,
-  BONE: 147,
-  STRING: 148,
-  ARROW: 149,
-  SPIDER_EYE: 150,
-  BOW: 151,
-  GUNPOWDER: 152,
+/**
+ * Named items, in allocation order. Appending to this list is the whole of
+ * adding an item id.
+ *
+ * The numbers used to be written out by hand, and the gear runs that follow
+ * them were written out by hand too. That went wrong four separate times: every
+ * new item pushed the named block up until it collided with `TOOL_BASE`, and
+ * each collision meant renumbering both runs and re-proving that saved worlds
+ * still loaded. Generating all of it removes the failure mode rather than
+ * documenting it — and because saves remap by *name*, the actual numbers have
+ * never mattered to anything but this file.
+ *
+ * The one real rule: **never reorder or delete an entry**, because that is what
+ * the palette's names are keyed to. Append only.
+ */
+const NAMED_ITEMS = [
+  'PORKCHOP', 'ROTTEN_FLESH', 'STICK', 'COAL', 'IRON_INGOT', 'GOLD_INGOT',
+  'DIAMOND', 'REDSTONE', 'LAPIS', 'EMERALD', 'COOKED_PORKCHOP',
+  'BEEF', 'COOKED_BEEF', 'MUTTON', 'COOKED_MUTTON', 'CHICKEN_RAW',
+  'CHICKEN_COOKED', 'LEATHER', 'FEATHER', 'BONE', 'STRING', 'ARROW',
+  'SPIDER_EYE', 'BOW', 'GUNPOWDER',
 
   // --- Combium & buckets ---------------------------------------------------
-  COMBIUM_INGOT: 153,
-  BUCKET: 154,
-  BUCKET_WATER: 155,
-  BUCKET_LAVA: 156,
-  BUCKET_MILK: 157,
-  COMB_HEART: 158,
-  COMB_SHARD: 159,
+  'COMBIUM_INGOT', 'BUCKET', 'BUCKET_WATER', 'BUCKET_LAVA', 'BUCKET_MILK',
+  'COMB_HEART', 'COMB_SHARD',
 
   // --- Farming --------------------------------------------------------------
-  WHEAT: 160,
-  SEEDS: 161,
-  BREAD: 162,
+  'WHEAT', 'SEEDS', 'BREAD',
 
   // --- The Comb -------------------------------------------------------------
-  COMB_RESIN: 163,
-  CROWN: 164,
+  'COMB_RESIN', 'CROWN',
 
   // --- Husbandry, fishing and climbing --------------------------------------
-  SHEARS: 165,
-  FISHING_ROD: 166,
-  FISH: 167,
-  COOKED_FISH: 168,
+  'SHEARS', 'FISHING_ROD', 'FISH', 'COOKED_FISH',
 
   // --- Comb expansion -------------------------------------------------------
-  AMBER: 169,
-  ROYAL_JELLY: 170,
-  SHRINE_COMPASS: 171,
+  'AMBER', 'ROYAL_JELLY', 'SHRINE_COMPASS',
 
   // --- Sustingus, rockets, skateboard ---------------------------------------
-  SUSTINGUS_JELLY: 172,
-  ROCKET: 173,
-  SKATEBOARD: 174,
+  'SUSTINGUS_JELLY', 'ROCKET', 'SKATEBOARD',
 
   // --- Boats, food and records ----------------------------------------------
-  BOAT: 175,
-  BOWL: 176,
-  MUSHROOM_STEW: 177,
-  APPLE: 178,
-  GOLDEN_APPLE: 179,
-  DISC_DRIFT: 180,
-  DISC_HOLLOW: 181,
-  DISC_GRIND: 182,
+  'BOAT', 'BOWL', 'MUSHROOM_STEW', 'APPLE', 'GOLDEN_APPLE',
+  'DISC_DRIFT', 'DISC_HOLLOW', 'DISC_GRIND',
 
-  // Gear runs are 30 and 24 wide. They have moved three times now — for the
-  // hoe, for named-item room, and again here — and saves remap by *name*, so
-  // this is safe as long as no name changes.
-  TOOL_BASE: 184,   // 184..213 (5 kinds x 6 materials)
-  ARMOR_BASE: 216,  // 216..239 (4 pieces x 6 material slots)
-};
+  // --- The caves ------------------------------------------------------------
+  'CAVE_CRYSTAL', 'GLOW_BERRY',
+];
+
+export const ITEM_ID = {};
+for (let i = 0; i < NAMED_ITEMS.length; i++) ITEM_ID[NAMED_ITEMS[i]] = ITEM_ID_BASE + i;
+
+/**
+ * Tool and armour icons are generated parametrically (kind x material), so they
+ * take contiguous runs after the named items rather than individual entries.
+ * Both bases are rounded up to a multiple of the stride, purely so the numbers
+ * stay readable when debugging.
+ */
+const roundUp = (n, step) => Math.ceil(n / step) * step;
+ITEM_ID.TOOL_BASE = roundUp(ITEM_ID_BASE + NAMED_ITEMS.length, GEAR_STRIDE);
+ITEM_ID.ARMOR_BASE = ITEM_ID.TOOL_BASE + roundUp(TOOL_KINDS.length * GEAR_STRIDE, GEAR_STRIDE);
 
 // ---------------------------------------------------------------------------
 // Ores
@@ -761,25 +783,126 @@ export const SANDSTONE_BUILD = defineBuildingSet(46, 58); // 58,59,60
 // Open/closed is encoded as two block ids rather than metadata, the same trick
 // used for the lit furnace — it keeps the world a flat Uint8Array.
 
-export const DOOR_CLOSED = defineBlock(61, 'door', {
-  displayName: 'Wooden Door', tiles: TILE.DOOR, hardness: 1.0, toolType: 'axe',
-  shape: SHAPES.DOOR_CLOSED,
-});
+/**
+ * The four horizontal facings, in a fixed order.
+ *
+ * `dx`/`dz` is the direction the block faces — for a door, the side the panel
+ * sits on and therefore the side you walk up to it from. Index order matters:
+ * rotating by one step is `(facing + 1) % 4`, which is how a door swings.
+ */
+export const FACINGS = [
+  { name: 'north', dx: 0, dz: -1, panel: 'PANEL_NZ' },
+  { name: 'east',  dx: 1, dz: 0,  panel: 'PANEL_PX' },
+  { name: 'south', dx: 0, dz: 1,  panel: 'PANEL_PZ' },
+  { name: 'west',  dx: -1, dz: 0, panel: 'PANEL_NX' },
+];
 
-export const DOOR_OPEN = defineBlock(62, 'door_open', {
-  displayName: 'Wooden Door', tiles: TILE.DOOR, hardness: 1.0, toolType: 'axe',
-  shape: SHAPES.DOOR_OPEN, drops: 61, obtainable: false,
-});
-
-export function isDoor(id) {
-  return id === DOOR_CLOSED.id || id === DOOR_OPEN.id;
+/** Nearest facing to a look direction. Used when placing a door or a bed. */
+export function facingFromLook(dx, dz) {
+  return Math.abs(dx) > Math.abs(dz)
+    ? (dx > 0 ? 1 : 3)
+    : (dz > 0 ? 2 : 0);
 }
 
-export const BED = defineBlock(63, 'bed', {
-  displayName: 'Bed', hardness: 0.4,
-  tiles: { top: TILE.BED_TOP, bottom: TILE.PLANKS, side: TILE.BED_SIDE },
-  shape: SHAPES.BED,
-});
+// ---------------------------------------------------------------------------
+// Doors
+// ---------------------------------------------------------------------------
+/**
+ * Eight ids: four facings times open/closed.
+ *
+ * Metadata would be the obvious way to store a facing, but the world is a flat
+ * Uint8Array with no room for it, and the mesher runs in a worker that only
+ * receives that array — so anything the geometry depends on has to *be* the id.
+ * That is the same reasoning behind the lit furnace and the awakened throne.
+ *
+ * A closed door's panel sits on its facing side; opening it swings the panel
+ * one step round, which is why the facing order above is fixed.
+ */
+export const DOORS = [];
+for (let f = 0; f < FACINGS.length; f++) {
+  for (const open of [false, true]) {
+    const facing = FACINGS[f];
+    // Open swings the panel to the next side round.
+    const panel = open ? FACINGS[(f + 1) % 4].panel : facing.panel;
+    const id = 110 + f * 2 + (open ? 1 : 0);
+    const block = defineBlock(id, open ? `door_open_${facing.name}` : `door_${facing.name}`, {
+      displayName: 'Wooden Door', tiles: TILE.DOOR, hardness: 1.0, toolType: 'axe',
+      shape: SHAPES[panel],
+      // Only the plain closed north door is a real item; every other variant is
+      // a state of one that has been placed, and drops that one.
+      obtainable: !open && f === 0,
+      doorFacing: f,
+      doorOpen: open,
+    });
+    DOORS.push(block);
+  }
+}
+
+/** The one you craft, carry and place. Facing is chosen at placement time. */
+export const DOOR_CLOSED = DOORS[0];
+
+export function doorBlock(facing, open) {
+  return DOORS[((facing % 4) + 4) % 4 * 2 + (open ? 1 : 0)];
+}
+
+export function isDoor(id) {
+  const block = BLOCKS[id];
+  return !!block && block.doorFacing !== null;
+}
+
+export function isDoorOpen(id) {
+  const block = BLOCKS[id];
+  return !!block && block.doorOpen === true;
+}
+
+// Every door variant drops the carryable one.
+for (const door of DOORS) door.drops = DOOR_CLOSED.id;
+
+// ---------------------------------------------------------------------------
+// Beds
+// ---------------------------------------------------------------------------
+/**
+ * Eight ids: four facings times foot/head.
+ *
+ * A bed was one block, which meant it had no direction to lie in and looked
+ * like a rug. Two halves give it a length, and the head end carries a pillow so
+ * which way it points is readable without needing rotated textures — the mesher
+ * has no UV rotation, so a directional top face is not on the table.
+ */
+export const BEDS = [];
+for (let f = 0; f < FACINGS.length; f++) {
+  for (const head of [false, true]) {
+    const facing = FACINGS[f];
+    const id = 118 + f * 2 + (head ? 1 : 0);
+    const block = defineBlock(id, head ? `bed_head_${facing.name}` : `bed_foot_${facing.name}`, {
+      displayName: 'Bed', hardness: 0.4,
+      tiles: {
+        top: head ? TILE.BED_HEAD_TOP : TILE.BED_TOP,
+        bottom: TILE.PLANKS,
+        side: TILE.BED_SIDE,
+      },
+      shape: SHAPES.BED,
+      obtainable: !head && f === 0,
+      bedFacing: f,
+      bedHead: head,
+    });
+    BEDS.push(block);
+  }
+}
+
+/** The one you craft and carry. */
+export const BED = BEDS[0];
+
+export function bedBlock(facing, head) {
+  return BEDS[((facing % 4) + 4) % 4 * 2 + (head ? 1 : 0)];
+}
+
+export function isBed(id) {
+  const block = BLOCKS[id];
+  return !!block && block.bedFacing !== null;
+}
+
+for (const bed of BEDS) bed.drops = BED.id;
 
 export const TORCH = defineBlock(64, 'torch', {
   displayName: 'Torch', tiles: TILE.TORCH, hardness: 0.1,
@@ -1209,6 +1332,71 @@ export const MUSHROOM_BROWN = defineBlock(109, 'mushroom_brown', {
   cross: true, crossHeight: 0.4,
 });
 
+// ---------------------------------------------------------------------------
+// The deep: stone, decoration and what grows down there
+// ---------------------------------------------------------------------------
+
+/**
+ * Deepslate. Below y16 the stone changes, so how far down you are is readable
+ * without checking the coordinate readout — which matters now that the deep is
+ * somewhere you spend time rather than a wall you tunnel through.
+ *
+ * Slower to mine than stone, so descending still costs something.
+ */
+export const DEEPSLATE = defineBlock(126, 'deepslate', {
+  displayName: 'Deepslate', tiles: TILE.DEEPSLATE, hardness: 3.0,
+  toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
+  drops: 127,
+});
+
+export const DEEPSLATE_COBBLE = defineBlock(127, 'deepslate_cobble', {
+  displayName: 'Cobbled Deepslate', tiles: TILE.DEEPSLATE_COBBLE, hardness: 3.0,
+  toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
+});
+
+/**
+ * Dripstone. Rendered as a cross rather than a box for the same reason plants
+ * are: a box would print the tapered texture onto a cube's lid and read as a
+ * stone block with a spike drawn on top.
+ */
+export const DRIPSTONE = defineBlock(128, 'dripstone', {
+  displayName: 'Dripstone', tiles: TILE.DRIPSTONE, hardness: 1.4,
+  toolType: 'pickaxe', requiresTool: true,
+  solid: false, opaque: false, cullSameType: false,
+  cross: true, crossHeight: 0.9,
+});
+
+/** Faint light, growing on cave walls. The reason a cave is navigable at all. */
+export const GLOW_LICHEN = defineBlock(129, 'glow_lichen', {
+  displayName: 'Glow Lichen', tiles: TILE.GLOW_LICHEN, hardness: 0.2,
+  solid: false, opaque: false, cullSameType: false,
+  cross: true, crossHeight: 0.85,
+  emissive: true, lightEmission: 7,
+  // Drops itself, so lichen is a light source you can gather and replant, and
+  // occasionally a berry — which is what makes clearing a patch worth doing.
+  bonusDrops: [{ id: ITEM_ID.GLOW_BERRY, chance: 0.35, min: 1, max: 2 }],
+});
+
+/** The rind of a geode — you break through this to reach the crystals. */
+export const GEODE_SHELL = defineBlock(130, 'geode_shell', {
+  displayName: 'Geode Shell', tiles: TILE.GEODE_SHELL, hardness: 2.6,
+  toolType: 'pickaxe', harvestLevel: 1, requiresTool: true,
+});
+
+/** What is inside one. Bright, and the only source of cave crystal. */
+export const GEODE_CRYSTAL = defineBlock(131, 'geode_crystal', {
+  displayName: 'Crystal Cluster', tiles: TILE.GEODE_CRYSTAL, hardness: 1.8,
+  toolType: 'pickaxe', harvestLevel: 1, requiresTool: true,
+  emissive: true, lightEmission: 9,
+  drops: ITEM_ID.CAVE_CRYSTAL, dropCount: [2, 4],
+});
+
+/** Brighter than a torch and it does not need coal — the reward for a geode. */
+export const CAVE_LANTERN = defineBlock(132, 'cave_lantern', {
+  displayName: 'Cave Lantern', tiles: TILE.CAVE_LANTERN, hardness: 0.4,
+  emissive: true, lightEmission: 15,
+});
+
 /** Every log/leaf pair, so terrain can pick a tree style per biome. */
 export const TREE_WOODS = {
   oak: { log: LOG.id, leaves: LEAVES.id },
@@ -1217,7 +1405,8 @@ export const TREE_WOODS = {
 };
 
 // ---------------------------------------------------------------------------
-// Items — ids >= 128 so `id < 128` cheaply means "placeable block".
+// Items — ids at or above ITEM_ID_BASE, so one comparison tells a placeable
+// block from an item. See the note on ITEM_ID_BASE for why the line moved.
 // ---------------------------------------------------------------------------
 export const ITEMS = [];
 
@@ -1387,6 +1576,23 @@ export const DISC_GRIND = defineItem(ITEM_ID.DISC_GRIND, 'disc_grind', {
 
 /** Every record, in the order the loot tables roll them. */
 export const MUSIC_DISCS = [DISC_DRIFT, DISC_HOLLOW, DISC_GRIND];
+
+// ---------------------------------------------------------------------------
+// What the caves yield
+// ---------------------------------------------------------------------------
+
+/** Cut out of a geode. Makes the lantern, and nothing else yet. */
+export const CAVE_CRYSTAL = defineItem(ITEM_ID.CAVE_CRYSTAL, 'cave_crystal', {
+  displayName: 'Cave Crystal', tile: TILE.CAVE_CRYSTAL,
+});
+
+/**
+ * Picked off glow lichen. Weak food, but it is food you find in the one place
+ * you cannot farm — which is the point of it.
+ */
+export const GLOW_BERRY = defineItem(ITEM_ID.GLOW_BERRY, 'glow_berry', {
+  displayName: 'Glow Berries', tile: TILE.GLOW_BERRY, food: 2, saturation: 1,
+});
 
 /**
  * Points at the nearest shrine.

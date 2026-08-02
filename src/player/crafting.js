@@ -19,6 +19,7 @@ import {
   COMB_WAX, COMB_TILE, COMB_PILLAR, COMB_LANTERN, COMB_GLASS, LADDER,
   RESIN_TORCH, HIVE_WALL,
   RAIL, SIGN, JUKEBOX, PRESSURE_PLATE, MUSHROOM_RED, MUSHROOM_BROWN,
+  CAVE_LANTERN, DEEPSLATE, DEEPSLATE_COBBLE,
   ITEM_ID, TOOL_KINDS, ARMOR_PIECES, ARMOR_MATERIAL_NAMES,
   toolItemId, armorItemId, getDisplayName, getThing,
 } from '../world/blocks.js';
@@ -175,6 +176,16 @@ shaped(['PP'], { P: PLANKS.id }, { id: PRESSURE_PLATE.id, count: 1 });
 // where you have spare diamonds — a treat, not a stepping stone.
 shaped(['PPP', 'PDP', 'PPP'], { P: PLANKS.id, D: ITEM_ID.DIAMOND },
        { id: JUKEBOX.id, count: 1 });
+
+// --- The caves ------------------------------------------------------------------
+
+// A caged crystal. Brighter than a torch and it needs no coal, which is the
+// point: by the time you are deep enough to find a geode, coal is a trek away.
+shaped(['III', 'ICI', 'III'], { I: ITEM_ID.IRON_INGOT, C: ITEM_ID.CAVE_CRYSTAL },
+       { id: CAVE_LANTERN.id, count: 2 });
+
+// Deepslate is a building material once you are down there.
+shaped(['DD', 'DD'], { D: DEEPSLATE_COBBLE.id }, { id: DEEPSLATE.id, count: 4 });
 
 // --- Food ---------------------------------------------------------------------
 

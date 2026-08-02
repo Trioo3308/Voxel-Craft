@@ -10,10 +10,11 @@
 import { Noise, hash2i, smoothstep, clamp, mulberry32 } from './noise.js';
 import { CHUNK_SX, CHUNK_SY, CHUNK_SZ, CHUNK_VOLUME, voxelIndex } from './chunk.js';
 import {
-  AIR, GRASS, DIRT, STONE, SAND, GRAVEL, LOG, LEAVES, WATER, BEDROCK, SNOW,
+  AIR, GRASS, DIRT, STONE, SAND, GRAVEL, LOG, LEAVES, WATER, LAVA, BEDROCK, SNOW,
   COAL_ORE, IRON_ORE, GOLD_ORE, REDSTONE_ORE, LAPIS_ORE, DIAMOND_ORE, EMERALD_ORE, COMBIUM_ORE,
   DRY_GRASS, PODZOL, SWAMP_GRASS, CLAY, SANDSTONE, TREE_WOODS,
   COBBLE, MOSSY_COBBLE, CHEST, RAIL, TORCH, MUSHROOM_RED, MUSHROOM_BROWN,
+  DEEPSLATE, DRIPSTONE, GLOW_LICHEN, GEODE_SHELL, GEODE_CRYSTAL,
 } from './blocks.js';
 import Settings from '../settings.js';
 
@@ -22,7 +23,7 @@ import Settings from '../settings.js';
  * Saved worlds record the version they were created with, and the loader
  * refuses to silently regenerate them under different rules — see world/save.js.
  */
-export const TERRAIN_VERSION = 4;
+export const TERRAIN_VERSION = 5;
 
 /**
  * Dungeons sit on a coarse grid, so at most one exists per region. Exported
@@ -38,6 +39,23 @@ export const DUNGEON_SPACING = 10; // chunks
  * should be an event, and two in sight of each other would spoil that.
  */
 export const SKATEPARK_SPACING = 24; // chunks
+
+/** Stone turns to deepslate below this (v5+). */
+export const DEEPSLATE_TOP = 16;
+
+/**
+ * How much rock a cave must keep above it (v5+).
+ *
+ * `MIN_COVER` is a hard floor — no cave ever comes within this many blocks of
+ * the surface, which is what stops a hillside developing holes. `FADE_COVER` is
+ * where tunnels reach full width. Both are depths below the *column*, so the
+ * rule behaves the same on a plateau and in a valley.
+ */
+export const CAVE_MIN_COVER = 5;
+export const CAVE_FADE_COVER = 16;
+
+/** Geodes sit on their own coarse grid, like every other structure here. */
+export const GEODE_SPACING = 8; // chunks
 
 export const BIOME = {
   OCEAN: 0,
@@ -80,12 +98,21 @@ const ORE_TABLE = [
   // existing world out of the dimension. Leaving it ungated only means chunks
   // explored before this update have none, the same seam Minecraft accepts
   // whenever it adds an ore.
-  { id: COMBIUM_ORE.id,  field: 'nCombium',  minY: 1,  maxY: 14,  scale: 0.19, threshold: 0.775 },
-  { id: DIAMOND_ORE.id,  field: 'nDiamond',  minY: 1,  maxY: 16,  scale: 0.16, threshold: 0.76 },
+  // Raised again for the v5 caves, and again by measurement rather than feel.
+  // Opening the deep up cost both ores about a quarter of their blocks — the
+  // rock a vein was sitting in became a cave — while what remained finally
+  // touched an open face often enough to be *found*. These thresholds put the
+  // exposed rate back where a player walking a cave system trips over deep ore
+  // regularly, without the veins themselves becoming common.
+  { id: COMBIUM_ORE.id,  field: 'nCombium',  minY: 1,  maxY: 18,  scale: 0.19, threshold: 0.73 },
+  { id: DIAMOND_ORE.id,  field: 'nDiamond',  minY: 1,  maxY: 20,  scale: 0.16, threshold: 0.725 },
   { id: EMERALD_ORE.id,  field: 'nEmerald',  minY: 4,  maxY: 40,  scale: 0.22, threshold: 0.80, mountainsOnly: true },
   { id: REDSTONE_ORE.id, field: 'nRedstone', minY: 2,  maxY: 22,  scale: 0.13, threshold: 0.68 },
   { id: GOLD_ORE.id,     field: 'nGold',     minY: 3,  maxY: 32,  scale: 0.14, threshold: 0.72 },
-  { id: LAPIS_ORE.id,    field: 'nLapis',    minY: 2,  maxY: 34,  scale: 0.15, threshold: 0.74 },
+  // Nudged up so lapis stays commoner than diamond. Raising the deep ores for
+  // v5 had quietly made the game's most valuable stone easier to find than its
+  // least useful one.
+  { id: LAPIS_ORE.id,    field: 'nLapis',    minY: 2,  maxY: 34,  scale: 0.15, threshold: 0.715 },
   { id: IRON_ORE.id,     field: 'nIron',     minY: 3,  maxY: 62,  scale: 0.13, threshold: 0.66 },
   { id: COAL_ORE.id,     field: 'nCoal',     minY: 5,  maxY: 118, scale: 0.11, threshold: 0.62 },
 ];
@@ -126,6 +153,14 @@ export class TerrainGenerator {
     // shapes it once it does.
     this.nRugged = new Noise(seed + 21);
     this.nCliff = new Noise(seed + 22);
+    // v5: the second, coarser tunnel pair that gives the deep its big galleries,
+    // plus the field that hollows out open caverns and the one that decides
+    // where lava collects.
+    this.nCaveC = new Noise(seed + 23);
+    this.nCaveD = new Noise(seed + 24);
+    this.nCavern = new Noise(seed + 25);
+    this.nLavaLake = new Noise(seed + 26);
+    this.nDecor = new Noise(seed + 27);
 
     // One independent field per ore so their veins do not correlate.
     this.nCoal = new Noise(seed + 9);
@@ -304,6 +339,8 @@ export class TerrainGenerator {
    * would give.
    */
   isCave(wx, wy, wz) {
+    if (this.version >= 5) return this._isCaveV5(wx, wy, wz);
+
     if (wy < 4 || wy > 58) return false;
     const a = this.nCaveA.perlin3(wx * 0.028, wy * 0.055, wz * 0.028);
     if (Math.abs(a) > 0.075) return false;
@@ -311,6 +348,87 @@ export class TerrainGenerator {
     if (Math.abs(b) > 0.075) return false;
     // Taper caves off as they approach the surface so they do not shred hills.
     return true;
+  }
+
+  /**
+   * Caves, v5.
+   *
+   * The old rule was a single pair of thin worms between y4 and y58, and it
+   * measured at 1.4% air in the y1-8 band — the diamond and combium layer was
+   * very nearly solid rock. Both ores *were* generating; only 0.11 and 0.03
+   * blocks per chunk ever touched an open face, so the only way to find either
+   * was to strip mine. Opening the deep is what makes them findable, and it is
+   * a much better fix than simply printing more ore into the same solid stone.
+   *
+   * Three systems now overlap:
+   *   - the original worms, kept so old and new worlds still feel related, but
+   *     widened, and widened *further* with depth;
+   *   - a second, coarser worm pair on its own noise, which produces the long
+   *     galleries the deep was missing;
+   *   - open caverns from a single low-frequency field, which is what gives a
+   *     cave somewhere to stand rather than a tube to shuffle along.
+   *
+   * The thresholds are measured against the generator, not guessed — see the
+   * diagnostics in the scratchpad and the numbers quoted in the README.
+   */
+  _isCaveV5(wx, wy, wz) {
+    if (wy < 2) return false;
+
+    // Fade out as the surface is approached, so caves do not open craters in
+    // hillsides. Measured against *depth below this column*, not an absolute
+    // height: keyed to absolute y, the same rule that left a comfortable roof
+    // under a plateau punched straight through the floor of a valley.
+    const surface = this.columnHeight(wx, wz);
+    const cover = surface - wy;
+    if (cover < CAVE_MIN_COVER) return false;
+    const surfaceFade = cover < CAVE_FADE_COVER
+      ? (cover - CAVE_MIN_COVER) / (CAVE_FADE_COVER - CAVE_MIN_COVER)
+      : 1;
+
+    // Deeper means wider. At y2 the worms are roughly twice the width they are
+    // just under the surface, which is what turns the bottom of the world from
+    // solid rock into somewhere you can actually walk around.
+    const depth = Math.max(0, Math.min(1, (48 - wy) / 46));
+    const width = (0.075 + depth * 0.045) * surfaceFade;
+
+    // --- Open caverns -------------------------------------------------------
+    // One low-frequency field: where it peaks, the rock is simply gone. These
+    // are rare but large, and they are what a cave system is *for*.
+    const cavern = this.nCavern.perlin3(wx * 0.013, wy * 0.021, wz * 0.013);
+    if (cavern > 0.46 - depth * 0.08 && surfaceFade > 0.6) return true;
+
+    // --- The original worm pair --------------------------------------------
+    const a = this.nCaveA.perlin3(wx * 0.028, wy * 0.055, wz * 0.028);
+    if (Math.abs(a) < width) {
+      const b = this.nCaveB.perlin3(wx * 0.028, wy * 0.055, wz * 0.028);
+      if (Math.abs(b) < width) return true;
+    }
+
+    // --- The deep gallery pair ---------------------------------------------
+    // Coarser, so these run longer and straighter, and they are weighted toward
+    // the bottom of the world where the old system left nothing at all.
+    if (depth > 0.25) {
+      const galleryWidth = (0.048 + depth * 0.062) * surfaceFade;
+      const c = this.nCaveC.perlin3(wx * 0.017, wy * 0.032, wz * 0.017);
+      if (Math.abs(c) < galleryWidth) {
+        const d = this.nCaveD.perlin3(wx * 0.017, wy * 0.032, wz * 0.017);
+        if (Math.abs(d) < galleryWidth) return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Should this cave cell be lava rather than air?
+   *
+   * Only right at the bottom, and only where a separate field says so, so lava
+   * pools in the deepest galleries instead of dripping through every tunnel.
+   */
+  isLavaLake(wx, wy, wz) {
+    if (this.version < 5) return false;
+    if (wy > 11) return false;
+    return this.nLavaLake.perlin3(wx * 0.021, wy * 0.06, wz * 0.021) > 0.3;
   }
 
   /**
@@ -405,18 +523,23 @@ export class TerrainGenerator {
               // Optional intermediate stratum (sandstone, clay).
               id = palette.under;
             } else {
-              id = STONE.id;
+              // Deepslate below y16 (v5+), so how deep you are is readable at a
+              // glance rather than something you check the coordinates for.
+              id = this.version >= 5 && y < DEEPSLATE_TOP ? DEEPSLATE.id : STONE.id;
             }
 
-            // Ores only replace plain stone.
-            if (id === STONE.id) {
+            // Ores only replace plain stone — including deepslate, which is
+            // still "plain stone" as far as an ore vein is concerned.
+            if (id === STONE.id || id === DEEPSLATE.id) {
               const ore = this.oreAt(wx, y, wz, biome);
               if (ore) id = ore;
             }
 
             // Caves carve everything except bedrock.
             if (this.isCave(wx, y, wz)) {
-              id = y < sea && submerged ? WATER.id : AIR;
+              if (y < sea && submerged) id = WATER.id;
+              else if (this.isLavaLake(wx, y, wz)) id = LAVA.id;
+              else id = AIR;
             }
           } else if (y <= sea) {
             id = WATER.id;
@@ -455,7 +578,121 @@ export class TerrainGenerator {
     // ---- Pass 3: mushrooms (v4+) ------------------------------------------
     if (this.version >= 4) this._placeMushrooms(voxels, baseX, baseZ);
 
+    // ---- Pass 4: the caves get furnished (v5+) -----------------------------
+    if (this.version >= 5) {
+      this._placeGeodes(voxels, cx, cz, baseX, baseZ);
+      this._decorateCaves(voxels, baseX, baseZ);
+    }
+
     return voxels;
+  }
+
+  /**
+   * Dripstone and glow lichen, hung on whatever the cave passes left behind.
+   *
+   * Done as a post-pass over the finished voxels rather than inside the column
+   * loop, because it needs to know what is *above and below* a cell, and during
+   * the column loop half of that has not been decided yet.
+   */
+  _decorateCaves(voxels, baseX, baseZ) {
+    const solid = (lx, y, lz) => {
+      if (y < 0 || y >= CHUNK_SY) return false;
+      const id = voxels[voxelIndex(lx, y, lz)];
+      return id !== AIR && id !== WATER.id && id !== LAVA.id;
+    };
+
+    for (let lz = 0; lz < CHUNK_SZ; lz++) {
+      for (let lx = 0; lx < CHUNK_SX; lx++) {
+        const wx = baseX + lx, wz = baseZ + lz;
+        for (let y = 2; y < 60; y++) {
+          if (voxels[voxelIndex(lx, y, lz)] !== AIR) continue;
+
+          const floor = solid(lx, y - 1, lz);
+          const ceiling = solid(lx, y + 1, lz);
+          if (!floor && !ceiling) continue;
+
+          // One field drives both, sampled at a fine scale so decoration comes
+          // in patches rather than an even sprinkle.
+          const n = this.nDecor.perlin3(wx * 0.34, y * 0.34, wz * 0.34);
+
+          if (floor && !ceiling && n > 0.42) {
+            voxels[voxelIndex(lx, y, lz)] = DRIPSTONE.id;
+          } else if (ceiling && !floor && n > 0.46) {
+            voxels[voxelIndex(lx, y, lz)] = DRIPSTONE.id;
+          } else if (n < -0.52) {
+            // Lichen prefers the deep, where it is the only light there is.
+            if (y < 34 || n < -0.6) voxels[voxelIndex(lx, y, lz)] = GLOW_LICHEN.id;
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Where the geode in this grid cell is, or null.
+   *
+   * Same pure-function-of-cell shape as dungeons and skate parks, so a geode
+   * straddling a chunk border is written identically from either side.
+   */
+  geodeAt(cx, cz) {
+    if (this.version < 5) return null;
+    if (cx % GEODE_SPACING !== 0 || cz % GEODE_SPACING !== 0) return null;
+
+    const h = hash2i(cx, cz, this.seed ^ 0x9e0d);
+    // A bit over a third of anchors, which works out at roughly one geode per
+    // 180 chunks — rare enough to be a find, common enough to be worth looking.
+    if ((h & 0xff) < 158) return null;
+
+    const wx = cx * CHUNK_SX + 3 + (h % 10);
+    const wz = cz * CHUNK_SZ + 3 + ((h >>> 8) % 10);
+    // Deep, and always inside the deepslate so the shell contrasts with it.
+    const y = 5 + ((h >>> 16) % 9);
+    const radius = 3 + ((h >>> 24) & 1);
+    return { wx, wz, y, radius };
+  }
+
+  _placeGeodes(voxels, cx, cz, baseX, baseZ) {
+    const cellX = Math.floor(cx / GEODE_SPACING) * GEODE_SPACING;
+    const cellZ = Math.floor(cz / GEODE_SPACING) * GEODE_SPACING;
+    for (let dz = 0; dz <= 1; dz++) {
+      for (let dx = 0; dx <= 1; dx++) {
+        const geode = this.geodeAt(cellX + dx * GEODE_SPACING, cellZ + dz * GEODE_SPACING);
+        if (!geode) continue;
+        if (Math.abs(geode.wx - baseX) > 24 || Math.abs(geode.wz - baseZ) > 24) continue;
+        this._buildGeode(voxels, baseX, baseZ, geode);
+      }
+    }
+  }
+
+  /**
+   * A hollow ball: shell, a lining of crystal, and air in the middle.
+   *
+   * Written outermost-first so the inner layers overwrite the outer ones, which
+   * is simpler to follow than computing three separate radius bands.
+   */
+  _buildGeode(voxels, baseX, baseZ, geode) {
+    const { wx, wz, y, radius } = geode;
+    const set = (x, py, z, id) => {
+      const lx = x - baseX, lz = z - baseZ;
+      if (lx < 0 || lx >= CHUNK_SX || lz < 0 || lz >= CHUNK_SZ) return;
+      if (py < 1 || py >= CHUNK_SY) return;
+      voxels[voxelIndex(lx, py, lz)] = id;
+    };
+
+    const r = radius + 1;
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dx = -r; dx <= r; dx++) {
+          const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          if (distance > r) continue;
+          let id;
+          if (distance > radius) id = GEODE_SHELL.id;
+          else if (distance > radius - 1) id = GEODE_CRYSTAL.id;
+          else id = AIR;
+          set(wx + dx, y + dy, wz + dz, id);
+        }
+      }
+    }
   }
 
   /**

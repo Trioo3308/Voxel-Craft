@@ -14,10 +14,36 @@ import { rollLoot } from './loot.js';
 import { dimensionInfo } from '../world/dimensions.js';
 import { Arrow } from './projectile.js';
 import { Rocket } from './rocket.js';
-import { AIR, BLOCKS, getMaxStack } from '../world/blocks.js';
+import { AIR, BLOCKS, getBlock, getMaxStack } from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
 
 const M = Settings.mobs;
+
+/**
+ * Cave spawning.
+ *
+ * `DEPTH` is how far below the surface counts as underground — enough that a
+ * shallow overhang or the inside of a house is still "outside", so building a
+ * roof does not turn your living room into a spawner.
+ *
+ * `SPREAD` is how far up and down from the player a spawn floor may be found.
+ * Wide enough to reach the next level of a cave, tight enough that a mob never
+ * appears in a chamber you have no route to.
+ *
+ * `LIGHT_RADIUS` / `LIGHT_BLOCKS` decide what counts as "lit". Block light is
+ * computed in the worker and never comes back, so the main thread cannot ask
+ * for a light level; it looks for a light *source* within range instead.
+ *
+ * `LIGHT_BLOCKS` sits deliberately above the ambient decoration. Glow lichen
+ * emits 7 and grows all over the caves — set the bar at 7 and the entire cave
+ * system counts as lit, which is exactly what happened the first time and left
+ * the caves completely empty. Only a deliberate light — a torch (14), either
+ * lantern (15), or lava (15) — should hold a space clear.
+ */
+const CAVE_SPAWN_DEPTH = 6;
+const CAVE_SPAWN_SPREAD = 12;
+const CAVE_LIGHT_RADIUS = 6;
+const CAVE_LIGHT_BLOCKS = 12;
 
 /** How close two dropped stacks must be to combine. */
 const ITEM_MERGE_RADIUS = 0.9;
@@ -480,11 +506,26 @@ export class EntityManager {
     if (this.mobs.length >= M.maxTotalMobs) return;
     if (this._countWithin(player.position, 24) >= M.maxNearbyMobs) return;
 
+    // Where the player is decides which rules apply: a cave is dark and roofed
+    // whatever the sky is doing, so the time of day stops mattering down there.
+    const playerSurface = this.world.getSurfaceY(
+      Math.floor(player.position.x), Math.floor(player.position.z)
+    );
+    const underground = playerSurface > 0 &&
+      player.position.y < playerSurface - CAVE_SPAWN_DEPTH;
+
     const candidates = [];
     for (const type of pool) {
       const rules = type.spawn;
-      // Time-of-day gate: hostiles at night, passives during the day.
-      if (!(isNight ? rules.atNight : rules.dayTimeAllowed)) continue;
+      // Some things only exist underground, and some only above it.
+      if (rules.cavesOnly && !underground) continue;
+
+      // Time-of-day gate: hostiles at night, passives during the day — unless
+      // we are underground and this is something that does not care.
+      const allowed = underground && rules.cavesAnyTime
+        ? true
+        : (isNight ? rules.atNight : rules.dayTimeAllowed);
+      if (!allowed) continue;
 
       const current = this.mobs.reduce((n, m) => n + (m.type === type && !m.dead ? 1 : 0), 0);
       if (current >= rules.maxCount) continue;
@@ -504,6 +545,7 @@ export class EntityManager {
       const [minGroup, maxGroup] = rules.groupSize;
       const groupSize = minGroup + Math.floor(Math.random() * (maxGroup - minGroup + 1));
       const room = rules.maxCount - current;
+      const nearY = player.position.y;
 
       for (let i = 0; i < Math.min(groupSize, room); i++) {
         // Scatter group members a few blocks apart around the anchor point.
@@ -511,40 +553,106 @@ export class EntityManager {
         const offsetZ = i === 0 ? 0 : (Math.random() - 0.5) * 5;
         const x = Math.floor(spot.x + offsetX);
         const z = Math.floor(spot.z + offsetZ);
-        if (!this._canStandAt(x, z, type)) continue;
+        const floorY = this._findFloorAt(x, z, type, nearY);
+        if (floorY < 0) continue;
 
-        const surfaceY = this.world.getSurfaceY(x, z);
-        this.spawnMob(type, x + 0.5, surfaceY + 1, z + 0.5);
+        // Underground, hostiles need the dark. Passive animals do not care, and
+        // gating them too would leave lit caves entirely lifeless.
+        const underground = floorY < this.world.getSurfaceY(x, z) - CAVE_SPAWN_DEPTH;
+        if (underground && rules.needsDark && !this._isDarkEnough(x, floorY + 1, z)) continue;
+
+        this.spawnMob(type, x + 0.5, floorY + 1, z + 0.5);
       }
     }
   }
 
-  /** Look for a valid anchor point in the spawn ring around the player. */
+  /**
+   * Look for a valid anchor point in the spawn ring around the player.
+   *
+   * The ring is horizontal, so underground the search is over a cylinder around
+   * you rather than a patch of ground — which is what lets a cave system supply
+   * its own mobs.
+   */
   _findSpawnSpot(player, type) {
     for (let attempt = 0; attempt < 12; attempt++) {
       const angle = Math.random() * Math.PI * 2;
       const distance = M.minSpawnDistance + Math.random() * (M.maxSpawnDistance - M.minSpawnDistance);
       const x = Math.floor(player.position.x + Math.cos(angle) * distance);
       const z = Math.floor(player.position.z + Math.sin(angle) * distance);
-      if (this._canStandAt(x, z, type)) return { x, z };
+      if (this._canStandAt(x, z, type, player.position.y)) return { x, z };
     }
     return null;
   }
 
-  /** Is there a suitable surface with enough headroom at this column? */
-  _canStandAt(x, z, type) {
-    if (!this.world.isChunkLoaded(x, z)) return false;
+  /**
+   * Find a floor in this column that `type` could stand on, or -1.
+   *
+   * This used to be surface-only — it asked `getSurfaceY` and nothing else —
+   * which is the entire reason nothing ever spawned in a cave. A player forty
+   * blocks down would have mobs appearing in the daylight above their head,
+   * counting against the nearby cap, and never coming anywhere near them.
+   *
+   * `nearY` biases the search toward the player's own elevation, so a wave
+   * spawned while you are underground lands in the cave you are in rather than
+   * on the roof of the world.
+   */
+  _findFloorAt(x, z, type, nearY = null) {
+    if (!this.world.isChunkLoaded(x, z)) return -1;
 
     const surfaceY = this.world.getSurfaceY(x, z);
-    if (surfaceY < 1) return false;
+    if (surfaceY < 1) return -1;
 
-    const groundBlock = this.world.getBlock(x, surfaceY, z);
-    if (!type.spawn.canSpawnOn(groundBlock)) return false;
+    const fits = (floorY) => {
+      const ground = this.world.getBlock(x, floorY, z);
+      if (!type.spawn.canSpawnOn(ground)) return false;
+      const needed = Math.ceil(type.height);
+      for (let dy = 1; dy <= needed; dy++) {
+        if (this.world.getBlock(x, floorY + dy, z) !== AIR) return false;
+      }
+      return true;
+    };
 
-    // Enough clear space above for the mob to stand up.
-    const needed = Math.ceil(type.height);
-    for (let dy = 1; dy <= needed; dy++) {
-      if (this.world.getBlock(x, surfaceY + dy, z) !== AIR) return false;
+    // Above ground, or no elevation preference: the surface is the answer.
+    if (nearY === null || nearY > surfaceY - CAVE_SPAWN_DEPTH) {
+      return fits(surfaceY) ? surfaceY : -1;
+    }
+
+    // Underground: walk outward from the player's own level looking for a
+    // ledge. Outward rather than top-down so a mob turns up on the level you
+    // are exploring instead of at the roof of the tallest chamber in the column.
+    const start = Math.round(nearY);
+    for (let radius = 0; radius <= CAVE_SPAWN_SPREAD; radius++) {
+      for (const y of radius === 0 ? [start] : [start + radius, start - radius]) {
+        if (y < 1 || y >= surfaceY) continue;
+        if (fits(y)) return y;
+      }
+    }
+    return -1;
+  }
+
+  /** Is there anywhere in this column `type` could stand? */
+  _canStandAt(x, z, type, nearY = null) {
+    return this._findFloorAt(x, z, type, nearY) >= 0;
+  }
+
+  /**
+   * Is this spot dark enough for something hostile to appear in?
+   *
+   * Block light lives in the worker, so the main thread cannot ask for a light
+   * level. Instead this looks for a light *source* nearby — which is the thing
+   * a player actually controls. Torch a cave and it stops spawning; that is the
+   * rule players already expect, arrived at from the other direction.
+   */
+  _isDarkEnough(x, y, z) {
+    for (let dy = -CAVE_LIGHT_RADIUS; dy <= CAVE_LIGHT_RADIUS; dy++) {
+      for (let dz = -CAVE_LIGHT_RADIUS; dz <= CAVE_LIGHT_RADIUS; dz++) {
+        for (let dx = -CAVE_LIGHT_RADIUS; dx <= CAVE_LIGHT_RADIUS; dx++) {
+          // Cheap sphere test, so a corner of the cube is not "nearby".
+          if (dx * dx + dy * dy + dz * dz > CAVE_LIGHT_RADIUS * CAVE_LIGHT_RADIUS) continue;
+          const block = getBlock(this.world.getBlock(x + dx, y + dy, z + dz));
+          if (block && block.lightEmission >= CAVE_LIGHT_BLOCKS) return false;
+        }
+      }
     }
     return true;
   }

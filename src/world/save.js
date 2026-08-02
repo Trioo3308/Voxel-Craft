@@ -131,6 +131,26 @@ function buildPalette() {
 }
 
 /**
+ * Names that used to exist and no longer do, pointing at what replaced them.
+ *
+ * The palette matches by name precisely so ids can move freely — but that only
+ * works while the *names* hold still. When doors and beds gained facings, the
+ * single `door` and `bed` blocks became eight variants each with new names, and
+ * without this table every door and bed in an existing world would have failed
+ * to resolve and been loaded as air. Placed blocks, not just carried ones.
+ *
+ * A rename is therefore a compatibility event, and this is where it gets paid
+ * for. Entries are never removed.
+ */
+const RENAMED = {
+  // Doors and beds gained a facing; the old unoriented block becomes the
+  // north-facing variant, which is the one you carry.
+  door: 'door_north',
+  door_open: 'door_open_north',
+  bed: 'bed_foot_north',
+};
+
+/**
  * Build a saved-id -> current-id lookup by matching names.
  * @returns {{map: Map<number, number>, missing: string[]}}
  */
@@ -138,6 +158,14 @@ function buildRemap(palette) {
   const byName = new Map();
   for (const b of BLOCKS) if (b) byName.set(b.name, b.id);
   for (const i of ITEMS) if (i) byName.set(i.name, i.id);
+
+  // Aliases are added after the real names, and only where the target exists,
+  // so a live block can never be shadowed by a stale alias.
+  for (const [was, now] of Object.entries(RENAMED)) {
+    if (byName.has(was)) continue;
+    const current = byName.get(now);
+    if (current !== undefined) byName.set(was, current);
+  }
 
   const map = new Map();
   const missing = [];

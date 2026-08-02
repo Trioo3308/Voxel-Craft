@@ -1627,6 +1627,174 @@ export const PAINTERS = {
     set(7, 8, 18, 18, 22); set(8, 8, 18, 18, 22);
   }])),
 
+  // --- Beds and the deep ----------------------------------------------------
+
+  [TILE.BED_HEAD_TOP]: (set, rnd) => {
+    // Same blanket as the foot end, with a pillow across the top so which way
+    // the bed points is readable without needing a rotated texture.
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 16;
+      set(x, y, 176 + d, 54 + d, 58 + d);
+    }
+    for (let y = 1; y < 6; y++) {
+      for (let x = 2; x < T - 2; x++) {
+        const d = (rnd() - 0.5) * 12;
+        set(x, y, 236 + d, 232 + d, 222 + d);
+      }
+    }
+    for (let x = 2; x < T - 2; x++) set(x, 6, 198, 194, 184);
+  },
+
+  [TILE.DEEPSLATE]: (set, rnd) => {
+    // Dark, tight-grained, with a faint banding so it does not read as a void.
+    for (let y = 0; y < T; y++) {
+      for (let x = 0; x < T; x++) {
+        const band = Math.sin(y * 0.9) * 4;
+        const d = (rnd() - 0.5) * 14;
+        set(x, y, 62 + d + band, 62 + d + band, 70 + d + band);
+      }
+    }
+    for (let i = 0; i < 22; i++) {
+      const x = Math.floor(rnd() * T), y = Math.floor(rnd() * T);
+      set(x, y, 44, 44, 52);
+    }
+  },
+
+  [TILE.DEEPSLATE_COBBLE]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 24;
+      set(x, y, 66 + d, 66 + d, 74 + d);
+    }
+    // Broken-up chunks, same idea as cobblestone but darker and blockier.
+    for (let i = 0; i < 7; i++) {
+      const cx = Math.floor(rnd() * T), cy = Math.floor(rnd() * T);
+      const w = 2 + Math.floor(rnd() * 3), h = 2 + Math.floor(rnd() * 3);
+      for (let y = cy; y < cy + h; y++) {
+        for (let x = cx; x < cx + w; x++) {
+          if (x >= T || y >= T) continue;
+          const edge = x === cx || y === cy;
+          set(x, y, edge ? 40 : 84, edge ? 40 : 84, edge ? 48 : 92);
+        }
+      }
+    }
+  },
+
+  [TILE.DRIPSTONE]: (set, rnd) => {
+    // A tapered spike, widest at the bottom. Drawn on the lower rows so a
+    // stalagmite reads standing up; hanging ones are the same art flipped by
+    // the cross renderer.
+    for (let y = 2; y < T; y++) {
+      const halfWidth = Math.round((y - 2) * 0.28) + 1;
+      for (let x = 8 - halfWidth; x <= 7 + halfWidth; x++) {
+        if (x < 0 || x >= T) continue;
+        const d = (rnd() - 0.5) * 18;
+        const edge = x === 8 - halfWidth || x === 7 + halfWidth;
+        set(x, y, (edge ? 128 : 158) + d, (edge ? 108 : 134) + d, (edge ? 92 : 114) + d);
+      }
+    }
+  },
+
+  [TILE.GLOW_LICHEN]: (set, rnd) => {
+    // A sprawl of pale green filaments. Mostly transparent, so it reads as
+    // something growing on the rock rather than a pane of glass over it.
+    for (let i = 0; i < 90; i++) {
+      const x = Math.floor(rnd() * T), y = Math.floor(rnd() * T);
+      const d = (rnd() - 0.5) * 40;
+      set(x, y, 128 + d, 208 + d, 150 + d);
+    }
+    // A few brighter nodes, which is where the light reads as coming from.
+    for (let i = 0; i < 10; i++) {
+      const x = Math.floor(rnd() * T), y = Math.floor(rnd() * T);
+      set(x, y, 210, 255, 200);
+      set(Math.min(T - 1, x + 1), y, 180, 240, 178);
+    }
+  },
+
+  [TILE.GEODE_SHELL]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 18;
+      set(x, y, 104 + d, 92 + d, 118 + d);
+    }
+    // A knobbly rind.
+    for (let i = 0; i < 14; i++) {
+      const cx = Math.floor(rnd() * T), cy = Math.floor(rnd() * T);
+      for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+        const x = (cx + dx) % T, y = (cy + dy) % T;
+        set(x, y, 130, 116, 148);
+      }
+    }
+  },
+
+  [TILE.GEODE_CRYSTAL]: (set, rnd) => {
+    // Clustered violet shards on a dark matrix.
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 12;
+      set(x, y, 58 + d, 44 + d, 74 + d);
+    }
+    for (const [bx, by, h] of [[3, 12, 7], [7, 14, 9], [11, 11, 6], [13, 14, 4], [1, 13, 4]]) {
+      for (let i = 0; i < h; i++) {
+        const y = by - i;
+        if (y < 0) continue;
+        const w = i < h - 2 ? 1 : 0;
+        for (let x = bx - w; x <= bx + w; x++) {
+          if (x < 0 || x >= T) continue;
+          const t = i / h;
+          set(x, y, 150 + t * 90, 96 + t * 80, 214 + t * 40);
+        }
+      }
+    }
+  },
+
+  [TILE.CAVE_CRYSTAL]: (set, rnd) => {
+    // A cut gem: bright core, darker facets down the sides.
+    for (let y = 3; y < 14; y++) {
+      const half = y < 6 ? y - 2 : Math.max(1, 13 - y + 2);
+      for (let x = 8 - half; x <= 7 + half; x++) {
+        if (x < 0 || x >= T) continue;
+        const d = (rnd() - 0.5) * 16;
+        const lit = x < 8;
+        set(x, y, (lit ? 196 : 150) + d, (lit ? 140 : 96) + d, (lit ? 236 : 200) + d);
+      }
+    }
+    for (let y = 5; y < 11; y++) set(7, y, 236, 206, 255);
+  },
+
+  [TILE.GLOW_BERRY]: (set, rnd) => {
+    // Three small luminous berries on a stem.
+    for (let y = 2; y < 7; y++) set(8, y, 96, 132, 84);
+    for (const [cx, cy] of [[5, 8], [10, 7], [8, 11]]) {
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          if (dx * dx + dy * dy > 4) continue;
+          const x = cx + dx, y = cy + dy;
+          if (x < 0 || x >= T || y < 0 || y >= T) continue;
+          const d = (rnd() - 0.5) * 20;
+          const core = dx * dx + dy * dy <= 1;
+          set(x, y, (core ? 255 : 224) + d, (core ? 214 : 164) + d, (core ? 120 : 60) + d);
+        }
+      }
+    }
+  },
+
+  [TILE.CAVE_LANTERN]: (set, rnd) => {
+    // A caged crystal: iron frame, glowing middle.
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 10;
+      set(x, y, 78 + d, 76 + d, 84 + d);
+    }
+    for (let y = 3; y < 13; y++) {
+      for (let x = 3; x < 13; x++) {
+        const edge = Math.abs(x - 7.5) > 3.5 || Math.abs(y - 7.5) > 4;
+        const d = (rnd() - 0.5) * 24;
+        set(x, y, (edge ? 150 : 226) + d, (edge ? 110 : 190) + d, (edge ? 210 : 255) + d);
+      }
+    }
+    // Frame bars.
+    for (let x = 0; x < T; x++) { set(x, 1, 118, 116, 126); set(x, 14, 118, 116, 126); }
+    for (let y = 0; y < T; y++) { set(1, y, 118, 116, 126); set(14, y, 118, 116, 126); }
+    set(8, 0, 140, 138, 148);
+  },
+
   // --- Comb materials ------------------------------------------------------
 
   [TILE.COMB_RESIN]: (set, rnd) => {

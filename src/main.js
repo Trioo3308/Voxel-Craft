@@ -28,7 +28,8 @@ import { makeFurnaceState } from './player/crafting.js';
 import { Statistics, Achievements } from './player/progress.js';
 import {
   isLiquid, GRASS, DIRT, SAND, SNOW, STONE, DRY_GRASS, PODZOL, SWAMP_GRASS,
-  CRAFTING_TABLE, isFurnaceBlock, isDoor, DOOR_CLOSED, DOOR_OPEN, BED, CHEST,
+  CRAFTING_TABLE, isFurnaceBlock, isDoor, isDoorOpen, doorBlock, DOOR_CLOSED,
+  isBed, BED, FACINGS, getBlock, CHEST,
   isPlate, PRESSURE_PLATE, PRESSURE_PLATE_PRESSED, SIGN, JUKEBOX, MUSIC_DISCS,
   PORTAL, COMBIUM_BLOCK, THRONE, THRONE_AWAKENED, ITEM_ID,
   LOG, ACACIA_LOG, SPRUCE_LOG, DIAMOND_ORE, FURNACE, getItem, getDisplayName,
@@ -349,15 +350,16 @@ export class Game {
 
       // --- Doors: toggle open/closed ---------------------------------------
       if (isDoor(blockId)) {
-        const opening = blockId === DOOR_CLOSED.id;
-        this.world.setBlock(x, y, z, opening ? DOOR_OPEN.id : DOOR_CLOSED.id);
-        // Doors are two blocks tall; keep both halves in step.
-        for (const dy of [-1, 1]) {
-          if (isDoor(this.world.getBlock(x, y + dy, z))) {
-            this.world.setBlock(x, y + dy, z, opening ? DOOR_OPEN.id : DOOR_CLOSED.id);
-          }
-        }
-        audio.door(opening);
+        this._setDoorOpen(x, y, z, !isDoorOpen(blockId));
+        return true;
+      }
+
+      // --- Beds -------------------------------------------------------------
+      // Either half works; sleeping is anchored on the head end so you always
+      // wake up at the same place whichever side you climbed in from.
+      if (isBed(blockId)) {
+        const head = this._bedHead(x, y, z);
+        this._useBed(head.x, head.y, head.z);
         return true;
       }
 
@@ -385,11 +387,6 @@ export class Game {
         return true;
       }
 
-      // --- Beds -------------------------------------------------------------
-      if (blockId === BED.id) {
-        this._useBed(x, y, z);
-        return true;
-      }
       if (isFurnaceBlock(blockId)) {
         const entity = this.world.getBlockEntity(x, y, z, () => ({
           type: 'furnace',
@@ -447,14 +444,20 @@ export class Game {
         }
       }
 
-      // A door is two blocks; breaking either half removes both.
+      // A door is two blocks; breaking either half removes both. Matched on
+      // facing so a door does not take a different door stacked above it.
       if (isDoor(blockId)) {
+        const facing = getBlock(blockId).doorFacing;
         for (const dy of [-1, 1]) {
-          if (isDoor(this.world.getBlock(target.x, target.y + dy, target.z))) {
+          const other = this.world.getBlock(target.x, target.y + dy, target.z);
+          if (isDoor(other) && getBlock(other).doorFacing === facing) {
             this.world.setBlock(target.x, target.y + dy, target.z, 0);
           }
         }
       }
+
+      // And a bed is two blocks laid end to end.
+      if (isBed(blockId)) this._clearBedPair(target.x, target.y, target.z, blockId);
     };
   }
 
@@ -625,6 +628,66 @@ export class Game {
    * the Crown, and raises your maximum health for good. One per throne, and
    * thrones are hundreds of blocks apart, so each one is an event.
    */
+  /**
+   * Open or close a door, both halves together.
+   *
+   * The facing is preserved and only the open bit changes, so a door swings
+   * back to exactly where it was rather than snapping to a fixed orientation.
+   * @returns true if anything moved
+   */
+  _setDoorOpen(x, y, z, open) {
+    const here = this.world.getBlock(x, y, z);
+    if (!isDoor(here)) return false;
+    if (isDoorOpen(here) === open) return false;
+
+    const facing = getBlock(here).doorFacing;
+    const want = doorBlock(facing, open).id;
+    this.world.setBlock(x, y, z, want);
+
+    // Doors are two blocks tall; keep both halves in step. Only a half with the
+    // *same* facing counts, so two doors stacked in a doorway stay independent.
+    for (const dy of [-1, 1]) {
+      const other = this.world.getBlock(x, y + dy, z);
+      if (!isDoor(other) || getBlock(other).doorFacing !== facing) continue;
+      this.world.setBlock(x, y + dy, z, want);
+    }
+
+    audio.door(open);
+    return true;
+  }
+
+  /**
+   * The head end of the bed one of whose halves is at (x, y, z).
+   *
+   * Sleeping, breaking and the spawn point all key off the head, so there is
+   * one answer no matter which half you interacted with.
+   */
+  _bedHead(x, y, z) {
+    const id = this.world.getBlock(x, y, z);
+    const block = getBlock(id);
+    if (!isBed(id) || block.bedHead) return { x, y, z };
+    const { dx, dz } = FACINGS[block.bedFacing];
+    // Only if the neighbour really is this bed's other half.
+    const other = this.world.getBlock(x + dx, y, z + dz);
+    if (isBed(other) && getBlock(other).bedHead) return { x: x + dx, y, z: z + dz };
+    return { x, y, z };
+  }
+
+  /** Remove whichever half of a bed is left after the other was broken. */
+  _clearBedPair(x, y, z, brokenId) {
+    const block = getBlock(brokenId);
+    if (!isBed(brokenId)) return;
+    const { dx, dz } = FACINGS[block.bedFacing];
+    // The foot's partner is one step along the facing; the head's is one back.
+    const px = x + (block.bedHead ? -dx : dx);
+    const pz = z + (block.bedHead ? -dz : dz);
+    const partner = this.world.getBlock(px, y, pz);
+    if (!isBed(partner)) return;
+    if (getBlock(partner).bedFacing !== block.bedFacing) return;
+    if (getBlock(partner).bedHead === block.bedHead) return;
+    this.world.setBlock(px, y, pz, 0);
+  }
+
   /**
    * A jukebox holds exactly one record.
    *
@@ -958,11 +1021,7 @@ export class Game {
         this.world.setBlock(x, y, z, PRESSURE_PLATE.id);
         audio.door(false);
       }
-      for (const [dx, dy, dz] of opened) {
-        if (this.world.getBlock(dx, dy, dz) === DOOR_OPEN.id) {
-          this.world.setBlock(dx, dy, dz, DOOR_CLOSED.id);
-        }
-      }
+      for (const [dx, dy, dz] of opened) this._setDoorOpen(dx, dy, dz, false);
       this._platesDown.delete(key);
     }
   }
@@ -973,15 +1032,16 @@ export class Game {
    */
   _setNeighbourDoors(x, y, z, opening) {
     const changed = [];
-    const want = opening ? DOOR_OPEN.id : DOOR_CLOSED.id;
-    const from = opening ? DOOR_CLOSED.id : DOOR_OPEN.id;
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       // Doors are two tall, and a plate can sit level with either half.
+      // `_setDoorOpen` moves both halves, so only the one it reports is
+      // recorded — otherwise stepping off would try to close the same door
+      // twice and the second call would be a no-op anyway.
       for (const dy of [0, 1, -1]) {
         const bx = x + dx, by = y + dy, bz = z + dz;
-        if (this.world.getBlock(bx, by, bz) !== from) continue;
-        this.world.setBlock(bx, by, bz, want);
-        changed.push([bx, by, bz]);
+        const id = this.world.getBlock(bx, by, bz);
+        if (!isDoor(id) || isDoorOpen(id) === opening) continue;
+        if (this._setDoorOpen(bx, by, bz, opening)) changed.push([bx, by, bz]);
       }
     }
     return changed;
@@ -1116,8 +1176,10 @@ export class Game {
       return;
     }
 
-    // Wind forward to just after sunrise and restore a little health.
-    this.sky.setTime(0.02);
+    // Wind forward to just after sunrise and restore a little health. Routed
+    // through `skipToNextPhase` rather than setting the clock directly, so a
+    // night slept through still counts toward the days-survived statistic.
+    this.sky.skipToNextPhase();
     this.player.survival.heal(3);
     this.hud.showToast('Spawn point set — good morning');
     this.saveWorld();

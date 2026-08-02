@@ -405,6 +405,10 @@ matcher has no concept of, so it is checked before the recipe table.
 **A locator readout** shows position, facing and biome — the world is infinite
 with no map, and without it "walk back to the portal" is guesswork.
 
+**Doors and beds have a facing.** A door turns to face whoever placed it, so its
+panel is always across your path; a bed is a foot and a head laid along the way
+you are looking, and you can sleep from either end.
+
 **Food** is a small ladder of its own. Bread is the farmable staple; **mushroom
 stew** is worth more and is made from what you find on forest floors rather than
 what you grow, and eating it leaves the bowl behind. Oak leaves drop the odd
@@ -457,6 +461,63 @@ Right-click to drop in, right-click again to step off.
 walls are rideable ramps, two rails spanning it and a torch on each corner. Like
 dungeons they are gated on the terrain version, and more urgently — a park
 flattens ground at the surface, which is exactly where people build.
+
+---
+
+## Underground
+
+The caves were rebuilt in terrain v5 after measurement showed how bad they were:
+the y1–16 band, where diamond and combium live, was **1.4% air**. Both ores were
+generating perfectly well — 2.5 and 1.2 blocks per chunk — but only 0.11 and
+0.03 of those ever touched an open face, so the only way to find either was to
+strip mine and hope. "Diamonds don't exist" was a reasonable description.
+
+Three systems now overlap:
+
+- the **original worm tunnels**, kept so old and new worlds feel related, but
+  widened — and widened further with depth;
+- a second, coarser **gallery pair** weighted toward the bottom of the world,
+  which produces the long runs the deep had none of;
+- **open caverns** from a single low-frequency field, which is what gives a cave
+  somewhere to stand rather than a tube to shuffle along.
+
+Measured after: 12–15% air through the deep bands, one connected system rather
+than isolated pockets, and 580 standable floor blocks per chunk against 437.
+Exposed diamond went 0.11 → 0.48 per chunk and combium 0.03 → 0.33.
+
+Caves fade out by **depth below their own column**, never by absolute height.
+The first version of that rule used a fixed y band and punched holes through the
+floor of any valley low enough — correct on a plateau, a crater everywhere else.
+
+**Deepslate** replaces stone below y16, so how deep you are is readable without
+checking the coordinates. **Dripstone** hangs from ceilings and stands on
+floors, **glow lichen** grows in patches and gives just enough light to navigate
+by, **lava** pools in the deepest galleries, and rare **geodes** — a shell, a
+lining of crystal, a hollow middle — are the only source of cave crystal, which
+makes a lantern brighter than a torch and needing no coal.
+
+### Things live down there now
+
+`_canStandAt` used to ask `getSurfaceY` and nothing else, which meant mobs could
+only ever spawn on the roof of the world. Stand in a cave forty blocks down and
+zombies would appear in the daylight above your head, count against the nearby
+cap, and never come near you. That is the whole of why "mobs don't spawn".
+
+Spawning now searches outward from **your own elevation** for a floor, so a wave
+lands on the level you are exploring. Underground the time of day stops
+mattering — a cave is dark whether or not the sun is up — and hostiles instead
+need the dark, which means **torching a cave stops it spawning**. Measured: 28
+spawnable spots around a base fell to 5 after eleven torches, and nothing
+appeared within sixteen blocks.
+
+Block light is computed in the worker and never comes back, so the main thread
+cannot ask for a light level; it looks for a light *source* in range instead.
+The threshold sits above glow lichen deliberately — lichen emits 7 and grows
+everywhere, and the first attempt used 7 as the bar, which quietly marked the
+entire cave system as lit and left it completely empty.
+
+**Bats** are the harmless half of it: cave-only, no drops, and they bob around
+where they spawned rather than pathing anywhere.
 
 ---
 
@@ -889,6 +950,18 @@ These are deliberate scope choices, not bugs:
   queue and no track-finished event.
 - **Wolves are the only tameable animal**, and a tamed one cannot be healed,
   bred, or told to do anything beyond sit and heel.
+- **Terrain generation is versioned, so an existing world keeps its old caves.**
+  Chunks are rebuilt from the seed every load and only your *edits* are stored,
+  which means changing generation would hollow out ground under things people
+  had already built. A world made before this update keeps the terrain it had;
+  the new caves want a new world. Ore rates are *not* gated — swapping stone for
+  ore removes no support and cannot drop anyone's house — so an old world does
+  get the better diamond and combium rates in rock it has not mined yet.
+- **Bats do not really fly.** They cancel gravity and bob; the mob physics has
+  one mode and teaching it a second was not worth it for ambience.
+- **Cave light is approximated by proximity to a light source**, not by an
+  actual light level — the worker owns block light and does not send it back.
+  A torch behind a wall still holds a space clear.
 
 ---
 
@@ -993,6 +1066,35 @@ refuses an empty hand and the wrong item, consumes exactly one Comb Heart, grant
 the Crown once, raises max health 20 → 24, and does nothing on a second use;
 the boost survives save, reload and death, and a save predating the field
 defaults cleanly to 20.
+
+**The cave update** — 102 headless assertions plus an in-browser pass. Reported
+as: caves too compact, mobs never spawning underground, diamonds and combium
+"non-existent", doors glitching when walked into, and beds being a single block
+with no orientation. All five were reproduced by measurement before anything was
+changed, and the numbers are quoted above.
+
+Two of them turned out to be the same bug. Diamond and combium were generating
+fine; the deep was simply solid rock, so nothing was ever exposed. Printing more
+ore into solid stone would have hidden that rather than fixed it.
+
+Doors had no facing at all: the panel sat on a fixed side of its cell however
+you placed one, so a door in a corridor running the other way had its collision
+*parallel* to your travel and you walked straight through it. Now four facings
+times open/closed, verified for every facing in the browser and pinned in the
+shape suite by the invariant that broke — a panel must lie across its own
+approach, never along it.
+
+The block/item split moved from 128 to 256 to fit sixteen door and bed variants;
+only two lines in the codebase ever depended on it, and voxels are a Uint8Array
+so 128 was never a storage limit. Item ids are now **generated** from a list
+rather than written by hand, which retires the collision that had been fixed
+four separate times.
+
+That move exposed a genuine save hazard. The palette matches by name precisely
+so ids can move freely — but renaming `door` to `door_north` meant every door
+and bed in an existing world failed to resolve and loaded as **air**. A rename
+is a compatibility event, and `RENAMED` in save.js is where it gets paid for. A
+world saved by the previous shipped build is now loaded item by item as a test.
 
 **The sustingus, rockets and the skateboard** — 58 headless assertions plus a
 full in-browser pass. Each spin milestone scores exactly one spin and the biggest

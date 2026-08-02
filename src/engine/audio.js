@@ -450,6 +450,13 @@ export class AudioEngine {
                      type: 'lowpass', delay: duration * 0.2 });
         break;
 
+      case 'squeak': // bat — very short, very high, barely there
+        this.tone({ freq: base, endFreq: base * 1.6, duration: duration * 0.4,
+                    gain: level * 0.35, type: 'triangle', lowpass: base * 3, attack: 0.004 });
+        this.tone({ freq: base * 1.5, endFreq: base * 0.9, duration: duration * 0.3,
+                    gain: level * 0.22, type: 'sine', delay: duration * 0.35, attack: 0.004 });
+        break;
+
       case 'bark': // wolf — one clipped bark, with the breath after it
         this.tone({ freq: base * 1.3, endFreq: base * 0.7, duration: duration * 0.5, gain: level,
                     type: 'sawtooth', lowpass: base * 6, attack: 0.006 });

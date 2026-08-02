@@ -16,6 +16,7 @@ import * as THREE from 'three';
 import {
   ITEM_ID, WOOL, GRASS, DIRT, SAND, SNOW, STONE, DRY_GRASS, PODZOL, SWAMP_GRASS,
   COMB_SOIL, COMB_STONE, COMB_BRICK, COMB_TILE, COMB_MOSS, COMB_ASH, DEEP_COMB,
+  DEEPSLATE, DEEPSLATE_COBBLE, COBBLE, MOSSY_COBBLE, GRAVEL,
 } from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
 import { BOSS_LOOT } from './loot.js';
@@ -55,6 +56,9 @@ const GRASSY = new Set([GRASS.id, DRY_GRASS.id, SWAMP_GRASS.id, PODZOL.id]);
 const ANY_GROUND = new Set([
   GRASS.id, DIRT.id, STONE.id, SAND.id, SNOW.id,
   DRY_GRASS.id, PODZOL.id, SWAMP_GRASS.id,
+  // The deep. Without these a cave floor is not something anything can stand
+  // on, which since v5 is most of the floor in the world.
+  DEEPSLATE.id, DEEPSLATE_COBBLE.id, COBBLE.id, MOSSY_COBBLE.id, GRAVEL.id,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -1215,7 +1219,109 @@ export const WOLF = {
   },
 };
 
-export const MOB_TYPES = [ZOMBIE, SKELETON, SPIDER, CREEPER, PIG, COW, SHEEP, CHICKEN, SUSTINGUS, WOLF];
+/**
+ * Bats.
+ *
+ * Harmless, and the point of them is that a cave has something alive in it
+ * before anything tries to kill you. They flutter around their spawn point
+ * rather than pathing anywhere — a bat with goals would be a distraction.
+ */
+export const BAT = {
+  name: 'bat',
+  displayName: 'Bat',
+  width: 0.5,
+  height: 0.5,
+  maxHealth: 6,
+  speed: 2.2,
+  voice: { name: 'bat', voice: 'squeak', pitch: 760, duration: 0.1 },
+  drops: [],
+
+  brain: { ...PASSIVE_BRAIN, fleeWhenHurt: 8, fleeSpeed: 3.4 },
+
+  spawn: {
+    atNight: true,
+    dayTimeAllowed: true,
+    maxCount: 6,
+    weight: 3,
+    groupSize: [1, 3],
+    // Underground only: a bat on a hillside would be very odd.
+    cavesOnly: true,
+    canSpawnOn: (id) => ANY_GROUND.has(id),
+  },
+
+  /**
+   * Flight, of a sort: it bobs around wherever it spawned. Real flight would
+   * need the mob physics to stop applying gravity, and a bat is not worth
+   * teaching the physics a new mode.
+   */
+  ai(mob, dt, ctx) {
+    const memory = mob.memory;
+    if (memory.homeY === undefined) {
+      memory.homeY = mob.position.y + 1.2;
+      memory.phase = Math.random() * Math.PI * 2;
+      memory.drift = Math.random() * Math.PI * 2;
+    }
+
+    memory.phase += dt * 5.5;
+    memory.drift += dt * 0.7;
+
+    // Hold an altitude above the floor by cancelling gravity, with a flutter on
+    // top so it never looks like it is hovering on rails.
+    const wanted = memory.homeY + Math.sin(memory.phase) * 0.55;
+    mob.velocity.y += (wanted - mob.position.y) * 6 * dt;
+    mob.velocity.y = Math.max(-3, Math.min(3, mob.velocity.y));
+
+    // Wander in a slow circle.
+    mob.velocity.x += Math.cos(memory.drift) * this.speed * dt;
+    mob.velocity.z += Math.sin(memory.drift) * this.speed * dt;
+
+    // Wing flap, which is most of what sells it.
+    if (mob.parts && mob.parts.wingLeft) {
+      const flap = Math.sin(memory.phase * 2.2) * 0.9;
+      mob.parts.wingLeft.rotation.z = flap;
+      mob.parts.wingRight.rotation.z = -flap;
+    }
+  },
+
+  buildModel() {
+    const group = new THREE.Group();
+    const fur = 0x3a3038;
+
+    const body = box(0.26, 0.3, 0.24, fur, 0, 0.3, 0);
+    const head = box(0.22, 0.2, 0.2, fur, 0, 0.5, 0.06);
+    const earLeft = box(0.07, 0.14, 0.04, 0x2a2228, -0.07, 0.64, 0.04);
+    const earRight = box(0.07, 0.14, 0.04, 0x2a2228, 0.07, 0.64, 0.04);
+    const eyeLeft = box(0.05, 0.05, 0.03, 0xd05050, -0.06, 0.52, 0.17);
+    const eyeRight = box(0.05, 0.05, 0.03, 0xd05050, 0.06, 0.52, 0.17);
+
+    // Wings pivot at the shoulder so `rotation.z` flaps them.
+    const wingLeft = new THREE.Group();
+    wingLeft.position.set(-0.12, 0.36, 0);
+    wingLeft.add(box(0.3, 0.22, 0.04, 0x4a3e46, -0.15, 0, 0));
+    const wingRight = new THREE.Group();
+    wingRight.position.set(0.12, 0.36, 0);
+    wingRight.add(box(0.3, 0.22, 0.04, 0x4a3e46, 0.15, 0, 0));
+
+    group.add(body, head, earLeft, earRight, eyeLeft, eyeRight, wingLeft, wingRight);
+    return { group, parts: { head, wingLeft, wingRight } };
+  },
+};
+
+export const MOB_TYPES = [ZOMBIE, SKELETON, SPIDER, CREEPER, PIG, COW, SHEEP, CHICKEN, SUSTINGUS, WOLF, BAT];
+
+/**
+ * Cave spawning rules, derived rather than repeated.
+ *
+ * Anything hostile can appear underground at any hour — a cave is dark whatever
+ * the sky is doing — and needs the dark to do it, so a torched-out tunnel stays
+ * quiet. Writing this as a rule over the list means adding a hostile mob later
+ * cannot forget to opt in.
+ */
+for (const type of MOB_TYPES) {
+  const hostile = !!(type.brain && type.brain.hostile);
+  type.spawn.needsDark = hostile;
+  if (hostile) type.spawn.cavesAnyTime = true;
+}
 
 /** Natives of the Comb. Spawned there instead of the overworld set. */
 export const COMB_MOB_TYPES = [COMB_MITE, COMB_DRIFTER, COMB_STALKER, COMB_GRUB];
