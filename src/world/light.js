@@ -61,28 +61,56 @@ export class LightEngine {
 
   /**
    * Flood light outward from a set of already-lit cells.
+   *
+   * Processed strictly brightest-first, one level at a time, rather than as a
+   * plain FIFO. A FIFO is correct for a *single* source — the first time a cell
+   * is reached is its final value — but not for a queue holding several sources
+   * at different levels. A dim one gets expanded before a bright one's flood
+   * arrives, so it fills a region that then has to be overwritten and re-queued,
+   * cell by cell.
+   *
+   * With one torch that costs nothing. With a cave full of lava at 15 and glow
+   * lichen at 7 it was most of the work: one chunk beside a lava lake took
+   * ~59 ms. Draining level 15 completely before touching level 14 means every
+   * cell is written exactly once, at its final value.
+   *
    * @param queue array of [x, y, z] seeds whose light is already written
    */
   propagate(queue) {
-    let head = 0;
-    while (head < queue.length) {
-      const [x, y, z] = queue[head++];
-      const level = this.getLight(x, y, z);
-      if (level <= 1) continue;
+    // One bucket per level. Nothing below 2 can light a neighbour, so those are
+    // never queued at all.
+    const buckets = [];
+    for (let i = 0; i <= MAX_LIGHT; i++) buckets.push([]);
 
-      for (const [dx, dy, dz] of NEIGHBOURS) {
-        const nx = x + dx, ny = y + dy, nz = z + dz;
-        if (ny < 0 || ny >= CHUNK_SY) continue;
-        if (!this.isLoaded(nx, ny, nz)) continue;
+    for (const cell of queue) {
+      const level = this.getLight(cell[0], cell[1], cell[2]);
+      if (level > 1) buckets[level].push(cell);
+    }
 
-        const opacity = opacityOf(this.getBlock(nx, ny, nz));
-        if (opacity >= MAX_LIGHT) continue;
+    for (let level = MAX_LIGHT; level >= 2; level--) {
+      const bucket = buckets[level];
+      // `bucket` grows while being walked — cells reached from a brighter level
+      // land here — so re-read the length each time rather than caching it.
+      for (let i = 0; i < bucket.length; i++) {
+        const [x, y, z] = bucket[i];
+        // Raised since it was queued? Then its own, higher bucket already dealt
+        // with it and this entry is stale.
+        if (this.getLight(x, y, z) !== level) continue;
 
-        const next = level - 1 - opacity;
-        if (next <= this.getLight(nx, ny, nz)) continue;
+        for (const [dx, dy, dz] of NEIGHBOURS) {
+          const nx = x + dx, ny = y + dy, nz = z + dz;
+          if (ny < 0 || ny >= CHUNK_SY) continue;
+          if (!this.isLoaded(nx, ny, nz)) continue;
 
-        this.setLight(nx, ny, nz, next);
-        queue.push([nx, ny, nz]);
+          const opacity = opacityOf(this.getBlock(nx, ny, nz));
+          if (opacity >= MAX_LIGHT) continue;
+
+          const next = level - 1 - opacity;
+          if (next <= this.getLight(nx, ny, nz)) continue;
+
+          this.setLight(nx, ny, nz, next);
+          if (next > 1) buckets[next].push([nx, ny, nz]);
+        }
       }
     }
   }
@@ -179,37 +207,50 @@ export function computeChunkLight(cx, cz, sampleBlock, emitters) {
   const baseX = cx * CHUNK_SX;
   const baseZ = cz * CHUNK_SZ;
 
+  // Flood into one flat scratch buffer covering the whole reachable volume,
+  // then copy the padded window out at the end.
+  //
+  // This used to keep the padded array plus a string-keyed Map for everything
+  // beyond it — and "everything beyond it" is 86% of the volume the flood can
+  // traverse, so nearly every read and write allocated a key and hit a hash
+  // map. Fine for one torch. Beside a lava lake it was ~85 ms for a single
+  // chunk. The buffer is reused across calls because this is never re-entrant.
+  const scratch = borrowScratch();
+
+  const originX = baseX - LIGHT_MARGIN;
+  const originZ = baseZ - LIGHT_MARGIN;
+
   const inRange = (x, y, z) =>
     y >= 0 && y < CHUNK_SY &&
-    x >= baseX - LIGHT_MARGIN && x < baseX + CHUNK_SX + LIGHT_MARGIN &&
-    z >= baseZ - LIGHT_MARGIN && z < baseZ + CHUNK_SZ + LIGHT_MARGIN;
+    x >= originX && x < originX + SCRATCH_W &&
+    z >= originZ && z < originZ + SCRATCH_D;
 
-  /** Is this world position inside the padded volume we return? */
-  const inPadded = (x, y, z) =>
-    x >= baseX - 1 && x <= baseX + CHUNK_SX &&
-    z >= baseZ - 1 && z <= baseZ + CHUNK_SZ &&
-    y >= -1 && y <= CHUNK_SY;
+  const scratchIndex = (x, y, z) =>
+    (y * SCRATCH_D + (z - originZ)) * SCRATCH_W + (x - originX);
 
-  // Light beyond the padded region still has to be tracked while flooding — a
-  // torch ten blocks past the border needs somewhere to hold its falloff — but
-  // it is thrown away afterwards.
-  const outside = new Map();
-  const okey = (x, y, z) => x + ',' + y + ',' + z;
-
-  const getLight = (x, y, z) =>
-    inPadded(x, y, z)
-      ? light[padIndex(x - baseX, y, z - baseZ)]
-      : (outside.get(okey(x, y, z)) ?? 0);
+  const getLight = (x, y, z) => (inRange(x, y, z) ? scratch[scratchIndex(x, y, z)] : 0);
 
   const setLight = (x, y, z, level) => {
-    if (inPadded(x, y, z)) light[padIndex(x - baseX, y, z - baseZ)] = level;
-    else outside.set(okey(x, y, z), level);
+    if (inRange(x, y, z)) scratch[scratchIndex(x, y, z)] = level;
   };
 
   const engine = new LightEngine({ getBlock: sampleBlock, getLight, setLight, isLoaded: inRange });
 
+  // Brightest first.
+  //
+  // BFS assumes the first time a cell is reached is already its brightest
+  // value, which holds for one source but not for a queue seeded with several
+  // at different levels: a dim source processed first floods a region that the
+  // bright one then has to overwrite, and every overwritten cell is re-queued.
+  // With one torch that is invisible. With a cave full of lava at 15 and lichen
+  // at 7 it is most of the work — sorting means the dim seeds nearly all find
+  // their neighbourhood already brighter and stop immediately.
+  const ordered = emitters.length > 1
+    ? [...emitters].sort((a, b) => b.level - a.level)
+    : emitters;
+
   const seeds = [];
-  for (const e of emitters) {
+  for (const e of ordered) {
     if (!inRange(e.x, e.y, e.z)) continue;
     if (e.level <= getLight(e.x, e.y, e.z)) continue;
     setLight(e.x, e.y, e.z, e.level);
@@ -218,7 +259,38 @@ export function computeChunkLight(cx, cz, sampleBlock, emitters) {
 
   if (seeds.length === 0) return null;
   engine.propagate(seeds);
+
+  // Copy the padded window out of the scratch buffer. The padded array runs
+  // from one voxel before the chunk to one past it, because the mesher samples
+  // light on the *air* side of each face and for a border face that lies in the
+  // neighbouring chunk.
+  for (let y = -1; y <= CHUNK_SY; y++) {
+    if (y < 0 || y >= CHUNK_SY) continue;      // nothing exists outside 0..SY
+    for (let z = -1; z <= CHUNK_SZ; z++) {
+      for (let x = -1; x <= CHUNK_SX; x++) {
+        light[padIndex(x, y, z)] = scratch[scratchIndex(baseX + x, y, baseZ + z)];
+      }
+    }
+  }
   return light;
+}
+
+/**
+ * Scratch space for the flood, reused between calls.
+ *
+ * 48 x 128 x 48 — the chunk plus a LIGHT_MARGIN skirt on each side, which is
+ * everything a source in range can reach. Allocated once rather than per chunk;
+ * `computeChunkLight` is synchronous and never re-entrant, so a single buffer is
+ * safe, and clearing 295 KB is far cheaper than the map it replaced.
+ */
+const SCRATCH_W = CHUNK_SX + LIGHT_MARGIN * 2;
+const SCRATCH_D = CHUNK_SZ + LIGHT_MARGIN * 2;
+let scratchBuffer = null;
+
+function borrowScratch() {
+  if (!scratchBuffer) scratchBuffer = new Uint8Array(SCRATCH_W * CHUNK_SY * SCRATCH_D);
+  else scratchBuffer.fill(0);
+  return scratchBuffer;
 }
 
 export { emissionOf };

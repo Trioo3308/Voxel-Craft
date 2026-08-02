@@ -186,6 +186,8 @@ export const TILE = {
 
   // --- Beds, and the caves ---------------------------------------------------
   BED_HEAD_TOP: 223,
+  DRIPSTONE_HANGING: 233,
+  DRIPSTONE_SHAFT: 234,
   DEEPSLATE: 224,
   DEEPSLATE_COBBLE: 225,
   DRIPSTONE: 226,
@@ -1355,16 +1357,38 @@ export const DEEPSLATE_COBBLE = defineBlock(127, 'deepslate_cobble', {
 });
 
 /**
- * Dripstone. Rendered as a cross rather than a box for the same reason plants
- * are: a box would print the tapered texture onto a cube's lid and read as a
- * stone block with a spike drawn on top.
+ * Dripstone, in three pieces.
+ *
+ * One block with one tapered-cone texture looked wrong the moment two of them
+ * stacked: you got a row of separate cones, like beads on a string, instead of
+ * one spike. A spike needs a point at one end and a plain shaft behind it, so
+ * the tip and the shaft are different blocks and the generator stacks shaft
+ * behind tip.
+ *
+ * Rendered as crosses rather than boxes for the same reason plants are — a box
+ * prints the tapered texture onto a cube's lid and reads as a stone block with
+ * a spike drawn on top of it.
  */
-export const DRIPSTONE = defineBlock(128, 'dripstone', {
-  displayName: 'Dripstone', tiles: TILE.DRIPSTONE, hardness: 1.4,
+const dripstone = (id, name, tile, displayName) => defineBlock(id, name, {
+  displayName, tiles: tile, hardness: 1.4,
   toolType: 'pickaxe', requiresTool: true,
   solid: false, opaque: false, cullSameType: false,
-  cross: true, crossHeight: 0.9,
+  cross: true, crossHeight: 1,
+  drops: 128,
 });
+
+/** Points up, off a floor. The end of a stalagmite. */
+export const DRIPSTONE = dripstone(128, 'dripstone', TILE.DRIPSTONE, 'Dripstone');
+/** Points down, off a ceiling. The end of a stalactite. */
+export const DRIPSTONE_HANGING = dripstone(133, 'dripstone_hanging', TILE.DRIPSTONE_HANGING, 'Dripstone');
+/** The straight middle. What makes a stack read as one spike. */
+export const DRIPSTONE_SHAFT = dripstone(134, 'dripstone_shaft', TILE.DRIPSTONE_SHAFT, 'Dripstone');
+
+export const DRIPSTONE_PARTS = [DRIPSTONE, DRIPSTONE_HANGING, DRIPSTONE_SHAFT];
+
+export function isDripstone(id) {
+  return id === DRIPSTONE.id || id === DRIPSTONE_HANGING.id || id === DRIPSTONE_SHAFT.id;
+}
 
 /** Faint light, growing on cave walls. The reason a cave is navigable at all. */
 export const GLOW_LICHEN = defineBlock(129, 'glow_lichen', {

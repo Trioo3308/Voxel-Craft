@@ -490,11 +490,25 @@ The first version of that rule used a fixed y band and punched holes through the
 floor of any valley low enough — correct on a plateau, a crater everywhere else.
 
 **Deepslate** replaces stone below y16, so how deep you are is readable without
-checking the coordinates. **Dripstone** hangs from ceilings and stands on
-floors, **glow lichen** grows in patches and gives just enough light to navigate
-by, **lava** pools in the deepest galleries, and rare **geodes** — a shell, a
-lining of crystal, a hollow middle — are the only source of cave crystal, which
-makes a lantern brighter than a torch and needing no coal.
+checking the coordinates. **Glow lichen** grows in patches and gives just enough
+light to navigate by, and rare **geodes** — a shell, a lining of crystal, a
+hollow middle — are the only source of cave crystal, which makes a lantern
+brighter than a torch and needing no coal.
+
+**Dripstone** comes in three blocks — a tip that points up, a tip that points
+down, and a plain shaft — because one tapered texture repeated up a column reads
+as a row of separate cones rather than one spike. Runs are normalised after
+growing rather than capped as they grow: a stalagmite rising off the floor can
+run into a stalactite coming down to meet it, and only a pass that can see the
+finished run knows where its ends are. A run attached at both ends is a pillar
+and is shaft the whole way.
+
+**Lava** pools in the deepest galleries, defined as a *surface level* from a 2D
+field rather than as a 3D blob. That distinction is the whole thing: with a 3D
+threshold a cell could be lava while the cell beneath it was not, and since
+fluids are only simulated on change — never on chunk load — the result was lava
+hanging in mid-air over an open cave. A level makes it impossible by
+construction, because if `y` is under the surface then so is `y - 1`.
 
 ### Things live down there now
 
@@ -1095,6 +1109,31 @@ so ids can move freely — but renaming `door` to `door_north` meant every door
 and bed in an existing world failed to resolve and loaded as **air**. A rename
 is a compatibility event, and `RENAMED` in save.js is where it gets paid for. A
 world saved by the previous shipped build is now loaded item by item as a test.
+
+**Lava lighting was never broken** — which took measuring to establish, after it
+was reported as "lava isn't producing light underground". Sampling the meshed
+vertex colours against the lava content of each chunk gives a clean monotonic
+relationship: no lava reads 0.14–0.22, a few blocks 0.23–0.43, and a chunk with
+800+ reads 0.73–0.97 out of 1. The maths was fine.
+
+What was wrong was everything around it. Filling caves with lava, lichen and
+crystal put ~200 light sources in every chunk, into a registry whose own comment
+described it as holding "the handful of emitters near it" — a flat Map, scanned
+end to end for every chunk meshed. After 169 chunks it held 27,393 entries and
+the scan alone cost ~40 ms per chunk at exploration distances; one chunk beside
+a lava lake took 128 ms to light. Three fixes, each measured: bucket the
+registry by chunk (lookup now constant, 3.41 ms → 0.09 ms), skip emitters buried
+in equal-or-brighter neighbours since a lava block surrounded by lava cannot
+brighten anything (27,393 → 6,013 entries), and flood into a flat scratch buffer
+instead of a string-keyed Map that was handling **86%** of the traversable
+volume. 128 ms → 63 ms with identical output.
+
+Two wrong turns worth recording. The first optimisation attempt sorted the
+seeds brightest-first and changed nothing, because the FIFO still interleaves
+levels; replacing it with a per-level bucketed queue was correct but *also*
+changed nothing, because neither was the bottleneck. The second was measuring a
+harness whose own `sampleBlock` built a string key per call — optimising the
+test rather than the game. Both were avoidable by profiling before editing.
 
 The cave update shipped with **stalagmites growing all over the grass**. The
 decoration pass looks for air with a solid block under it — which is a perfect

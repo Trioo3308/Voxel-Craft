@@ -1679,20 +1679,27 @@ export const PAINTERS = {
     }
   },
 
-  [TILE.DRIPSTONE]: (set, rnd) => {
-    // A tapered spike, widest at the bottom. Drawn on the lower rows so a
-    // stalagmite reads standing up; hanging ones are the same art flipped by
-    // the cross renderer.
-    for (let y = 2; y < T; y++) {
-      const halfWidth = Math.round((y - 2) * 0.28) + 1;
-      for (let x = 8 - halfWidth; x <= 7 + halfWidth; x++) {
+  // The three dripstone pieces share one painter, differing only in how the
+  // width varies down the tile: a point at the top, a point at the bottom, or
+  // no taper at all. Stacking shaft behind tip is what makes a run of them read
+  // as a single spike rather than a row of separate cones.
+  ...Object.fromEntries([
+    // [tile, half-width at row y]
+    [TILE.DRIPSTONE, (y) => Math.round(y * 0.28) + 1],            // tip up
+    [TILE.DRIPSTONE_HANGING, (y) => Math.round((T - 1 - y) * 0.28) + 1], // tip down
+    [TILE.DRIPSTONE_SHAFT, () => 4],                              // straight
+  ].map(([tile, widthAt]) => [tile, (set, rnd) => {
+    for (let y = 0; y < T; y++) {
+      const half = Math.min(6, widthAt(y));
+      const left = 8 - half, right = 7 + half;
+      for (let x = left; x <= right; x++) {
         if (x < 0 || x >= T) continue;
         const d = (rnd() - 0.5) * 18;
-        const edge = x === 8 - halfWidth || x === 7 + halfWidth;
-        set(x, y, (edge ? 128 : 158) + d, (edge ? 108 : 134) + d, (edge ? 92 : 114) + d);
+        const edge = x === left || x === right;
+        set(x, y, (edge ? 124 : 158) + d, (edge ? 104 : 134) + d, (edge ? 88 : 114) + d);
       }
     }
-  },
+  }])),
 
   [TILE.GLOW_LICHEN]: (set, rnd) => {
     // A sprawl of pale green filaments. Mostly transparent, so it reads as
@@ -2108,10 +2115,10 @@ const TOOL_SPRITES = {
     '......hhh.......',
     '......hhh.......',
     '......hhh.......',
-    '.......h........',
-    '.......h........',
+    '......hhh.......',
+    '......hhh.......',
+    '......hdh.......',
     '......ddd.......',
-    '.......d........',
     '................',
   ],
   // Blade across the top-right, handle running down to the bottom-left — the

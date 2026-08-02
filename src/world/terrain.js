@@ -14,7 +14,8 @@ import {
   COAL_ORE, IRON_ORE, GOLD_ORE, REDSTONE_ORE, LAPIS_ORE, DIAMOND_ORE, EMERALD_ORE, COMBIUM_ORE,
   DRY_GRASS, PODZOL, SWAMP_GRASS, CLAY, SANDSTONE, TREE_WOODS,
   COBBLE, MOSSY_COBBLE, CHEST, RAIL, TORCH, MUSHROOM_RED, MUSHROOM_BROWN,
-  DEEPSLATE, DRIPSTONE, GLOW_LICHEN, GEODE_SHELL, GEODE_CRYSTAL,
+  DEEPSLATE, DRIPSTONE, DRIPSTONE_HANGING, DRIPSTONE_SHAFT, isDripstone,
+  GLOW_LICHEN, GEODE_SHELL, GEODE_CRYSTAL,
 } from './blocks.js';
 import Settings from '../settings.js';
 
@@ -53,6 +54,10 @@ export const DEEPSLATE_TOP = 16;
  */
 export const CAVE_MIN_COVER = 5;
 export const CAVE_FADE_COVER = 16;
+
+/** Lava never pools above this, and only where the lake field is strong. */
+export const LAVA_LAKE_CEILING = 11;
+export const LAVA_LAKE_THRESHOLD = 0.28;
 
 /** Geodes sit on their own coarse grid, like every other structure here. */
 export const GEODE_SPACING = 8; // chunks
@@ -433,13 +438,22 @@ export class TerrainGenerator {
   /**
    * Should this cave cell be lava rather than air?
    *
-   * Only right at the bottom, and only where a separate field says so, so lava
-   * pools in the deepest galleries instead of dripping through every tunnel.
+   * Defined as a *surface level* from a 2D field, not as a 3D blob. That is the
+   * whole trick: with a 3D threshold a cell could be lava while the cell under
+   * it was not, and since fluids are only simulated on change — never on chunk
+   * load — the result was lava hanging in mid-air over an open cave. A level
+   * makes that impossible by construction, because if `y` is under the surface
+   * then `y - 1` is too, so the block below a lava block is always either more
+   * lava or the rock the lake is sitting in.
    */
   isLavaLake(wx, wy, wz) {
     if (this.version < 5) return false;
-    if (wy > 11) return false;
-    return this.nLavaLake.perlin3(wx * 0.021, wy * 0.06, wz * 0.021) > 0.3;
+    if (wy > LAVA_LAKE_CEILING) return false;
+    const n = this.nLavaLake.perlin2(wx * 0.011, wz * 0.011);
+    if (n < LAVA_LAKE_THRESHOLD) return false;
+    // Deeper pools where the field is strongest, so lakes have a shape.
+    const level = 3 + Math.round((n - LAVA_LAKE_THRESHOLD) * 24);
+    return wy <= Math.min(level, LAVA_LAKE_CEILING);
   }
 
   /**
@@ -608,10 +622,14 @@ export class TerrainGenerator {
    * the column loop half of that has not been decided yet.
    */
   _decorateCaves(voxels, baseX, baseZ) {
+    // Rock, for the purposes of "is there a surface here to grow off". Fluids
+    // are not, and neither is decoration already placed — otherwise a spike
+    // would grow off the tip of the spike below it, and again off that one.
     const solid = (lx, y, lz) => {
       if (y < 0 || y >= CHUNK_SY) return false;
       const id = voxels[voxelIndex(lx, y, lz)];
-      return id !== AIR && id !== WATER.id && id !== LAVA.id;
+      if (id === AIR || id === WATER.id || id === LAVA.id) return false;
+      return !isDripstone(id) && id !== GLOW_LICHEN.id;
     };
 
     for (let lz = 0; lz < CHUNK_SZ; lz++) {
@@ -637,13 +655,78 @@ export class TerrainGenerator {
           const n = this.nDecor.perlin3(wx * 0.34, y * 0.34, wz * 0.34);
 
           if (floor && !ceiling && n > 0.42) {
-            voxels[voxelIndex(lx, y, lz)] = DRIPSTONE.id;
+            // A stalagmite: shaft rising off the floor, tip on top. Length
+            // comes off the same field, so the tallest ones stand where the
+            // patch is thickest.
+            this._growDripstone(voxels, lx, y, lz, 1, 1 + Math.floor((n - 0.42) * 9));
           } else if (ceiling && !floor && n > 0.46) {
-            voxels[voxelIndex(lx, y, lz)] = DRIPSTONE.id;
+            this._growDripstone(voxels, lx, y, lz, -1, 1 + Math.floor((n - 0.46) * 9));
           } else if (n < -0.52) {
             // Lichen prefers the deep, where it is the only light there is.
             if (y < 34 || n < -0.6) voxels[voxelIndex(lx, y, lz)] = GLOW_LICHEN.id;
           }
+        }
+      }
+    }
+
+    this._normaliseDripstone(voxels, solid);
+  }
+
+  /**
+   * Grow one dripstone spike from a surface.
+   *
+   * `dir` is +1 for a stalagmite rising off a floor and -1 for a stalactite
+   * hanging from a ceiling. The shaft is laid down first and the tip goes on
+   * the far end, which is the whole reason there are three blocks rather than
+   * one: a single tapered texture repeated up a column reads as a row of
+   * separate cones, not a spike.
+   *
+   * Stops early at anything that is not air, so a spike never grows through the
+   * far wall of a narrow passage.
+   */
+  _growDripstone(voxels, lx, y, lz, dir, length) {
+    const capped = Math.max(1, Math.min(length, 5));
+    for (let i = 0; i < capped; i++) {
+      const py = y + dir * i;
+      if (py < 1 || py >= CHUNK_SY) break;
+      if (voxels[voxelIndex(lx, py, lz)] !== AIR) break;
+      // Everything is laid as shaft. Which end becomes a point is decided
+      // afterwards by `_normaliseDripstone`, because a spike growing up off a
+      // floor can run into one growing down off the ceiling, and only a pass
+      // that can see the finished run knows where its ends are.
+      voxels[voxelIndex(lx, py, lz)] = DRIPSTONE_SHAFT.id;
+    }
+  }
+
+  /**
+   * Point the ends of every dripstone run, and only the ends.
+   *
+   * A run attached at the bottom is a stalagmite and points up; one attached at
+   * the top is a stalactite and points down; one attached at both is a pillar
+   * and is shaft all the way. Doing this as a pass over finished runs is what
+   * stops two spikes that met in the middle from having a point buried inside
+   * them — which is the same "row of separate cones" artefact the three-piece
+   * split existed to remove, just relocated to the join.
+   */
+  _normaliseDripstone(voxels, isRock) {
+    for (let lz = 0; lz < CHUNK_SZ; lz++) {
+      for (let lx = 0; lx < CHUNK_SX; lx++) {
+        let y = 1;
+        while (y < CHUNK_SY) {
+          if (!isDripstone(voxels[voxelIndex(lx, y, lz)])) { y++; continue; }
+
+          const lo = y;
+          let hi = y;
+          while (hi + 1 < CHUNK_SY && isDripstone(voxels[voxelIndex(lx, hi + 1, lz)])) hi++;
+
+          for (let k = lo; k <= hi; k++) voxels[voxelIndex(lx, k, lz)] = DRIPSTONE_SHAFT.id;
+
+          const below = isRock(lx, lo - 1, lz);
+          const above = isRock(lx, hi + 1, lz);
+          if (below && !above) voxels[voxelIndex(lx, hi, lz)] = DRIPSTONE.id;
+          else if (above && !below) voxels[voxelIndex(lx, lo, lz)] = DRIPSTONE_HANGING.id;
+
+          y = hi + 1;
         }
       }
     }

@@ -73,30 +73,96 @@ const sentChunks = new Set();
  * hundreds of thousands of block lookups per chunk.
  */
 
-/** Register or clear an emitter after a block changes. */
+/**
+ * Register or clear an emitter after a block changes.
+ *
+ * Bucketed by chunk. The registry was a single flat Map scanned end to end for
+ * every chunk meshed, which was fine while emitters meant "the torches a player
+ * put down" — a few dozen in a session. Filling caves with lava, glow lichen and
+ * geode crystals took it to ~200 per chunk and 27,000 entries after 169 chunks,
+ * and that linear scan became ~40 ms of pure searching per chunk at exploration
+ * distances. Buckets make the lookup proportional to what is *near* the chunk
+ * rather than to everywhere you have ever been.
+ */
+function emitterBucketKey(wx, wz) {
+  return toChunkCoord(wx) + ',' + toChunkCoord(wz);
+}
+
 function updateEmitter(wx, wy, wz, id) {
+  const emitters = emittersOf();
+  const bucketKey = emitterBucketKey(wx, wz);
   const key = wx + ',' + wy + ',' + wz;
   const level = emissionOf(id);
-  const emitters = emittersOf();
-  if (level > 0) emitters.set(key, level);
-  else emitters.delete(key);
+
+  let bucket = emitters.get(bucketKey);
+  if (level > 0) {
+    if (!bucket) { bucket = new Map(); emitters.set(bucketKey, bucket); }
+    bucket.set(key, level);
+  } else if (bucket) {
+    bucket.delete(key);
+    if (bucket.size === 0) emitters.delete(bucketKey);
+  }
+}
+
+/** The registered emission at a world position, or 0. */
+function emitterLevelAt(wx, wy, wz) {
+  const bucket = emittersOf().get(emitterBucketKey(wx, wz));
+  return bucket ? (bucket.get(wx + ',' + wy + ',' + wz) ?? 0) : 0;
+}
+
+/**
+ * Re-test the emitters around a changed block.
+ *
+ * `registerChunkEmitters` skips emitters that are fully buried in equal or
+ * brighter neighbours, because they cannot brighten anything. Mining into a
+ * lava lake changes that for the block behind the wall, so the cull has to be
+ * reversible — otherwise the face you just opened stays dark.
+ */
+function refreshNeighbourEmitters(wx, wy, wz) {
+  for (const [dx, dy, dz] of EMITTER_NEIGHBOURS) {
+    const nx = wx + dx, ny = wy + dy, nz = wz + dz;
+    if (ny < 0 || ny >= CHUNK_SY) continue;
+    const id = sampleBlock(nx, ny, nz);
+    const level = emissionOf(id);
+    if (level <= 0) continue;
+    if (emitterLevelAt(nx, ny, nz) > 0) continue;   // already registered
+
+    // Now exposed to something dimmer? Then it counts.
+    for (const [ax, ay, az] of EMITTER_NEIGHBOURS) {
+      const ny2 = ny + ay;
+      if (ny2 < 0 || ny2 >= CHUNK_SY) continue;
+      if (emissionOf(sampleBlock(nx + ax, ny2, nz + az)) < level) {
+        updateEmitter(nx, ny, nz, id);
+        break;
+      }
+    }
+  }
+  invalidateSampleCache();
 }
 
 /** Emitters close enough to affect a chunk. */
 function emittersNear(cx, cz) {
-  const minX = cx * CHUNK_SX - LIGHT_MARGIN;
-  const maxX = cx * CHUNK_SX + CHUNK_SX + LIGHT_MARGIN;
-  const minZ = cz * CHUNK_SZ - LIGHT_MARGIN;
-  const maxZ = cz * CHUNK_SZ + CHUNK_SZ + LIGHT_MARGIN;
-
+  // LIGHT_MARGIN is 16, one chunk, so the neighbours of the neighbours cannot
+  // reach — a 3x3 of buckets covers everything that can possibly contribute.
+  const reach = Math.ceil(LIGHT_MARGIN / CHUNK_SX);
   const found = [];
-  for (const [key, level] of emittersOf()) {
-    const comma1 = key.indexOf(',');
-    const comma2 = key.indexOf(',', comma1 + 1);
-    const x = +key.slice(0, comma1);
-    const z = +key.slice(comma2 + 1);
-    if (x < minX || x >= maxX || z < minZ || z >= maxZ) continue;
-    found.push({ x, y: +key.slice(comma1 + 1, comma2), z, level });
+  const emitters = emittersOf();
+
+  for (let dz = -reach; dz <= reach; dz++) {
+    for (let dx = -reach; dx <= reach; dx++) {
+      const bucket = emitters.get((cx + dx) + ',' + (cz + dz));
+      if (!bucket) continue;
+      for (const [key, level] of bucket) {
+        const comma1 = key.indexOf(',');
+        const comma2 = key.indexOf(',', comma1 + 1);
+        found.push({
+          x: +key.slice(0, comma1),
+          y: +key.slice(comma1 + 1, comma2),
+          z: +key.slice(comma2 + 1),
+          level,
+        });
+      }
+    }
   }
   return found;
 }
@@ -164,7 +230,32 @@ function collectTransferables(geometry, out) {
   );
 }
 
-/** Scan a freshly generated chunk for emitters (restored torches, lava). */
+/**
+ * Scan a freshly generated chunk for emitters (restored torches, lava, lichen).
+ *
+ * Emitters that cannot brighten anything are skipped. A lava block in the
+ * middle of a lake has lava on all six sides, every one of which emits the same
+ * 15, so every cell it could reach already has a source at least as bright —
+ * it contributes exactly nothing and costs a BFS seed. One chunk of a lava lake
+ * held 2,252 lava blocks and only the shell of that does any work.
+ *
+ * The test is local and conservative: keep the emitter unless *every* neighbour
+ * emits at least as much. Anything on a boundary, next to air, or brighter than
+ * its surroundings is kept.
+ */
+function emitterMatters(voxels, x, y, z, level) {
+  for (const [dx, dy, dz] of EMITTER_NEIGHBOURS) {
+    const nx = x + dx, ny = y + dy, nz = z + dz;
+    // A chunk edge might border something dimmer, so never cull there.
+    if (nx < 0 || nx >= CHUNK_SX || nz < 0 || nz >= CHUNK_SZ) return true;
+    if (ny < 0 || ny >= CHUNK_SY) return true;
+    if (emissionOf(voxels[voxelIndex(nx, ny, nz)]) < level) return true;
+  }
+  return false;
+}
+
+const EMITTER_NEIGHBOURS = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+
 function registerChunkEmitters(cx, cz, voxels) {
   const baseX = cx * CHUNK_SX;
   const baseZ = cz * CHUNK_SZ;
@@ -173,7 +264,10 @@ function registerChunkEmitters(cx, cz, voxels) {
       for (let x = 0; x < CHUNK_SX; x++) {
         const id = voxels[voxelIndex(x, y, z)];
         if (id === AIR) continue;
-        if (emissionOf(id) > 0) updateEmitter(baseX + x, y, baseZ + z, id);
+        const level = emissionOf(id);
+        if (level <= 0) continue;
+        if (!emitterMatters(voxels, x, y, z, level)) continue;
+        updateEmitter(baseX + x, y, baseZ + z, id);
       }
     }
   }
@@ -245,9 +339,14 @@ function recordEdit(wx, wy, wz, id, dirty) {
   const voxels = chunksOf().get(key);
   if (voxels) voxels[index] = id;
 
-  const previousEmission = emittersOf().get(wx + ',' + wy + ',' + wz) ?? 0;
+  const previousEmission = emitterLevelAt(wx, wy, wz);
   updateEmitter(wx, wy, wz, id);
   const newEmission = emissionOf(id);
+
+  // Breaking a block can newly expose an emitter that was culled for being
+  // buried — the lava behind the wall you just mined into. Re-test the six
+  // neighbours so they register the moment they can actually light something.
+  refreshNeighbourEmitters(wx, wy, wz);
 
   dirty.add(chunkKey(cx, cz));
 
