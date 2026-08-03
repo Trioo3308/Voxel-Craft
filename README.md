@@ -464,6 +464,53 @@ flattens ground at the surface, which is exactly where people build.
 
 ---
 
+## The Nether and the Aether
+
+Two more dimensions, reached the traditional way.
+
+**The Nether** needs an **obsidian** frame lit with **flint and steel**. Obsidian
+comes from pouring water onto a lava *source* — a flowing one still gives
+cobblestone, which is what makes obsidian something you have to set up rather
+than something you trip over. Flint knocks out of gravel about one time in ten,
+and flint plus an iron ingot makes the striker.
+
+It is a closed cavern, not a landscape: solid netherrack from a bedrock floor to
+a **bedrock ceiling**, hollowed out in the middle and flooded with lava to y31.
+There is no sky and no horizon, and every route is a shelf over a lava sea.
+**Soul sand** drags you to 45% speed, **glowstone** hangs from the ceilings in
+clusters, **quartz** runs all through the rock, and **nether brick fortresses**
+sit above the lava on their own coarse grid — the only flat ground in the place.
+**Embers** drift over the lava and throw fire across the gaps, which is what
+makes those narrow shelves matter.
+
+**The Aether** needs a **glowstone** frame lit with a **bucket of water**. If the
+ceilings near your portal were bare, four nether quartz also craft into
+glowstone, so the way up is never gated on luck.
+
+It is the opposite generation problem to everywhere else. Every other generator
+decides, per column, where the ground stops; the Aether has no ground. An island
+is a 3D blob of solid in empty sky, so density is evaluated per *cell*, and the
+vertical falloff around the island band is what closes blobs off into islands
+instead of letting them extrude into columns. About 97% of it is air.
+**Holystone** under **aether grass**, **skyroot** trees, **ambrosium** ore that
+glows faintly and eats like a snack — and **aerclouds**, which break a fall
+completely. Without those the Aether would be a single mistake rather than
+somewhere to explore. **Aerwhales** cruise between the islands and are entirely
+harmless.
+
+### One portal system, three destinations
+
+`portal.js` began with one hard-coded frame block, one portal block, one
+igniter, and a `destinationOf` that was a two-way toggle. All of that is now a
+`PORTAL_KINDS` table; a fourth dimension would be one entry and no new code.
+
+Each destination has its own portal *surface block* rather than sharing one and
+working out the destination from the surrounding frame. Reading the frame would
+mean a search every time you stepped in, and a half-broken frame would leave a
+portal that no longer knew where it went. The id **is** the destination.
+
+---
+
 ## Underground
 
 The caves were rebuilt in terrain v5 after measurement showed how bad they were:
@@ -1109,6 +1156,27 @@ so ids can move freely — but renaming `door` to `door_north` meant every door
 and bed in an existing world failed to resolve and loaded as **air**. A rename
 is a compatibility event, and `RENAMED` in save.js is where it gets paid for. A
 world saved by the previous shipped build is now loaded item by item as a test.
+
+**The Nether and the Aether** — 119 headless assertions plus an in-browser trip
+to each. Every portal kind lights from its own igniter and refuses the others,
+fills with its own surface, extinguishes only itself, and builds a return portal
+in the right material.
+
+Two things needed measuring rather than guessing, and both were caught by
+looking at the result. Glowstone generated **not at all**: the threshold was set
+at 0.55 on a field whose maximum over 6,400 samples is 0.488 — the same "raw
+noise clusters near zero" trap the biome, ruggedness and combium fields each
+hit. And the Nether floor came out between 26 and 39, thirteen blocks of relief
+across a whole dimension, because `fbm2` piles up near zero and a ×14 multiplier
+gave ±6 — so nothing ever dipped below the lava line and there were no lava seas
+at all. Both are now set against measured distributions, with the numbers in the
+comments.
+
+The first arrival in the Nether landed at **y101, on top of the bedrock roof**.
+`getSurfaceY` returns the topmost solid block in a column, which is correct
+under an open sky and wrong under a ceiling. Each dimension now searches its own
+volume its own way, and the suite checks that an arrival is never on the roof,
+never under the lava, and never in the Aether's void.
 
 **Lava lighting was never broken** — which took measuring to establish, after it
 was reported as "lava isn't producing light underground". Sampling the meshed

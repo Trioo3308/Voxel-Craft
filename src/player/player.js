@@ -15,11 +15,12 @@ import { Survival, EXHAUSTION } from './survival.js';
 import { Skateboard, BAIL_FALL_DISTANCE } from './skateboard.js';
 import {
   AIR, getBlock, getItem, isLiquid, getSoundMaterial, getRanged, getBucket, getFluid,
-  ITEM_ID, WATER, LAVA, PORTAL,
+  ITEM_ID, WATER, LAVA,
   GRASS, DIRT, DRY_GRASS, PODZOL, SWAMP_GRASS,
   FARMLAND, FARMLAND_MOIST, isFarmland, WHEAT_STAGES, wheatStage,
   RAIL, isDoor, isBed, doorBlock, bedBlock, FACINGS, facingFromLook,
 } from '../world/blocks.js';
+import { PORTAL_SURFACES, igniterOf } from '../world/portal.js';
 import { audio } from '../engine/audio.js';
 
 const P = Settings.player;
@@ -375,8 +376,35 @@ export class Player {
     // A board is faster than a sprint and does not care whether you are sneaking.
     if (this.board.riding) return P.boardSpeed;
     if (this.sneaking) return P.sneakSpeed;
-    if (this.sprinting) return P.sprintSpeed;
-    return P.walkSpeed;
+    const base = this.sprinting ? P.sprintSpeed : P.walkSpeed;
+    // Soul sand drags. Applied as a multiplier on whatever you were doing, so
+    // sprinting across it is still faster than walking across it — just slow.
+    return base * this._groundDrag();
+  }
+
+  /**
+   * Did we land in something soft?
+   *
+   * Aercloud only. Without it the Aether would be a single mistake rather than
+   * somewhere to explore — the islands float over a very long drop.
+   */
+  _landedSoft() {
+    for (const dy of [-0.1, 0.4]) {
+      const block = getBlock(this.world.getBlock(
+        Math.floor(this.position.x), Math.floor(this.position.y + dy), Math.floor(this.position.z)
+      ));
+      if (block && block.breaksFall) return true;
+    }
+    return false;
+  }
+
+  /** Speed multiplier from the block underfoot. */
+  _groundDrag() {
+    if (!this.onGround) return 1;
+    const under = getBlock(this.world.getBlock(
+      Math.floor(this.position.x), Math.floor(this.position.y - 0.1), Math.floor(this.position.z)
+    ));
+    return under ? under.walkDrag : 1;
   }
 
   _updateFlight(dt) {
@@ -479,7 +507,8 @@ export class Player {
         // Landing a jump on the board costs nothing — the board takes it. Only
         // a drop big enough to bail hurts. Without this, every rocket launch
         // would cost health for going as high as the trick list wants you to.
-        const cushioned = this.board.riding && this.fallDistance <= BAIL_FALL_DISTANCE;
+        const cushioned = (this.board.riding && this.fallDistance <= BAIL_FALL_DISTANCE) ||
+                          this._landedSoft();
         if (!cushioned && this.fallDistance > Settings.survival.fallDamageThreshold) {
           const damage = Math.floor(this.fallDistance - Settings.survival.fallDamageThreshold);
           if (damage > 0) this.survival.damage(damage, 'fall');
@@ -516,11 +545,17 @@ export class Player {
   _updatePortal(dt) {
     if (this._portalCooldown > 0) this._portalCooldown -= dt;
 
-    const inside =
-      this.world.getBlock(this.position.x, this.position.y + 0.4, this.position.z) === PORTAL.id ||
-      this.world.getBlock(this.position.x, this.position.y + 1.2, this.position.z) === PORTAL.id;
+    // Any portal surface, not just the combium one — and remember which, so the
+    // travel handler knows where this portal actually goes.
+    const atFeet = this.world.getBlock(this.position.x, this.position.y + 0.4, this.position.z);
+    const atHead = this.world.getBlock(this.position.x, this.position.y + 1.2, this.position.z);
+    const surface = PORTAL_SURFACES.includes(atFeet) ? atFeet
+                  : PORTAL_SURFACES.includes(atHead) ? atHead
+                  : 0;
+    const inside = surface !== 0;
 
     this.inPortal = inside;
+    this.portalSurface = surface;
     if (!inside) {
       this.portalCharge = 0;
       // Stepping out is what re-arms the portal. Without this, arriving inside
@@ -537,7 +572,7 @@ export class Player {
       this.portalCharge = 0;
       this._portalCooldown = 4;
       this._portalArmed = false;
-      this.onPortalTravel();
+      this.onPortalTravel(surface);
     }
   }
 
@@ -697,6 +732,8 @@ export class Player {
         this._placeCooldown = 0.4;
       } else if (this._tryBucket(ctx)) {
         this._placeCooldown = 0.4;
+      } else if (this._tryIgnite()) {
+        this._placeCooldown = 0.4;
       } else if (this._tryEat()) {
         this._eatCooldown = 0.8;
         this._placeCooldown = 0.8;
@@ -813,16 +850,20 @@ export class Player {
 
     if (!bucket) return false;
 
-    // --- Milk: light a portal ---------------------------------------------
-    if (bucket.igniter) {
-      const target = this.targetBlock;
-      if (!target || !this.onIgnitePortal) return false;
-      if (!this.onIgnitePortal(target.x, target.y, target.z)) return false;
-      if (!this.creative) {
-        this.inventory.consumeSelected(1);
-        this.inventory.add(ITEM_ID.BUCKET, 1);
+    // --- Lighting a portal --------------------------------------------------
+    // Tried before pouring, so aiming a water bucket at a glowstone frame lights
+    // the Aether instead of tipping water down it. Anywhere that is not a frame
+    // falls through and pours as normal.
+    const fluidIgniter = igniterOf(getItem(slot.id));
+    if (fluidIgniter && this.targetBlock && this.onIgnitePortal) {
+      const t = this.targetBlock;
+      if (this.onIgnitePortal(t.x, t.y, t.z, fluidIgniter)) {
+        if (!this.creative) {
+          this.inventory.consumeSelected(1);
+          this.inventory.add(ITEM_ID.BUCKET, 1);
+        }
+        return true;
       }
-      return true;
     }
 
     // --- Water or lava: pour it out ---------------------------------------
@@ -843,6 +884,30 @@ export class Player {
       this.inventory.add(ITEM_ID.BUCKET, 1);
     }
     audio.splash();
+    return true;
+  }
+
+  /**
+   * Strike a portal frame with flint and steel.
+   *
+   * Separate from `_tryBucket` because an igniter need not be a bucket — that
+   * coupling is a leftover from when milk was the only way to light anything.
+   * @returns {boolean} whether a frame caught
+   */
+  _tryIgnite() {
+    const slot = this.inventory.getSelected();
+    if (!slot) return false;
+    const item = getItem(slot.id);
+    if (!item || !item.igniter) return false;
+    if (!this.targetBlock || !this.onIgnitePortal) return false;
+
+    const t = this.targetBlock;
+    if (!this.onIgnitePortal(t.x, t.y, t.z, item.igniter)) return false;
+
+    this.didSwing = true;
+    // Flint and steel wears out rather than being consumed, so one lasts a
+    // handful of portals.
+    if (!this.creative && this.inventory.damageHeldTool(1)) audio.toolBreak();
     return true;
   }
 

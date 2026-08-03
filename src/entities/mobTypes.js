@@ -17,6 +17,7 @@ import {
   ITEM_ID, WOOL, GRASS, DIRT, SAND, SNOW, STONE, DRY_GRASS, PODZOL, SWAMP_GRASS,
   COMB_SOIL, COMB_STONE, COMB_BRICK, COMB_TILE, COMB_MOSS, COMB_ASH, DEEP_COMB,
   DEEPSLATE, DEEPSLATE_COBBLE, COBBLE, MOSSY_COBBLE, GRAVEL,
+  NETHERRACK, SOUL_SAND, NETHER_BRICK, AETHER_GRASS, HOLYSTONE,
 } from '../world/blocks.js';
 import { audio } from '../engine/audio.js';
 import { BOSS_LOOT } from './loot.js';
@@ -1323,8 +1324,157 @@ for (const type of MOB_TYPES) {
   if (hostile) type.spawn.cavesAnyTime = true;
 }
 
+// ---------------------------------------------------------------------------
+// The Nether
+// ---------------------------------------------------------------------------
+
+/**
+ * Ember. Drifts over the lava and throws fire at anything on the ledges.
+ *
+ * Ranged rather than melee on purpose: the Nether's danger is that you are
+ * always on a narrow shelf over lava, and something that shoots at you across a
+ * gap makes that geometry matter.
+ */
+export const EMBER = {
+  name: 'ember',
+  displayName: 'Ember',
+  width: 0.7,
+  height: 0.9,
+  maxHealth: 18,
+  speed: 2.0,
+  voice: { name: 'ember', voice: 'crackle', pitch: 150, duration: 0.4 },
+  drops: [{ id: ITEM_ID.NETHER_QUARTZ, min: 0, max: 2 }],
+  fireproof: true,
+
+  brain: {
+    hostile: true,
+    sightRange: 22,
+    chaseSpeed: 1,
+    ranged: { damage: 4, interval: 2.4, range: 16 },
+    avoidCliffs: false,
+  },
+
+  spawn: {
+    atNight: true,
+    dayTimeAllowed: true,
+    maxCount: 6,
+    weight: 4,
+    groupSize: [1, 2],
+    canSpawnOn: (id) => id === NETHERRACK.id || id === SOUL_SAND.id || id === NETHER_BRICK.id,
+  },
+
+  ai(mob, dt) {
+    // Bobs, so it reads as floating rather than standing.
+    mob.memory.bob = (mob.memory.bob ?? Math.random() * 6) + dt * 3;
+    mob.object3D.position.y += Math.sin(mob.memory.bob) * 0.0035;
+  },
+
+  buildModel() {
+    const group = new THREE.Group();
+    const core = box(0.4, 0.44, 0.4, 0xff8a3c, 0, 0.5, 0);
+    const shell = box(0.56, 0.2, 0.56, 0xc2381a, 0, 0.5, 0);
+    group.add(core, shell);
+    // Rods around it, which is most of the silhouette.
+    for (const [x, z] of [[0.3, 0], [-0.3, 0], [0, 0.3], [0, -0.3]]) {
+      group.add(box(0.1, 0.5, 0.1, 0xffc45c, x, 0.5, z));
+    }
+    group.add(box(0.09, 0.09, 0.04, 0x2a0d06, -0.1, 0.58, 0.21));
+    group.add(box(0.09, 0.09, 0.04, 0x2a0d06, 0.1, 0.58, 0.21));
+    return { group, parts: { head: core } };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// The Aether
+// ---------------------------------------------------------------------------
+
+/**
+ * Aerwhale. Enormous, slow, entirely harmless, and there so the sky is not
+ * empty. It is the first thing you should see through an Aether portal.
+ */
+export const AERWHALE = {
+  name: 'aerwhale',
+  displayName: 'Aerwhale',
+  width: 1.6,
+  height: 1.2,
+  maxHealth: 30,
+  speed: 1.6,
+  voice: { name: 'aerwhale', voice: 'moo', pitch: 62, duration: 0.9 },
+  drops: [{ id: ITEM_ID.AMBROSIUM_SHARD, min: 1, max: 2 }],
+
+  brain: { ...PASSIVE_BRAIN, fleeWhenHurt: 6, fleeSpeed: 2.2 },
+
+  spawn: {
+    atNight: true,
+    dayTimeAllowed: true,
+    maxCount: 4,
+    weight: 3,
+    groupSize: [1, 1],
+    canSpawnOn: (id) => id === AETHER_GRASS.id || id === HOLYSTONE.id,
+  },
+
+  /** Cruises at a fixed height above wherever it started, like the bat. */
+  ai(mob, dt) {
+    const memory = mob.memory;
+    if (memory.cruise === undefined) {
+      memory.cruise = mob.position.y + 3.5;
+      memory.drift = Math.random() * Math.PI * 2;
+      memory.roll = Math.random() * 6;
+    }
+    memory.drift += dt * 0.25;
+    memory.roll += dt * 1.4;
+
+    mob.velocity.y += (memory.cruise - mob.position.y) * 2.2 * dt;
+    mob.velocity.y = Math.max(-2, Math.min(2, mob.velocity.y));
+    mob.velocity.x += Math.cos(memory.drift) * this.speed * dt;
+    mob.velocity.z += Math.sin(memory.drift) * this.speed * dt;
+
+    if (mob.parts && mob.parts.finLeft) {
+      const flap = Math.sin(memory.roll) * 0.5;
+      mob.parts.finLeft.rotation.z = flap;
+      mob.parts.finRight.rotation.z = -flap;
+    }
+  },
+
+  buildModel() {
+    const group = new THREE.Group();
+    const skin = 0x9fd0e8;
+    const belly = 0xe4f2fa;
+
+    const body = box(0.9, 0.7, 1.9, skin, 0, 0.8, 0);
+    const underside = box(0.7, 0.22, 1.6, belly, 0, 0.5, 0);
+    const head = box(0.75, 0.6, 0.5, skin, 0, 0.82, 1.1);
+    const tail = box(0.12, 0.5, 0.5, skin, 0, 0.9, -1.1);
+
+    const finLeft = new THREE.Group();
+    finLeft.position.set(-0.45, 0.8, 0.1);
+    finLeft.add(box(0.7, 0.1, 0.6, skin, -0.35, 0, 0));
+    const finRight = new THREE.Group();
+    finRight.position.set(0.45, 0.8, 0.1);
+    finRight.add(box(0.7, 0.1, 0.6, skin, 0.35, 0, 0));
+
+    group.add(body, underside, head, tail, finLeft, finRight);
+    group.add(box(0.1, 0.1, 0.05, 0x203040, -0.24, 0.92, 1.34));
+    group.add(box(0.1, 0.1, 0.05, 0x203040, 0.24, 0.92, 1.34));
+    return { group, parts: { head, finLeft, finRight } };
+  },
+};
+
 /** Natives of the Comb. Spawned there instead of the overworld set. */
 export const COMB_MOB_TYPES = [COMB_MITE, COMB_DRIFTER, COMB_STALKER, COMB_GRUB];
 
+/** Natives of the Nether and the Aether. */
+export const NETHER_MOB_TYPES = [EMBER];
+export const AETHER_MOB_TYPES = [AERWHALE];
+
 /** Everything that can exist, including bosses, for lookups and saves. */
-export const ALL_MOB_TYPES = [...MOB_TYPES, ...COMB_MOB_TYPES, WARDEN];
+export const ALL_MOB_TYPES = [
+  ...MOB_TYPES, ...COMB_MOB_TYPES, ...NETHER_MOB_TYPES, ...AETHER_MOB_TYPES, WARDEN,
+];
+
+/** Which pool a dimension draws from. Overworld is the default. */
+export const MOB_POOLS = {
+  comb: COMB_MOB_TYPES,
+  nether: NETHER_MOB_TYPES,
+  aether: AETHER_MOB_TYPES,
+};

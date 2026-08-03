@@ -30,7 +30,7 @@
  * triggers one remesh per affected chunk rather than one per changed block.
  */
 
-import { AIR, COBBLE, getFluid, fluidId, FLUIDS } from './blocks.js';
+import { AIR, COBBLE, OBSIDIAN, getFluid, fluidId, FLUIDS } from './blocks.js';
 import { CHUNK_SY } from './chunk.js';
 
 /** The four horizontal directions fluid can spread into. */
@@ -237,9 +237,18 @@ export class FluidSimulator {
     return !!f && f.family !== familyName;
   }
 
-  /** Water meeting lava turns to stone, as in classic Minecraft. */
+  /**
+   * Water meeting lava.
+   *
+   * A lava *source* becomes obsidian; anything else becomes cobblestone. That
+   * split is what makes obsidian gatherable at all — you have to find or make a
+   * still pool and tip water into it, rather than getting it free wherever two
+   * flows happen to touch. It is also the classic Minecraft rule.
+   */
   _mix(x, y, z) {
-    this.world.setBlock(x, y, z, COBBLE.id, true);
+    const fluid = getFluid(this.world.getBlock(x, y, z));
+    const isLavaSource = fluid && fluid.family === 'lava' && fluid.level === 0;
+    this.world.setBlock(x, y, z, isLavaSource ? OBSIDIAN.id : COBBLE.id, true);
   }
 
   /** Drop all queued work — used when the world is torn down. */

@@ -20,6 +20,7 @@ import {
   RESIN_TORCH, HIVE_WALL,
   RAIL, SIGN, JUKEBOX, PRESSURE_PLATE, MUSHROOM_RED, MUSHROOM_BROWN,
   CAVE_LANTERN, DEEPSLATE, DEEPSLATE_COBBLE,
+  NETHERRACK, NETHER_BRICK, GLOWSTONE,
   ITEM_ID, TOOL_KINDS, ARMOR_PIECES, ARMOR_MATERIAL_NAMES,
   toolItemId, armorItemId, getDisplayName, getThing,
 } from '../world/blocks.js';
@@ -176,6 +177,18 @@ shaped(['PP'], { P: PLANKS.id }, { id: PRESSURE_PLATE.id, count: 1 });
 // where you have spare diamonds — a treat, not a stepping stone.
 shaped(['PPP', 'PDP', 'PPP'], { P: PLANKS.id, D: ITEM_ID.DIAMOND },
        { id: JUKEBOX.id, count: 1 });
+
+// --- Fire, and the other dimensions ----------------------------------------------
+
+// The Nether's key. Wears out rather than being consumed, so one lasts a while.
+shapeless([ITEM_ID.FLINT, ITEM_ID.IRON_INGOT], { id: ITEM_ID.FLINT_AND_STEEL, count: 1 });
+
+// Nether brick, from what the Nether is made of.
+shaped(['NN', 'NN'], { N: NETHERRACK.id }, { id: NETHER_BRICK.id, count: 4 });
+
+// Glowstone is Nether loot, but four quartz will also do it — so an Aether
+// portal is reachable even if the ceilings near your portal were bare.
+shaped(['QQ', 'QQ'], { Q: ITEM_ID.NETHER_QUARTZ }, { id: GLOWSTONE.id, count: 1 });
 
 // --- The caves ------------------------------------------------------------------
 

@@ -35,8 +35,14 @@ export const ACHIEVEMENTS = [
   { name: 'sailor', title: 'Row Your Boat', hint: 'Ride a boat.' },
   { name: 'dj', title: 'Put a Record On', hint: 'Play a record in a jukebox.' },
   { name: 'combium', title: 'White Metal', hint: 'Smelt a combium ingot.' },
-  { name: 'portal', title: 'Milk Run', hint: 'Light a combium portal.' },
+  // Retitled when fire and water became igniters too — the name key is what
+  // saves are matched on, so the wording can change freely.
+  { name: 'portal', title: 'Doorway', hint: 'Light a portal of any kind.' },
   { name: 'comb', title: 'The Comb', hint: 'Set foot in the Comb.' },
+  { name: 'obsidian', title: 'Cooling Off', hint: 'Make obsidian by pouring water on lava.' },
+  { name: 'nether', title: 'Downward', hint: 'Light an obsidian portal and step through.' },
+  { name: 'glowstone', title: 'Bring a Light', hint: 'Mine glowstone in the Nether.' },
+  { name: 'aether', title: 'Upward', hint: 'Open a glowstone portal with water.' },
   { name: 'warden', title: 'Kingslayer', hint: 'Defeat the Warden of the Comb.' },
   { name: 'throne', title: 'Crowned', hint: 'Awaken a Comb throne.' },
   { name: 'skater', title: 'Drop In', hint: 'Ride a skateboard.' },

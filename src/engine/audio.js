@@ -450,6 +450,13 @@ export class AudioEngine {
                      type: 'lowpass', delay: duration * 0.2 });
         break;
 
+      case 'crackle': // ember — burning, not a voice at all
+        this.noise({ freq: base * 4, q: 1.1, decay: duration, gain: level * 0.7,
+                     kind: 'pink', type: 'bandpass' });
+        this.tone({ freq: base * 0.6, endFreq: base * 0.35, duration: duration * 1.4,
+                    gain: level * 0.35, type: 'sawtooth', lowpass: base * 3 });
+        break;
+
       case 'squeak': // bat — very short, very high, barely there
         this.tone({ freq: base, endFreq: base * 1.6, duration: duration * 0.4,
                     gain: level * 0.35, type: 'triangle', lowpass: base * 3, attack: 0.004 });

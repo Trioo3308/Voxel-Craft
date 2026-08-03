@@ -1802,6 +1802,295 @@ export const PAINTERS = {
     set(8, 0, 140, 138, 148);
   },
 
+  // --- The Nether -----------------------------------------------------------
+
+  [TILE.OBSIDIAN]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 12;
+      set(x, y, 26 + d, 20 + d, 40 + d);
+    }
+    // A few purple glints, so it is not a black hole in the wall.
+    for (let i = 0; i < 16; i++) {
+      const x = Math.floor(rnd() * T), y = Math.floor(rnd() * T);
+      set(x, y, 78, 56, 118);
+    }
+  },
+
+  [TILE.NETHERRACK]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 34;
+      set(x, y, 122 + d, 42 + d, 40 + d);
+    }
+    // Stringy darker veins, which is what makes it read as netherrack rather
+    // than as red stone.
+    for (let i = 0; i < 9; i++) {
+      let x = Math.floor(rnd() * T), y = Math.floor(rnd() * T);
+      for (let step = 0; step < 6; step++) {
+        set(x, y, 82, 26, 26);
+        x = (x + (rnd() < 0.5 ? 1 : -1) + T) % T;
+        y = (y + (rnd() < 0.5 ? 1 : 0)) % T;
+      }
+    }
+  },
+
+  [TILE.SOUL_SAND]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 22;
+      set(x, y, 84 + d, 62 + d, 50 + d);
+    }
+    // Three sunken faces.
+    for (const [cx, cy] of [[4, 5], [11, 6], [7, 12]]) {
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          if (dx * dx + dy * dy > 4) continue;
+          const x = (cx + dx + T) % T, y = (cy + dy + T) % T;
+          set(x, y, 62, 44, 36);
+        }
+      }
+      set((cx - 1 + T) % T, cy, 40, 28, 24);
+      set((cx + 1) % T, cy, 40, 28, 24);
+      set(cx, (cy + 1) % T, 40, 28, 24);
+    }
+  },
+
+  [TILE.GLOWSTONE]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 26;
+      set(x, y, 190 + d, 148 + d, 66 + d);
+    }
+    // Bright nodules packed into it.
+    for (let i = 0; i < 20; i++) {
+      const cx = Math.floor(rnd() * T), cy = Math.floor(rnd() * T);
+      for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+        set((cx + dx) % T, (cy + dy) % T, 255, 226, 140);
+      }
+    }
+  },
+
+  [TILE.QUARTZ_ORE]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 34;
+      set(x, y, 122 + d, 42 + d, 40 + d);
+    }
+    for (let i = 0; i < 6; i++) {
+      const cx = 2 + Math.floor(rnd() * (T - 5)), cy = 2 + Math.floor(rnd() * (T - 5));
+      for (let dy = 0; dy < 3; dy++) {
+        for (let dx = 0; dx < 3; dx++) {
+          if (dx === 1 && dy === 1) { set(cx + dx, cy + dy, 250, 246, 240); continue; }
+          if ((dx + dy) % 2 === 0) set(cx + dx, cy + dy, 224, 216, 208);
+        }
+      }
+    }
+  },
+
+  [TILE.NETHER_BRICK]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 12;
+      set(x, y, 52 + d, 26 + d, 30 + d);
+    }
+    // Courses of brick with offset joints.
+    for (let row = 0; row < 4; row++) {
+      const y = row * 4;
+      for (let x = 0; x < T; x++) set(x, y, 34, 16, 20);
+      const offset = row % 2 === 0 ? 0 : 4;
+      for (let j = 0; j < 2; j++) {
+        const jx = (offset + j * 8) % T;
+        for (let dy = 1; dy < 4; dy++) set(jx, y + dy, 34, 16, 20);
+      }
+    }
+  },
+
+  [TILE.PORTAL_NETHER]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const swirl = Math.sin((x + y) * 0.6) * 18 + Math.cos(x * 0.9 - y * 0.4) * 14;
+      const d = (rnd() - 0.5) * 26;
+      set(x, y, 118 + swirl + d, 44 + d, 168 + swirl + d);
+    }
+    for (let i = 0; i < 22; i++) {
+      const x = Math.floor(rnd() * T), y = Math.floor(rnd() * T);
+      set(x, y, 216, 170, 255);
+    }
+  },
+
+  [TILE.FLINT]: (set, rnd) => {
+    // A struck shard: dark, angular, with one bright chipped edge.
+    for (let y = 4; y < 13; y++) {
+      const inset = y < 6 ? 5 : y > 10 ? 4 : 3;
+      for (let x = inset; x < T - inset; x++) {
+        const d = (rnd() - 0.5) * 20;
+        set(x, y, 56 + d, 54 + d, 60 + d);
+      }
+    }
+    for (let y = 5; y < 11; y++) set(5 + ((y - 5) >> 1), y, 132, 130, 138);
+    set(9, 6, 150, 148, 156); set(10, 7, 120, 118, 126);
+  },
+
+  [TILE.FLINT_AND_STEEL]: (set, rnd) => {
+    // A steel striker with a flint held against it, and a spark.
+    for (let i = 0; i < 9; i++) {
+      const x = 3 + i, y = 11 - Math.round(i * 0.5);
+      set(x, y, 168, 168, 178);
+      set(x, y + 1, 122, 122, 132);
+    }
+    for (let y = 5; y < 10; y++) {
+      for (let x = 3; x < 7; x++) {
+        const d = (rnd() - 0.5) * 16;
+        set(x, y, 58 + d, 56 + d, 62 + d);
+      }
+    }
+    for (const [x, y] of [[8, 5], [10, 4], [9, 3], [11, 6]]) {
+      set(x, y, 255, 214, 110);
+    }
+  },
+
+  [TILE.NETHER_QUARTZ]: (set, rnd) => {
+    for (let y = 4; y < 13; y++) {
+      const inset = y < 6 || y > 11 ? 5 : 4;
+      for (let x = inset; x < T - inset; x++) {
+        const d = (rnd() - 0.5) * 14;
+        const lit = x < 8;
+        set(x, y, (lit ? 248 : 216) + d, (lit ? 244 : 208) + d, (lit ? 236 : 198) + d);
+      }
+    }
+    for (let y = 6; y < 11; y++) set(7, y, 255, 253, 248);
+  },
+
+  // --- The Aether -----------------------------------------------------------
+
+  [TILE.HOLYSTONE]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 16;
+      set(x, y, 196 + d, 194 + d, 186 + d);
+    }
+    for (let i = 0; i < 10; i++) {
+      const x = Math.floor(rnd() * T), y = Math.floor(rnd() * T);
+      set(x, y, 168, 166, 158);
+      set((x + 1) % T, y, 172, 170, 162);
+    }
+  },
+
+  [TILE.AETHER_GRASS_TOP]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 22;
+      set(x, y, 152 + d, 220 + d, 176 + d);
+    }
+  },
+
+  [TILE.AETHER_GRASS_SIDE]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 16;
+      set(x, y, 178 + d, 172 + d, 158 + d);
+    }
+    // Turf spilling over the top edge.
+    for (let x = 0; x < T; x++) {
+      const depth = 3 + Math.floor(rnd() * 3);
+      for (let y = 0; y < depth; y++) {
+        const d = (rnd() - 0.5) * 22;
+        set(x, y, 152 + d, 220 + d, 176 + d);
+      }
+    }
+  },
+
+  [TILE.AETHER_DIRT]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 20;
+      set(x, y, 178 + d, 172 + d, 158 + d);
+    }
+  },
+
+  [TILE.AETHER_LOG_SIDE]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 16;
+      set(x, y, 150 + d, 132 + d, 116 + d);
+    }
+    for (const x of [2, 6, 9, 13]) {
+      for (let y = 0; y < T; y++) {
+        const d = (rnd() - 0.5) * 10;
+        set(x, y, 116 + d, 100 + d, 88 + d);
+      }
+    }
+  },
+
+  [TILE.AETHER_LOG_TOP]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const dx = x - 7.5, dy = y - 7.5;
+      const r = Math.hypot(dx, dy);
+      const ring = Math.round(r) % 2 === 0 ? 20 : 0;
+      const d = (rnd() - 0.5) * 10;
+      set(x, y, 158 + ring + d, 140 + ring + d, 122 + ring + d);
+    }
+  },
+
+  [TILE.AETHER_LEAVES]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 40;
+      set(x, y, 128 + d, 200 + d, 168 + d);
+    }
+    // Punch a few holes so the canopy reads as foliage.
+    for (let i = 0; i < 14; i++) {
+      const x = Math.floor(rnd() * T), y = Math.floor(rnd() * T);
+      set(x, y, 96, 158, 132);
+    }
+  },
+
+  [TILE.AMBROSIUM_ORE]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 16;
+      set(x, y, 196 + d, 194 + d, 186 + d);
+    }
+    for (let i = 0; i < 6; i++) {
+      const cx = 2 + Math.floor(rnd() * (T - 5)), cy = 2 + Math.floor(rnd() * (T - 5));
+      for (let dy = 0; dy < 3; dy++) {
+        for (let dx = 0; dx < 3; dx++) {
+          if (dx === 1 || dy === 1) set(cx + dx, cy + dy, 255, 208, 108);
+        }
+      }
+      set(cx + 1, cy + 1, 255, 236, 170);
+    }
+  },
+
+  [TILE.AMBROSIUM_SHARD]: (set, rnd) => {
+    for (let y = 3; y < 14; y++) {
+      const half = y < 8 ? Math.max(1, y - 3) : Math.max(1, 14 - y);
+      for (let x = 8 - half; x <= 7 + half; x++) {
+        if (x < 0 || x >= T) continue;
+        const d = (rnd() - 0.5) * 18;
+        const lit = x < 8;
+        set(x, y, (lit ? 255 : 216) + d, (lit ? 226 : 172) + d, (lit ? 148 : 92) + d);
+      }
+    }
+    for (let y = 6; y < 11; y++) set(7, y, 255, 248, 214);
+  },
+
+  [TILE.PORTAL_AETHER]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const swirl = Math.sin((x - y) * 0.55) * 16 + Math.cos(x * 0.7 + y * 0.5) * 12;
+      const d = (rnd() - 0.5) * 20;
+      set(x, y, 200 + swirl + d, 232 + d, 255 + swirl + d);
+    }
+    for (let i = 0; i < 20; i++) {
+      const x = Math.floor(rnd() * T), y = Math.floor(rnd() * T);
+      set(x, y, 255, 255, 255);
+    }
+  },
+
+  [TILE.AERCLOUD]: (set, rnd) => {
+    for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+      const d = (rnd() - 0.5) * 12;
+      set(x, y, 238 + d, 246 + d, 255 + d);
+    }
+    // Soft lumps, so it is not a flat white cube.
+    for (let i = 0; i < 12; i++) {
+      const cx = Math.floor(rnd() * T), cy = Math.floor(rnd() * T);
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          if (dx * dx + dy * dy > 4) continue;
+          set((cx + dx + T) % T, (cy + dy + T) % T, 252, 254, 255);
+        }
+      }
+    }
+  },
+
   // --- Comb materials ------------------------------------------------------
 
   [TILE.COMB_RESIN]: (set, rnd) => {

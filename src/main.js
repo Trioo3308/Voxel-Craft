@@ -33,6 +33,7 @@ import {
   isPlate, PRESSURE_PLATE, PRESSURE_PLATE_PRESSED, SIGN, JUKEBOX, MUSIC_DISCS,
   PORTAL, COMBIUM_BLOCK, THRONE, THRONE_AWAKENED, ITEM_ID,
   LOG, ACACIA_LOG, SPRUCE_LOG, DIAMOND_ORE, FURNACE, getItem, getDisplayName,
+  OBSIDIAN, GLOWSTONE,
 } from './world/blocks.js';
 import { audio } from './engine/audio.js';
 import { DIMENSIONS, dimensionInfo } from './world/dimensions.js';
@@ -40,7 +41,12 @@ import {
   CombTerrainGenerator, SHRINE_SPACING, SHRINE_LAYOUT, nearestShrineAnchor, HIVE_SPACING,
 } from './world/combTerrain.js';
 import { DUNGEON_SPACING } from './world/terrain.js';
-import { ignitePortal, extinguishPortal, buildReturnPortal, destinationOf } from './world/portal.js';
+import {
+  ignitePortal, extinguishPortal, buildReturnPortal, destinationOf,
+  portalKindForIgniter, portalKindForFrame, kindForDimension,
+} from './world/portal.js';
+import { NETHER_LAVA_LEVEL, NETHER_CEILING } from './world/netherTerrain.js';
+import { ISLAND_BAND, ISLAND_SPREAD, AETHER_VOID } from './world/aetherTerrain.js';
 import { THRONE_LOOT, DUNGEON_LOOT, HIVE_LOOT, fillChest } from './entities/loot.js';
 import { WARDEN } from './entities/mobTypes.js';
 
@@ -206,8 +212,8 @@ export class Game {
 
   _bindGameEvents() {
     this.player.survival.onDeath = (cause) => this._onDeath(cause);
-    this.player.onIgnitePortal = (x, y, z) => this._ignitePortal(x, y, z);
-    this.player.onPortalTravel = () => this._travelDimension();
+    this.player.onIgnitePortal = (x, y, z, igniter) => this._ignitePortal(x, y, z, igniter);
+    this.player.onPortalTravel = (surface) => this._travelDimension(surface);
 
     // Decayed leaves scatter their drops on the ground rather than vanishing,
     // so a canopy you cut the trunk out of still gives you the saplings.
@@ -435,11 +441,15 @@ export class Game {
       }
 
       // Breaking part of a frame collapses the whole portal, so a portal can
-      // never outlive its ring.
-      if (blockId === COMBIUM_BLOCK.id) {
+      // never outlive its ring. Matched against the kind whose frame this is,
+      // so knocking a hole in an obsidian wall cannot put out an Aether portal
+      // that happens to be next to it.
+      const frameKind = portalKindForFrame(blockId);
+      if (frameKind) {
         for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
-          if (this.world.getBlock(target.x + dx, target.y + dy, target.z + dz) === PORTAL.id) {
-            extinguishPortal(this.world, target.x + dx, target.y + dy, target.z + dz);
+          const nx = target.x + dx, ny = target.y + dy, nz = target.z + dz;
+          if (this.world.getBlock(nx, ny, nz) === frameKind.surface) {
+            extinguishPortal(this.world, nx, ny, nz);
           }
         }
       }
@@ -465,14 +475,22 @@ export class Game {
    * Light a combium portal with a bucket of milk.
    * @returns {boolean} whether a valid frame was found and filled
    */
-  _ignitePortal(x, y, z) {
-    const result = ignitePortal(this.world, x, y, z);
+  _ignitePortal(x, y, z, igniter) {
+    const kind = portalKindForIgniter(igniter);
+    if (!kind) return false;
+
+    const result = ignitePortal(this.world, x, y, z, kind);
     if (!result) {
-      this.hud.showToast('The frame is not complete');
+      // Silent when the thing you clicked is not that kind's frame at all —
+      // otherwise every splash of water on stone would complain about frames.
+      // Only a *frame block* that failed to form a portal is worth a message.
+      if (this.world.getBlock(x, y, z) === kind.frame) {
+        this.hud.showToast('The frame is not complete');
+      }
       return false;
     }
     audio.ignite();
-    this.hud.showToast('The portal opens');
+    this.hud.showToast(`${kind.name} opens`);
     this.achievements.unlock('portal');
     return true;
   }
@@ -484,13 +502,22 @@ export class Game {
    * so the two dimensions stay roughly aligned and a portal built in one place
    * always lands you near the same spot in the other.
    */
-  async _travelDimension() {
+  async _travelDimension(surfaceId = null) {
     if (this._travelling) return;
     this._travelling = true;
 
     const from = this.world.dimension;
-    const to = destinationOf(from);
-    const scale = to === DIMENSIONS.COMB ? 1 / DIMENSION_SCALE : DIMENSION_SCALE;
+    // Where you go is read off the portal you stepped into, not off where you
+    // are — with three destinations "the other one" is no longer a question
+    // with an answer.
+    const to = destinationOf(from, surfaceId);
+    // The kind to build on the far side is the one that gets you *back*: from
+    // the Overworld that is the portal you came through, and from anywhere else
+    // it is that dimension's own.
+    const kind = kindForDimension(to === DIMENSIONS.OVERWORLD ? from : to);
+
+    const goingOut = to !== DIMENSIONS.OVERWORLD;
+    const scale = goingOut ? 1 / DIMENSION_SCALE : DIMENSION_SCALE;
 
     const targetX = Math.round(this.player.position.x * scale);
     const targetZ = Math.round(this.player.position.z * scale);
@@ -506,9 +533,8 @@ export class Game {
     await this._preloadAround(targetX, targetZ);
 
     // Land on solid ground, then build a return portal around it.
-    const surface = this.world.getSurfaceY(targetX, targetZ);
-    const landingY = surface >= 0 ? surface + 1 : 64;
-    const built = buildReturnPortal(this.world, targetX, landingY, targetZ);
+    const landingY = this._findLanding(to, targetX, targetZ);
+    const built = buildReturnPortal(this.world, targetX, landingY, targetZ, kind);
 
     this.player.position.set(built.stand.x, built.stand.y, built.stand.z);
     this.player.velocity.set(0, 0, 0);
@@ -526,10 +552,51 @@ export class Game {
     this.input.requestLock();
     this.hud.showToast(dimensionInfo(to).name);
     if (to === DIMENSIONS.COMB) this.achievements.unlock('comb');
+    if (to === DIMENSIONS.NETHER) this.achievements.unlock('nether');
+    if (to === DIMENSIONS.AETHER) this.achievements.unlock('aether');
     // A teleport is not a walk, so the distance counter must not bank it.
     this._lastProgressPos = null;
     this._travelling = false;
     this.saveWorld();
+  }
+
+  /**
+   * Where to put a return portal in the dimension being arrived in.
+   *
+   * `getSurfaceY` finds the topmost solid block in a column, which is the right
+   * answer in a world with sky above it and the wrong one anywhere else. The
+   * Nether has a *bedrock roof*, so the topmost solid block is the ceiling and
+   * a portal built on it lands you on top of the world. The Aether is mostly
+   * open air, so a column often has no solid block at all.
+   *
+   * Each dimension therefore searches its own way down through its own volume.
+   */
+  _findLanding(dimension, x, z) {
+    const fits = (y) =>
+      getBlock(this.world.getBlock(x, y, z)).solid &&
+      this.world.getBlock(x, y + 1, z) === 0 &&
+      this.world.getBlock(x, y + 2, z) === 0;
+
+    if (dimension === DIMENSIONS.NETHER) {
+      // Down from just under the roof, and never below the lava.
+      for (let y = NETHER_CEILING - 3; y > NETHER_LAVA_LEVEL; y--) {
+        if (fits(y)) return y + 1;
+      }
+      // Nothing open in this column: carve in above the lava. `buildReturnPortal`
+      // clears its own pocket and lays footing, so this is always survivable.
+      return NETHER_LAVA_LEVEL + 8;
+    }
+
+    if (dimension === DIMENSIONS.AETHER) {
+      for (let y = ISLAND_BAND + ISLAND_SPREAD; y > AETHER_VOID; y--) {
+        if (fits(y)) return y + 1;
+      }
+      // Open sky. The portal builds its own floor, so this hangs an island.
+      return ISLAND_BAND;
+    }
+
+    const surface = this.world.getSurfaceY(x, z);
+    return surface >= 1 ? surface + 1 : 64;
   }
 
   /**
@@ -963,6 +1030,8 @@ export class Game {
         this.achievements.unlock('wood');
       }
       if (id === DIAMOND_ORE.id) this.achievements.unlock('diamonds');
+      if (id === OBSIDIAN.id) this.achievements.unlock('obsidian');
+      if (id === GLOWSTONE.id) this.achievements.unlock('glowstone');
       if (target && target.y <= 5) this.achievements.unlock('deep');
     } else if (kind === 'crafted') {
       this.stats.record('itemsCrafted');

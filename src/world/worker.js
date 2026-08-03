@@ -26,6 +26,8 @@
 
 import { TerrainGenerator } from './terrain.js';
 import { CombTerrainGenerator } from './combTerrain.js';
+import { NetherTerrainGenerator } from './netherTerrain.js';
+import { AetherTerrainGenerator } from './aetherTerrain.js';
 import { buildChunkMesh } from './mesher.js';
 import { computeChunkLight, emissionOf, LIGHT_MARGIN } from './light.js';
 import { DIMENSIONS } from './dimensions.js';
@@ -425,6 +427,10 @@ self.onmessage = (event) => {
       dimensionState(DIMENSIONS.OVERWORLD).generator =
         new TerrainGenerator(msg.seed, msg.terrainVersion);
       dimensionState(DIMENSIONS.COMB).generator = new CombTerrainGenerator(msg.seed);
+      // The Nether and the Aether take no terrain version: neither existed
+      // before this update, so there is no older ruleset to preserve.
+      dimensionState(DIMENSIONS.NETHER).generator = new NetherTerrainGenerator(msg.seed);
+      dimensionState(DIMENSIONS.AETHER).generator = new AetherTerrainGenerator(msg.seed);
       activeDim = msg.dimension ?? DIMENSIONS.OVERWORLD;
       sentChunks.clear();
       invalidateSampleCache();

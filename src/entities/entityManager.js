@@ -8,7 +8,7 @@
 import * as THREE from 'three';
 import Settings from '../settings.js';
 import { Mob } from './mob.js';
-import { MOB_TYPES, COMB_MOB_TYPES } from './mobTypes.js';
+import { MOB_TYPES, MOB_POOLS } from './mobTypes.js';
 import { ItemEntity } from './itemEntity.js';
 import { rollLoot } from './loot.js';
 import { dimensionInfo } from '../world/dimensions.js';
@@ -499,8 +499,7 @@ export class EntityManager {
 
     // Each dimension draws from its own list, so overworld animals never wander
     // the Comb and mites never turn up in a field.
-    const info = ctx.dimension ? dimensionInfo(ctx.dimension) : null;
-    const pool = info && !info.spawnsOverworldMobs ? COMB_MOB_TYPES : MOB_TYPES;
+    const pool = MOB_POOLS[ctx.dimension] ?? MOB_TYPES;
 
     // Global cap, and a local one so mobs do not pile up around the player.
     if (this.mobs.length >= M.maxTotalMobs) return;

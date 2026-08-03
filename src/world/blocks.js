@@ -198,6 +198,31 @@ export const TILE = {
   GLOW_BERRY: 231,
   CAVE_LANTERN: 232,
 
+  // --- The Nether ------------------------------------------------------------
+  OBSIDIAN: 235,
+  NETHERRACK: 236,
+  SOUL_SAND: 237,
+  GLOWSTONE: 238,
+  QUARTZ_ORE: 239,
+  NETHER_BRICK: 240,
+  PORTAL_NETHER: 241,
+  FLINT: 242,
+  FLINT_AND_STEEL: 243,
+  NETHER_QUARTZ: 244,
+
+  // --- The Aether ------------------------------------------------------------
+  HOLYSTONE: 245,
+  AETHER_GRASS_TOP: 246,
+  AETHER_GRASS_SIDE: 247,
+  AETHER_DIRT: 248,
+  AETHER_LOG_SIDE: 249,
+  AETHER_LOG_TOP: 250,
+  AETHER_LEAVES: 251,
+  AMBROSIUM_ORE: 252,
+  AMBROSIUM_SHARD: 253,
+  PORTAL_AETHER: 254,
+  AERCLOUD: 255,
+
   // --- The Comb -------------------------------------------------------------
   COMB_RESIN: 173,
   COMB_RESIN_ITEM: 174,
@@ -406,6 +431,10 @@ function defineBlock(id, name, options = {}) {
     doorOpen: options.doorOpen ?? false,
     bedFacing: options.bedFacing ?? null,
     bedHead: options.bedHead ?? false,
+    /** Speed multiplier while standing on it; 1 is normal ground. */
+    walkDrag: options.walkDrag ?? 1,
+    /** Landing in this costs no fall damage. */
+    breaksFall: options.breaksFall === true,
     displayName: options.displayName ?? name,
   };
 
@@ -560,6 +589,9 @@ const NAMED_ITEMS = [
 
   // --- The caves ------------------------------------------------------------
   'CAVE_CRYSTAL', 'GLOW_BERRY',
+
+  // --- The Nether and the Aether --------------------------------------------
+  'FLINT', 'FLINT_AND_STEEL', 'NETHER_QUARTZ', 'AMBROSIUM_SHARD',
 ];
 
 export const ITEM_ID = {};
@@ -991,6 +1023,28 @@ export const PORTAL = defineBlock(74, 'combium_portal', {
   lightEmission: 11,
 });
 
+/**
+ * One portal surface per destination.
+ *
+ * They could all have been the same block with the destination worked out from
+ * the frame around them, but reading the frame means a search every time you
+ * step in, and a half-broken frame would leave a portal that no longer knows
+ * where it goes. The id *is* the destination.
+ */
+export const PORTAL_NETHER = defineBlock(148, 'nether_portal', {
+  displayName: 'Nether Portal', tiles: TILE.PORTAL_NETHER,
+  solid: false, opaque: false, translucent: true,
+  hardness: Infinity, obtainable: false,
+  lightEmission: 11,
+});
+
+export const PORTAL_AETHER = defineBlock(149, 'aether_portal', {
+  displayName: 'Aether Portal', tiles: TILE.PORTAL_AETHER,
+  solid: false, opaque: false, translucent: true,
+  hardness: Infinity, obtainable: false,
+  lightEmission: 12,
+});
+
 // ---------------------------------------------------------------------------
 // Farming
 // ---------------------------------------------------------------------------
@@ -1109,6 +1163,12 @@ for (const [leaf, sapling] of [
  * them apart beyond colour.
  */
 LEAVES.bonusDrops.push({ id: ITEM_ID.APPLE, chance: 0.035, min: 1, max: 1 });
+
+/**
+ * Gravel gives up flint about one time in ten — the other half of a flint and
+ * steel, and the reason gravel stops being a nuisance block.
+ */
+GRAVEL.bonusDrops = [{ id: ITEM_ID.FLINT, chance: 0.1, min: 1, max: 1 }];
 
 /** Blocks that hold leaves up. A leaf too far from one of these decays. */
 export const LEAF_SUPPORTS = new Set([LOG.id, ACACIA_LOG.id, SPRUCE_LOG.id]);
@@ -1421,6 +1481,99 @@ export const CAVE_LANTERN = defineBlock(132, 'cave_lantern', {
   emissive: true, lightEmission: 15,
 });
 
+// ---------------------------------------------------------------------------
+// The Nether
+// ---------------------------------------------------------------------------
+
+/**
+ * Obsidian. The gate to the Nether, and deliberately expensive to gather: it
+ * takes a diamond pickaxe and a long time, which is the whole reason a portal
+ * feels like a project rather than an errand.
+ */
+export const OBSIDIAN = defineBlock(135, 'obsidian', {
+  displayName: 'Obsidian', tiles: TILE.OBSIDIAN, hardness: 12,
+  toolType: 'pickaxe', harvestLevel: 2, requiresTool: true,
+});
+
+export const NETHERRACK = defineBlock(136, 'netherrack', {
+  displayName: 'Netherrack', tiles: TILE.NETHERRACK, hardness: 0.4,
+  toolType: 'pickaxe', requiresTool: true,
+});
+
+/** Slows you down to a trudge, which is most of what makes the Nether hostile. */
+export const SOUL_SAND = defineBlock(137, 'soul_sand', {
+  displayName: 'Soul Sand', tiles: TILE.SOUL_SAND, hardness: 0.5,
+  toolType: 'shovel',
+  /** Walking speed multiplier while standing on it. */
+  walkDrag: 0.45,
+});
+
+/** The Aether's key, and the Nether's only real light. */
+export const GLOWSTONE = defineBlock(138, 'glowstone', {
+  displayName: 'Glowstone', tiles: TILE.GLOWSTONE, hardness: 0.3,
+  emissive: true, lightEmission: 15,
+});
+
+export const QUARTZ_ORE = defineBlock(139, 'quartz_ore', {
+  displayName: 'Nether Quartz Ore', tiles: TILE.QUARTZ_ORE, hardness: 3.0,
+  toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
+  drops: ITEM_ID.NETHER_QUARTZ, dropCount: [1, 2],
+});
+
+export const NETHER_BRICK = defineBlock(140, 'nether_brick', {
+  displayName: 'Nether Bricks', tiles: TILE.NETHER_BRICK, hardness: 2.0,
+  toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
+});
+
+// ---------------------------------------------------------------------------
+// The Aether
+// ---------------------------------------------------------------------------
+
+export const HOLYSTONE = defineBlock(141, 'holystone', {
+  displayName: 'Holystone', tiles: TILE.HOLYSTONE, hardness: 1.4,
+  toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
+});
+
+export const AETHER_GRASS = defineBlock(142, 'aether_grass', {
+  displayName: 'Aether Grass', hardness: 0.6, toolType: 'shovel',
+  tiles: { top: TILE.AETHER_GRASS_TOP, side: TILE.AETHER_GRASS_SIDE, bottom: TILE.AETHER_DIRT },
+  drops: 143,
+});
+
+export const AETHER_DIRT = defineBlock(143, 'aether_dirt', {
+  displayName: 'Aether Dirt', tiles: TILE.AETHER_DIRT, hardness: 0.5, toolType: 'shovel',
+});
+
+export const AETHER_LOG = defineBlock(144, 'aether_log', {
+  displayName: 'Skyroot Log', hardness: 1.0, toolType: 'axe',
+  tiles: { top: TILE.AETHER_LOG_TOP, bottom: TILE.AETHER_LOG_TOP, side: TILE.AETHER_LOG_SIDE },
+});
+
+export const AETHER_LEAVES = defineBlock(145, 'aether_leaves', {
+  displayName: 'Skyroot Leaves', tiles: TILE.AETHER_LEAVES, hardness: 0.2,
+  opaque: false, cullSameType: false,
+});
+
+/** Glows faintly, and the only thing worth carrying home from the Aether. */
+export const AMBROSIUM_ORE = defineBlock(146, 'ambrosium_ore', {
+  displayName: 'Ambrosium Ore', tiles: TILE.AMBROSIUM_ORE, hardness: 2.0,
+  toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
+  drops: ITEM_ID.AMBROSIUM_SHARD, dropCount: [1, 3],
+  lightEmission: 4,
+});
+
+/**
+ * Aercloud. Soft enough to fall into without being hurt, which is what makes
+ * an archipelago of floating islands somewhere you can explore rather than a
+ * single mistake.
+ */
+export const AERCLOUD = defineBlock(147, 'aercloud', {
+  displayName: 'Aercloud', tiles: TILE.AERCLOUD, hardness: 0.2,
+  opaque: false, cullSameType: false,
+  /** Falling into one costs nothing and stops you dead. */
+  breaksFall: true,
+});
+
 /** Every log/leaf pair, so terrain can pick a tree style per biome. */
 export const TREE_WOODS = {
   oak: { log: LOG.id, leaves: LEAVES.id },
@@ -1462,6 +1615,12 @@ function defineItem(id, name, options = {}) {
     eatReturns: options.eatReturns ?? 0,
     /** Which tune this record plays in a jukebox; null for everything else. */
     disc: options.disc ?? null,
+    /**
+     * What this lights a portal with. Buckets carry theirs in `bucket.igniter`
+     * for historical reasons; this is the general form, and PORTAL_KINDS in
+     * portal.js is what matches an igniter to a frame.
+     */
+    igniter: options.igniter ?? null,
   };
   ITEMS[id - ITEM_ID_BASE] = item;
   return item;
@@ -1618,6 +1777,32 @@ export const GLOW_BERRY = defineItem(ITEM_ID.GLOW_BERRY, 'glow_berry', {
   displayName: 'Glow Berries', tile: TILE.GLOW_BERRY, food: 2, saturation: 1,
 });
 
+// ---------------------------------------------------------------------------
+// Fire, and what the other dimensions are made of
+// ---------------------------------------------------------------------------
+
+/** Knocked out of gravel. Half of a flint and steel. */
+export const FLINT = defineItem(ITEM_ID.FLINT, 'flint', {
+  displayName: 'Flint', tile: TILE.FLINT,
+});
+
+/** Lights a Nether portal, and nothing else — this game has no fire spread. */
+export const FLINT_AND_STEEL = defineItem(ITEM_ID.FLINT_AND_STEEL, 'flint_and_steel', {
+  displayName: 'Flint and Steel', tile: TILE.FLINT_AND_STEEL, maxStack: 1,
+  igniter: 'fire',
+  tool: { kind: 'igniter', material: 'iron', tier: 0, speed: 1, durability: 64, damage: 1 },
+});
+
+export const NETHER_QUARTZ = defineItem(ITEM_ID.NETHER_QUARTZ, 'nether_quartz', {
+  displayName: 'Nether Quartz', tile: TILE.NETHER_QUARTZ,
+});
+
+/** The Aether's currency. Eats like a snack and glows in your hand. */
+export const AMBROSIUM_SHARD = defineItem(ITEM_ID.AMBROSIUM_SHARD, 'ambrosium_shard', {
+  displayName: 'Ambrosium Shard', tile: TILE.AMBROSIUM_SHARD,
+  food: 2, saturation: 1, healing: 2,
+});
+
 /**
  * Points at the nearest shrine.
  *
@@ -1696,7 +1881,10 @@ export const BUCKET = defineItem(ITEM_ID.BUCKET, 'bucket', {
 
 export const BUCKET_WATER = defineItem(ITEM_ID.BUCKET_WATER, 'water_bucket', {
   displayName: 'Water Bucket', tile: TILE.BUCKET_WATER, maxStack: 1,
-  bucket: { fluid: 'water' },
+  // Water both pours *and* lights an Aether portal. The player tries the frame
+  // first and falls through to pouring, so aiming at a glowstone ring opens the
+  // Aether while aiming at anything else behaves exactly as it always did.
+  bucket: { fluid: 'water', igniter: true },
 });
 
 export const BUCKET_LAVA = defineItem(ITEM_ID.BUCKET_LAVA, 'lava_bucket', {
