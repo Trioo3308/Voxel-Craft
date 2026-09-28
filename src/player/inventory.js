@@ -95,6 +95,21 @@ export class Inventory {
   }
 
   /**
+   * How many of `id` would fit, counting room in matching stacks and empty
+   * slots. Lets a caller check before committing, rather than adding and then
+   * having to deal with a partial result.
+   */
+  roomFor(id) {
+    const max = getMaxStack(id);
+    let room = 0;
+    for (const slot of this.slots) {
+      if (slot === null) room += max;
+      else if (max > 1 && slot.id === id && slot.durability === undefined) room += max - slot.count;
+    }
+    return room;
+  }
+
+  /**
    * Insert an existing stack object, preserving its durability.
    * Plain `add()` would mint a fresh full-durability tool, so a dropped and
    * re-collected pickaxe would repair itself.

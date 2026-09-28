@@ -15,6 +15,9 @@ const EXHAUSTION_PER_POINT = 4.0;
 /** Damage sources armour cannot protect against. */
 const ARMOR_IGNORES = new Set(['starve', 'void', 'drown']);
 
+/** Health starvation will not take you below: half a heart. */
+const STARVE_FLOOR = 1;
+
 /** Exhaustion costs for various actions (roughly Minecraft's values). */
 export const EXHAUSTION = {
   perBlockWalked: 0.01,
@@ -23,7 +26,9 @@ export const EXHAUSTION = {
   sprintJump: 0.20,
   attack: 0.10,
   mineBlock: 0.005,
-  regen: 1.5,
+  // Matched to Minecraft. It was 1.5, which made healing a quarter of the price
+  // and food something you rarely had to think about.
+  regen: 6.0,
   damageTaken: 0.10,
 };
 
@@ -169,11 +174,14 @@ export class Survival {
     }
 
     // --- Starvation --------------------------------------------------------
+    // Starvation wears you down to half a heart and stops there, as on
+    // Minecraft's Normal difficulty. It cannot kill you by itself, but at half
+    // a heart anything else will. (Jev's call, narrowly: see JEV_DECISIONS.md.)
     if (this.hunger <= 0) {
       this._starveTimer += dt;
       if (this._starveTimer >= 4.0) {
         this._starveTimer = 0;
-        this.damage(1, 'starve');
+        if (this.health > STARVE_FLOOR) this.damage(Math.min(1, this.health - STARVE_FLOOR), 'starve');
       }
     } else {
       this._starveTimer = 0;

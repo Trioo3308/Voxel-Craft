@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Voxel Craft</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   /* ---------------------------------------------------------------------
      Base
@@ -32,6 +35,13 @@
   }
 
   #game { display: block; width: 100%; height: 100%; }
+
+  /* Interface size option. Scales the HUD and every menu panel, but not the
+     cursor stack or tooltip, which are placed in raw mouse coordinates. */
+  /* Zoom goes on the *contents* of positioned HUD elements, not the elements
+     themselves: zooming an element also scales its own left/bottom offsets, so
+     anything centred with left:50% drifted off to the side and down. */
+  #hud > *, #locator, #styleBox > *, #bossBar > *, #compass > *, .panel { zoom: var(--gui-scale, 1); }
 
   /* UI layer sits above the canvas but never eats pointer events unless a
      specific element opts back in. */
@@ -152,18 +162,20 @@
   }
 
   #stats {
-    display: flex; justify-content: space-between;
-    width: 100%; padding: 0 2px;
+    display: flex; justify-content: space-between; align-items: flex-end;
+    width: 100%; padding: 0 2px; margin-bottom: 2px;
   }
-  .statRow { display: flex; gap: 1px; font-size: 15px; line-height: 1; }
-  .statRow .pip { filter: drop-shadow(0 1px 1px rgba(0,0,0,0.9)); }
-  .statRow .pip.empty { filter: grayscale(1) brightness(0.32) drop-shadow(0 1px 1px rgba(0,0,0,0.9)); }
-  .statRow .pip.half { opacity: 0.55; }
-  /* Hearts beyond the starting twenty, granted by an awakened Comb throne. */
-  /* Rotating the red heart forward lands on gold; going back lands on pink. */
-  .statRow .pip.bonus { filter: hue-rotate(38deg) saturate(1.8) brightness(1.15) drop-shadow(0 0 3px rgba(255,190,90,0.95)); }
-  .statRow .pip.bonus.empty { filter: grayscale(1) brightness(0.32) drop-shadow(0 1px 1px rgba(0,0,0,0.9)); }
-  #hunger { justify-content: flex-end; }
+  .vitalsCol { display: flex; flex-direction: column; gap: 1px; align-items: flex-start; }
+  .vitalsCol.right { align-items: flex-end; }
+  .vitalRow { display: flex; min-height: 18px; }
+  .vitalRow.reverse { flex-direction: row-reverse; }
+  /* Bonus hearts past ten stack upward, as a second row above the first. */
+  .vitalRow.hearts { flex-wrap: wrap-reverse; max-width: 180px; }
+  .vital {
+    background-repeat: no-repeat; background-size: 18px 18px;
+    image-rendering: pixelated;
+    filter: drop-shadow(0 1px 0 rgba(0,0,0,0.55));
+  }
   /* Hidden in creative mode, where they mean nothing. */
   #stats.hidden { visibility: hidden; }
 
@@ -445,6 +457,46 @@
 
   #paletteGrid { max-height: 200px; overflow-y: auto; }
 
+  /* Every slot you can act on lights up under the pointer, not just the ones
+     in nine-wide grids. */
+  .slot.interactive { cursor: pointer; }
+  .slot.interactive:hover { background: rgba(200, 200, 210, 0.7); }
+  /* Slots a drag is spreading the held stack across. */
+  .slot.dragTarget { background: rgba(127, 212, 74, 0.45) !important; border-color: var(--accent); }
+
+  #tooltip {
+    position: fixed; left: 0; top: 0;
+    z-index: 45;
+    pointer-events: none;
+    display: none;
+    max-width: 260px;
+    padding: 7px 10px 8px;
+    background: rgba(16, 6, 28, 0.94);
+    border: 2px solid #3b1f78;
+    box-shadow: inset 0 0 0 1px rgba(120, 80, 220, 0.35), 0 6px 18px rgba(0,0,0,0.5);
+    border-radius: 3px;
+    font-size: 12px;
+    line-height: 1.45;
+    text-align: left;
+  }
+  #tooltip.show { display: block; }
+  #tooltip .ttName { font-size: 13px; font-weight: 700; color: #fff; margin-bottom: 1px; }
+  #tooltip .ttLine { color: #b9b4c9; }
+
+  .labelRow { display: flex; align-items: center; justify-content: space-between; }
+  .miniButton {
+    margin: 0; padding: 2px 10px;
+    font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase;
+  }
+  #paletteSearch {
+    width: 100%; margin-bottom: 6px;
+    font-family: var(--font); font-size: 12px;
+    padding: 6px 9px; color: #fff;
+    background: rgba(0,0,0,0.45);
+    border: 2px solid var(--panel-dark); border-radius: 3px;
+  }
+  #paletteSearch:focus { outline: none; border-color: var(--accent); }
+
   /* The stack currently "in hand" while rearranging, follows the mouse. */
   #cursorStack {
     position: fixed;
@@ -572,9 +624,44 @@
   .invColumns { display: flex; gap: 22px; align-items: flex-start; }
 
   /* ---------------------------------------------------------------------
+     Settings: tabs and option rows
+     --------------------------------------------------------------------- */
+  .settingsPanel { width: min(680px, 94vw); max-width: min(680px, 94vw); }
+  .tabBar { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 2px solid var(--panel-dark); }
+  .tabBar button {
+    margin: 0 0 -2px; padding: 7px 16px; font-size: 13px;
+    background: transparent; border: 2px solid transparent; border-bottom: none;
+    border-radius: 3px 3px 0 0; opacity: 0.65;
+  }
+  .tabBar button:hover { background: rgba(255,255,255,0.06); opacity: 1; }
+  .tabBar button.active {
+    opacity: 1; background: var(--panel-bg);
+    border-color: var(--panel-dark); border-bottom: 2px solid var(--panel-bg);
+    color: var(--accent);
+  }
+  .tabPage { display: none; text-align: left; max-height: 56vh; overflow-y: auto; padding-right: 4px; }
+  .tabPage.active { display: block; }
+  .prefRow {
+    display: grid; grid-template-columns: 150px 1fr 96px; align-items: center;
+    gap: 12px; padding: 7px 8px; border-radius: 3px;
+  }
+  .prefRow:hover { background: rgba(255,255,255,0.05); }
+  .prefRow .prefLabel { font-size: 13px; }
+  .prefRow .prefDesc { grid-column: 1 / -1; font-size: 11px; opacity: 0.55; margin-top: -4px; }
+  .prefRow .prefValue { font-size: 12px; text-align: right; color: var(--accent); }
+  .prefRow input[type=range] { width: 100%; accent-color: var(--accent); cursor: pointer; }
+  .prefRow .toggle { margin: 0; padding: 4px 0; width: 64px; font-size: 12px; justify-self: end; grid-column: 3; }
+  .prefRow .toggle.on { background: var(--accent); color: #10240a; border-color: #b6f08a; font-weight: 700; }
+  .segmented { display: flex; gap: 2px; grid-column: 2 / 4; justify-self: end; }
+  .segmented button { margin: 0; padding: 4px 12px; font-size: 12px; text-transform: capitalize; }
+  .segmented button.on { background: var(--accent); color: #10240a; border-color: #b6f08a; font-weight: 700; }
+  .settingsFooter { display: flex; justify-content: space-between; margin-top: 14px; }
+  .settingsFooter button { margin: 0; }
+
+  /* ---------------------------------------------------------------------
      Keybind rows
      --------------------------------------------------------------------- */
-  #keybindList { max-height: 260px; overflow-y: auto; text-align: left; }
+  #keybindList { text-align: left; }
   .bindGroup {
     font-size: 10.5px; text-transform: uppercase; letter-spacing: 1.4px;
     opacity: 0.5; margin: 10px 0 4px;
@@ -601,6 +688,270 @@
     opacity: 0; transition: opacity 0.4s;
   }
   #saveToast.show { opacity: 1; transition: opacity 0.1s; }
+
+  /* =====================================================================
+     Pixel glass theme
+     ---------------------------------------------------------------------
+     Jev's pick for the menus (see JEV_DECISIONS.md): dark translucent glass
+     with a pixel-art bevel and a pixel font, slots sunk into the panel like
+     the frames in the block textures, and an accent colour that changes
+     with the dimension you are in. Everything below overrides the plain
+     styles above rather than replacing them, so it can be peeled off in one
+     piece.
+     ===================================================================== */
+  :root {
+    --font: "Pixelify Sans", "Consolas", "SF Mono", "Menlo", monospace;
+    --glass: rgba(10, 12, 20, 0.78);
+    --glass-edge: rgba(255, 255, 255, 0.14);
+    --glass-shade: rgba(0, 0, 0, 0.55);
+    --accent: #8be05a;
+    --accent-dim: rgba(139, 224, 90, 0.28);
+    --slot-well: rgba(0, 0, 0, 0.34);
+  }
+  :root[data-dimension="nether"] { --accent: #ff7a45; --accent-dim: rgba(255, 122, 69, 0.3); }
+  :root[data-dimension="aether"] { --accent: #ffd36b; --accent-dim: rgba(255, 211, 107, 0.3); }
+  :root[data-dimension="comb"]   { --accent: #e0574f; --accent-dim: rgba(224, 87, 79, 0.28); }
+
+  /* The title screen lets the panorama through, and the HUD steps aside. */
+  #worldScreen { background: radial-gradient(ellipse at center, rgba(6, 8, 14, 0.15), rgba(4, 5, 10, 0.72)); backdrop-filter: none; }
+  #worldScreen h1 { font-size: 48px; color: #fff; text-shadow: 3px 3px 0 rgba(0,0,0,0.65), 0 0 22px var(--accent-dim); }
+  #ui.offstage { visibility: hidden; }
+
+  /* Compass strip: bearings and markers along the top edge. */
+  #compassStrip {
+    position: absolute; left: 50%; top: 10px; transform: translateX(-50%);
+    width: min(440px, 70vw); height: 30px; display: none;
+    background: linear-gradient(90deg, transparent, var(--glass) 14%, var(--glass) 86%, transparent);
+    font-family: var(--font);
+  }
+  #compassStrip.show { display: block; }
+  #compassStrip .csTrack { position: absolute; inset: 0; overflow: hidden; }
+  #compassStrip .csTick {
+    position: absolute; top: 3px; width: 2px; height: 6px; margin-left: -1px;
+    background: rgba(255,255,255,0.45);
+  }
+  #compassStrip .csPoint {
+    top: 5px; width: auto; height: auto; background: none; transform: translateX(-50%); margin-left: 0;
+    font-size: 13px; font-weight: 700; color: #fff; text-shadow: 1px 1px 0 #000;
+  }
+  #compassStrip .csCaret {
+    position: absolute; left: 50%; bottom: -5px; width: 0; height: 0; margin-left: -5px;
+    border: 5px solid transparent; border-bottom-color: var(--accent); transform: rotate(180deg); top: -2px;
+  }
+  #compassStrip .csMark {
+    position: absolute; top: 1px; transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center;
+  }
+  #compassStrip .csMark i {
+    display: block; width: 14px; height: 14px; image-rendering: pixelated;
+    background: center / contain no-repeat; filter: drop-shadow(0 1px 0 #000);
+  }
+  #compassStrip .csMark.waypoint i { width: 9px; height: 9px; margin: 2px 0 3px; background: var(--accent); transform: rotate(45deg); box-shadow: 0 0 0 1px #05060a; }
+  #compassStrip .csMark span {
+    margin-top: 16px; font-size: 10.5px; white-space: nowrap; color: #fff;
+    text-shadow: 1px 1px 0 #000, -1px 1px 0 #000; position: absolute; top: 0;
+  }
+  #compassStrip .csMark.behind { opacity: 0.55; }
+  #compassStrip .csMark.grave span { color: #d8d8e0; }
+  #compassStrip .csMark.bed span { color: #ff9a8a; }
+  #compassStrip .csMark.portal span { color: #d6a8ff; }
+  /* The coordinates move down out of the strip's way. */
+  #locator { top: 10px; }
+
+  /* Recipe book: a second glass panel to the left of a crafting screen. */
+  #inventoryScreen, #craftingScreen { flex-direction: row; gap: 14px; align-items: center; }
+  .recipePanel {
+    display: none; flex-direction: column; gap: 8px;
+    width: 280px; height: min(560px, 86vh); padding: 14px 12px !important; text-align: left;
+  }
+  .recipePanel.show { display: flex; }
+  .rbHead { display: flex; flex-direction: column; gap: 6px; }
+  .rbSearch {
+    width: 100%; font-family: var(--font); font-size: 12px; padding: 6px 8px; color: #fff;
+    background: rgba(0, 0, 0, 0.4); border: none; border-radius: 0;
+    box-shadow: inset 2px 2px 0 rgba(0,0,0,0.5), inset -2px -2px 0 rgba(255,255,255,0.08);
+  }
+  .rbSearch:focus { outline: 1px solid var(--accent); }
+  .rbBody { flex: 1; overflow-y: auto; overflow-x: hidden; padding-right: 2px; }
+  .rbLabel { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; opacity: 0.6; margin: 8px 0 4px; }
+  .rbGrid { display: grid; grid-template-columns: repeat(6, 36px); gap: 2px; }
+  .rbItem {
+    width: 36px; height: 36px; cursor: pointer; image-rendering: pixelated;
+    background: var(--slot-well) center / 26px 26px no-repeat;
+    box-shadow: inset 2px 2px 0 rgba(0,0,0,0.5), inset -2px -2px 0 rgba(255,255,255,0.08);
+  }
+  .rbItem:hover { background-color: var(--accent-dim); box-shadow: inset 0 0 0 2px var(--accent); }
+  .rbItem.craftable { box-shadow: inset 0 -2px 0 var(--accent), inset 2px 2px 0 rgba(0,0,0,0.5); }
+  .rbItem.locked, .rbItem.material { opacity: 0.5; }
+  .rbItem.locked:hover, .rbItem.material:hover { opacity: 1; }
+  .rbEmpty { font-size: 12px; opacity: 0.6; padding: 10px 2px; }
+  .rbDetailHead { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .rbName { font-size: 15px; font-weight: 700; }
+  .rbCard {
+    display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 6px 10px;
+    padding: 8px; margin-bottom: 6px; background: rgba(255,255,255,0.04);
+  }
+  .rbPattern { display: grid; gap: 2px; }
+  .rbCell {
+    width: 26px; height: 26px; image-rendering: pixelated;
+    background: rgba(0,0,0,0.35) center / 20px 20px no-repeat;
+    box-shadow: inset 1px 1px 0 rgba(0,0,0,0.5), inset -1px -1px 0 rgba(255,255,255,0.06);
+  }
+  .rbCell[style*='url'] { cursor: pointer; }
+  .rbArrow { font-size: 13px; opacity: 0.75; white-space: nowrap; }
+  .rbNeeds { font-size: 11px; line-height: 1.5; }
+  .rbNeeds .ok { color: #9be07a; }
+  .rbNeeds .short { color: #ff8a7a; }
+  .rbNote { grid-column: 1 / -1; font-size: 11px; color: #ffcf7a; }
+  .rbCard .miniButton { grid-column: 1 / -1; justify-self: start; }
+
+  /* Which way a hit came from: a red crescent on that edge, fading out. */
+  .hitArc {
+    position: absolute; left: 50%; top: 50%;
+    width: 74vmin; height: 74vmin; margin: -37vmin 0 0 -37vmin;
+    pointer-events: none;
+    background: radial-gradient(ellipse 24% 8% at 50% 3%, rgba(255, 36, 24, 0.85), rgba(255, 36, 24, 0) 100%);
+    animation: hitArcFade 1s ease-out forwards;
+  }
+  @keyframes hitArcFade { 0% { opacity: 0; } 8% { opacity: 1; } 100% { opacity: 0; } }
+
+  /* Achievement card: slides in from the right, then away. */
+  #achievementCard {
+    position: fixed; right: 14px; top: 14px; z-index: 30;
+    display: flex; align-items: center; gap: 12px;
+    min-width: 260px; max-width: 340px; padding: 10px 16px 10px 10px;
+    font-family: var(--font); text-align: left; pointer-events: none;
+    background: var(--glass); backdrop-filter: blur(8px);
+    box-shadow: inset 0 2px 0 var(--accent), inset 2px 0 0 var(--glass-edge), inset -2px -2px 0 var(--glass-shade), 0 0 0 2px #05060a, 0 10px 30px rgba(0,0,0,0.5);
+    transform: translateX(calc(100% + 30px)); transition: transform 0.35s cubic-bezier(.2,.9,.3,1.2);
+  }
+  #achievementCard.show { transform: translateX(0); }
+  #achievementCard .acIcon {
+    width: 40px; height: 40px; flex-shrink: 0; image-rendering: pixelated;
+    background: var(--slot-well) center / 30px 30px no-repeat;
+    box-shadow: inset 2px 2px 0 rgba(0,0,0,0.55), inset -2px -2px 0 rgba(255,255,255,0.1);
+  }
+  #achievementCard .acKicker { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); }
+  #achievementCard .acTitle { font-size: 16px; font-weight: 700; color: #fff; }
+  #achievementCard .acHint { font-size: 11.5px; opacity: 0.7; }
+  .wthumb {
+    width: 96px; height: 54px; flex-shrink: 0;
+    background: linear-gradient(180deg, #4a6fa8, #2a3d5c 55%, #3f6b2e 56%, #2c4a21) center / cover;
+    box-shadow: inset 2px 2px 0 rgba(0, 0, 0, 0.45), 0 0 0 2px #05060a;
+  }
+
+  body { font-family: var(--font); }
+
+  .overlay { background: radial-gradient(ellipse at center, rgba(8, 10, 18, 0.55), rgba(4, 5, 10, 0.85)); backdrop-filter: blur(5px); }
+  #inventoryScreen, #craftingScreen, #furnaceScreen, #chestScreen { background: rgba(4, 6, 12, 0.45); backdrop-filter: blur(2px); }
+
+  /* Panels: square corners, a two-pixel bevel (light top-left, dark
+     bottom-right) and a hairline of accent along the top edge. */
+  .panel {
+    background: var(--glass);
+    backdrop-filter: blur(10px) saturate(1.2);
+    border: none;
+    border-radius: 0;
+    box-shadow:
+      inset 0 2px 0 var(--accent-dim),
+      inset 2px 0 0 var(--glass-edge),
+      inset -2px -2px 0 var(--glass-shade),
+      0 0 0 2px #05060a,
+      0 0 0 4px rgba(255, 255, 255, 0.05),
+      0 16px 48px rgba(0, 0, 0, 0.6);
+  }
+  h1, h2 { font-weight: 700; letter-spacing: 1px; text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.6); }
+  h1 { font-size: 40px; }
+  .subtitle { font-size: 14px; }
+  .invLabel { font-size: 11px; letter-spacing: 2px; opacity: 0.7; color: var(--accent); }
+
+  /* Buttons: raised pixel blocks that sink when pressed. */
+  button {
+    font-family: var(--font);
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    background: rgba(255, 255, 255, 0.08);
+    border: none;
+    border-radius: 0;
+    box-shadow:
+      inset 2px 2px 0 rgba(255, 255, 255, 0.16),
+      inset -2px -2px 0 rgba(0, 0, 0, 0.5),
+      0 0 0 2px #05060a;
+    transition: background 0.08s, color 0.08s;
+  }
+  button:hover { background: var(--accent-dim); color: #fff; }
+  button:active {
+    transform: translateY(1px);
+    box-shadow:
+      inset 2px 2px 0 rgba(0, 0, 0, 0.5),
+      inset -2px -2px 0 rgba(255, 255, 255, 0.1),
+      0 0 0 2px #05060a;
+  }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* Slots: sunk into the glass, dark top-left and lit bottom-right, the way
+     the frames are drawn in the block textures. */
+  .slot {
+    background: var(--slot-well);
+    border: none;
+    border-radius: 0;
+    box-shadow:
+      inset 2px 2px 0 rgba(0, 0, 0, 0.55),
+      inset -2px -2px 0 rgba(255, 255, 255, 0.09);
+  }
+  .slot.interactive:hover {
+    background: var(--accent-dim);
+    box-shadow:
+      inset 2px 2px 0 rgba(0, 0, 0, 0.45),
+      inset -2px -2px 0 rgba(255, 255, 255, 0.14),
+      0 0 0 1px var(--accent);
+  }
+  .slot .count, #cursorStack .count { font-family: var(--font); font-weight: 700; font-size: 13px; }
+  .resultSlot { box-shadow: inset 0 0 0 2px var(--accent), 0 0 12px var(--accent-dim) !important; }
+  .slot.armorSlot { background: rgba(70, 90, 130, 0.28); }
+  .slot.dragTarget { background: var(--accent-dim) !important; box-shadow: inset 0 0 0 2px var(--accent) !important; }
+
+  /* The hotbar is the same glass, with the selected slot lifted and lit. */
+  #hotbar {
+    background: var(--glass);
+    backdrop-filter: blur(6px);
+    border: none;
+    border-radius: 0;
+    padding: 4px;
+    gap: 3px;
+    box-shadow:
+      inset 2px 2px 0 var(--glass-edge),
+      inset -2px -2px 0 var(--glass-shade),
+      0 0 0 2px #05060a;
+  }
+  #hotbar .slot.selected {
+    background: rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 0 0 2px #fff, 0 0 0 2px #05060a, 0 0 14px var(--accent-dim);
+    transform: translateY(-2px);
+  }
+  #itemName { font-family: var(--font); font-size: 15px; letter-spacing: 0.5px; text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.7); }
+
+  /* Readouts and toasts share the glass. */
+  #locator, #debug, #saveToast {
+    font-family: var(--font);
+    background: var(--glass);
+    border-radius: 0;
+    box-shadow: inset 2px 2px 0 var(--glass-edge), inset -2px -2px 0 var(--glass-shade), 0 0 0 2px #05060a;
+  }
+  #tooltip { font-family: var(--font); border-radius: 0; }
+  #tooltip .ttName { font-size: 14px; }
+
+  .tabBar { border-bottom-color: rgba(255, 255, 255, 0.1); }
+  .tabBar button { box-shadow: none; background: transparent; }
+  .tabBar button.active { color: var(--accent); background: rgba(255, 255, 255, 0.06); box-shadow: inset 0 -2px 0 var(--accent); }
+  .prefRow input[type=range] { accent-color: var(--accent); }
+  .prefRow .toggle.on, .segmented button.on, .modeOption.selected, .bindRow button.listening {
+    background: var(--accent); color: #0d1409; box-shadow: inset 2px 2px 0 rgba(255,255,255,0.35), inset -2px -2px 0 rgba(0,0,0,0.3), 0 0 0 2px #05060a;
+  }
+  .worldRow { border-radius: 0; background: rgba(255, 255, 255, 0.05); }
+  .worldRow:hover { background: var(--accent-dim); border-color: transparent; }
+  .field input, #paletteSearch { border-radius: 0; background: rgba(0, 0, 0, 0.4); }
+  .badge { border-radius: 0; background: var(--accent); }
 </style>
 
 <!-- Three.js from CDN. Swap for a local copy (or npm + a bundler) if you want
@@ -608,7 +959,8 @@
 <script type="importmap">
 {
   "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
   }
 }
 </script>
@@ -628,16 +980,14 @@
   <div id="portalOverlay"></div>
 
   <div id="hud">
-    <div id="stats">
-      <div id="health" class="statRow"></div>
-      <div id="hunger" class="statRow"></div>
-    </div>
+    <div id="stats"></div>
     <div id="hotbar"></div>
     <div id="itemName"></div>
   </div>
 
   <div id="debug"></div>
   <div id="locator"></div>
+  <div id="compassStrip"></div>
   <div id="compass"><span></span><i id="compassNeedle">▲</i></div>
   <div id="styleBox">
     <div id="styleTricks"></div>
@@ -711,32 +1061,43 @@
 
 <!-- Settings ---------------------------------------------------------------->
 <div id="settingsScreen" class="overlay">
-  <div class="panel" style="max-width:min(680px, 94vw)">
+  <div class="panel settingsPanel">
     <h2 style="text-align:left">Settings</h2>
+    <div class="tabBar" id="settingsTabs"></div>
 
-    <div class="invSection">
-      <div class="invLabel">Controls &mdash; click a key to rebind it</div>
-      <div id="keybindList"></div>
+    <div class="tabPage" data-page="video"><div class="prefList" id="prefs-video"></div></div>
+    <div class="tabPage" data-page="audio"><div class="prefList" id="prefs-audio"></div></div>
+    <div class="tabPage" data-page="interface"><div class="prefList" id="prefs-interface"></div></div>
+
+    <div class="tabPage" data-page="controls">
+      <div class="prefList" id="prefs-controls"></div>
+
+      <div class="invSection" style="margin-top:14px">
+        <div class="invLabel">Key bindings &mdash; click a key to rebind it</div>
+        <div id="keybindList"></div>
+      </div>
+
+      <div class="invSection">
+        <div class="invLabel">Fixed controls</div>
+        <div id="fixedList" class="controls" style="margin-top:0"></div>
+      </div>
+
+      <div class="invSection" id="captureSection">
+        <div class="invLabel">Browser shortcuts</div>
+        <p class="subtitle" style="text-align:left; margin:0 0 8px">
+          Shortcuts like Ctrl+D are already blocked while playing. A few
+          (Ctrl+W, Ctrl+T) are reserved by the browser and can only be captured
+          in fullscreen.
+        </p>
+        <button id="captureKeysButton">Capture all keys (fullscreen)</button>
+        <span id="captureStatus" class="subtitle"></span>
+      </div>
     </div>
 
-    <div class="invSection">
-      <div class="invLabel">Fixed controls</div>
-      <div id="fixedList" class="controls" style="margin-top:0"></div>
+    <div class="settingsFooter">
+      <button id="resetBindsButton">Reset this page</button>
+      <button id="closeSettingsButton">Done</button>
     </div>
-
-    <div class="invSection" id="captureSection">
-      <div class="invLabel">Browser shortcuts</div>
-      <p class="subtitle" style="text-align:left; margin:0 0 8px">
-        Shortcuts like Ctrl+D are already blocked while playing. A few
-        (Ctrl+W, Ctrl+T) are reserved by the browser and can only be captured
-        in fullscreen.
-      </p>
-      <button id="captureKeysButton">Capture all keys (fullscreen)</button>
-      <span id="captureStatus" class="subtitle"></span>
-    </div>
-
-    <button id="resetBindsButton">Reset to defaults</button>
-    <button id="closeSettingsButton">Done</button>
   </div>
 </div>
 
@@ -761,11 +1122,13 @@
 
 <!-- Inventory -------------------------------------------------------------->
 <div id="inventoryScreen" class="overlay">
+  <div class="panel recipePanel" id="invRecipes"></div>
   <div class="panel">
     <h2 style="text-align:left">Inventory <span id="modeBadge" class="badge">Survival</span></h2>
 
     <div class="invSection" id="paletteSection">
       <div class="invLabel">Creative palette &mdash; click to take a stack</div>
+      <input id="paletteSearch" type="text" placeholder="Search blocks and items&hellip;" autocomplete="off" spellcheck="false">
       <div class="invGrid" id="paletteGrid"></div>
     </div>
 
@@ -775,7 +1138,7 @@
         <div class="armorRow" id="armorGrid"></div>
       </div>
       <div>
-        <div class="invLabel">Crafting</div>
+        <div class="invLabel labelRow">Crafting <button id="invRecipeToggle" class="miniButton" title="Show or hide the recipe book">Recipes</button></div>
         <div class="craftRow">
           <div class="craftGrid g2" id="invCraftGrid"></div>
           <div class="craftArrow">&rarr;</div>
@@ -785,7 +1148,7 @@
     </div>
 
     <div class="invSection">
-      <div class="invLabel">Backpack</div>
+      <div class="invLabel labelRow">Backpack <button id="sortInvButton" class="miniButton" title="Merge stacks and put them in order">Sort</button></div>
       <div class="invGrid" id="storageGrid"></div>
     </div>
 
@@ -794,18 +1157,19 @@
       <div class="invGrid" id="invHotbarGrid"></div>
     </div>
 
-    <p class="subtitle" style="margin:14px 0 0">
-      <b>Left click</b> takes or drops a whole stack &middot;
-      <b>Right click</b> takes half, or places one item at a time.
-      Press <b>E</b> to close.
+    <p class="subtitle" style="margin:14px 0 0; line-height:1.6">
+      <b>Shift-click</b> moves a stack &middot; <b>drag</b> to spread it (right-drag: one each) &middot;
+      <b>double-click</b> gathers &middot; <b>1&ndash;9</b> over a slot swaps with the hotbar &middot;
+      <b>Q</b> throws. Press <b>E</b> to close.
     </p>
   </div>
 </div>
 
 <!-- Crafting table (3x3) --------------------------------------------------->
 <div id="craftingScreen" class="overlay">
+  <div class="panel recipePanel" id="tableRecipes"></div>
   <div class="panel">
-    <h2 style="text-align:left">Crafting Table</h2>
+    <h2 style="text-align:left" class="labelRow">Crafting Table <button id="tableRecipeToggle" class="miniButton" title="Show or hide the recipe book">Recipes</button></h2>
     <div class="craftRow invSection">
       <div class="craftGrid g3" id="tableCraftGrid"></div>
       <div class="craftArrow">&rarr;</div>
@@ -861,7 +1225,7 @@
   <div class="panel">
     <h2 style="text-align:left">Chest</h2>
     <div class="invSection">
-      <div class="invLabel">Contents</div>
+      <div class="invLabel labelRow">Contents <button id="sortChestButton" class="miniButton" title="Merge stacks and put them in order">Sort</button></div>
       <div class="invGrid" id="chestGrid"></div>
     </div>
     <div class="invSection">
@@ -910,6 +1274,8 @@
 
 <div id="saveToast"></div>
 <div id="cursorStack"><div class="icon"></div><div class="count"></div></div>
+<div id="tooltip"></div>
+<div id="achievementCard"><div class="acIcon"></div><div class="acText"><div class="acKicker">Achievement</div><div class="acTitle"></div><div class="acHint"></div></div></div>
 
 <script type="module" src="./src/main.js"></script>
 </body>

@@ -228,6 +228,7 @@ function collectTransferables(geometry, out) {
     geometry.normals.buffer,
     geometry.uvs.buffer,
     geometry.colors.buffer,
+    geometry.fx.buffer,
     geometry.indices.buffer
   );
 }

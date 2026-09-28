@@ -12,6 +12,8 @@ import { getAtlasTexture } from '../world/textures.js';
 
 const SIZE = 0.28;
 const PICKUP_RADIUS = 1.4;
+/** Within this range a drop you have room for flies to you. */
+const MAGNET_RADIUS = 3.2;
 /** Items cannot be picked up immediately, so drops do not vanish on death. */
 const PICKUP_DELAY = 0.5;
 /** Items give up and disappear after this long. */
@@ -84,10 +86,15 @@ export class ItemEntity {
 
   update(dt, ctx) {
     this.age += dt;
-    if (this.age > LIFETIME) {
+    // Expired, or fell out of the world through the Aether's void.
+    if (this.age > LIFETIME || this.position.y < -32) {
       this.removed = true;
       return;
     }
+
+    // Close enough, and with room in your pack: glide in instead of waiting
+    // to be walked over, faster the nearer it gets.
+    if (this._magnet(dt, ctx.player)) return;
 
     // Physics: gravity plus ground friction so items settle instead of sliding.
     this.velocity.y -= 22 * dt;
@@ -112,6 +119,30 @@ export class ItemEntity {
     this.mesh.rotation.y = this.age * 1.6;
 
     this._tryPickup(ctx.player);
+  }
+
+  _magnet(dt, player) {
+    if (this.age < PICKUP_DELAY || player.survival.dead) return false;
+    const tx = player.position.x;
+    const ty = player.position.y + 0.9;
+    const tz = player.position.z;
+    const dx = tx - this.position.x, dy = ty - this.position.y, dz = tz - this.position.z;
+    const distance = Math.hypot(dx, dy, dz);
+    if (distance > MAGNET_RADIUS) return false;
+    if (player.inventory.roomFor(this.id) <= 0) return false;
+
+    const speed = 3 + (MAGNET_RADIUS - distance) * 5;
+    const move = Math.min(distance, speed * dt);
+    this.position.x += (dx / distance) * move;
+    this.position.y += (dy / distance) * move;
+    this.position.z += (dz / distance) * move;
+    this.velocity.set(0, 0, 0);
+    const shrink = Math.max(0.35, Math.min(1, distance / 1.2));
+    this.mesh.scale.setScalar(shrink);
+    this.mesh.position.copy(this.position);
+    this.mesh.rotation.y = this.age * 4;
+    if (distance < 0.45) this._tryPickup(player);
+    return true;
   }
 
   _tryPickup(player) {

@@ -327,6 +327,7 @@ export class EntityManager {
       const d = player.eyePosition.distanceTo(new THREE.Vector3(x, y, z));
       if (d <= radius * 1.6) {
         const falloff = 1 - d / (radius * 1.6);
+        player.hitFrom = { x, z, at: performance.now() };
         player.survival.damage(Math.ceil(maxDamage * falloff), 'explosion');
         const dx = player.position.x - x;
         const dz = player.position.z - z;
@@ -365,6 +366,10 @@ export class EntityManager {
 
       if (mob.removed) {
         this._dropLoot(mob);
+        // A mob that died goes up in a puff of smoke rather than just vanishing.
+        if (mob.dead && this.particles) {
+          this.particles.deathPuff(mob.position.x, mob.position.y, mob.position.z, mob.type.height ?? 1);
+        }
         this.scene.remove(mob.object3D);
         mob.dispose();
         this.mobs.splice(i, 1);
@@ -660,6 +665,10 @@ export class EntityManager {
   spawnMob(type, x, y, z) {
     const mob = new Mob(type, this.world, this._tmpVec.set(x, y, z));
     this.mobs.push(mob);
+    // Mobs stand in the sun like everything else, so they cast shadows.
+    mob.object3D.traverse((child) => {
+      if (child.isMesh) child.castShadow = child.receiveShadow = true;
+    });
     this.scene.add(mob.object3D);
     return mob;
   }
@@ -670,7 +679,8 @@ export class EntityManager {
       const mob = this.mobs[i];
       const dx = mob.position.x - player.position.x;
       const dz = mob.position.z - player.position.z;
-      if (dx * dx + dz * dz <= limitSq) continue;
+      // Anything that fell out of the world (the Aether has a real void) goes too.
+      if (dx * dx + dz * dz <= limitSq && mob.position.y > -32) continue;
 
       if (this.onMobDespawn) this.onMobDespawn(mob);
       this.scene.remove(mob.object3D);
@@ -707,6 +717,7 @@ export class EntityManager {
   dropItem(x, y, z, id, count = 1, durability) {
     const item = new ItemEntity(this.world, this._tmpVec.set(x, y, z), id, count, durability);
     if (this.onItemPickup) item.onPickup = this.onItemPickup;
+    item.mesh.castShadow = true;
     this.items.push(item);
     this.scene.add(item.mesh);
     return item;

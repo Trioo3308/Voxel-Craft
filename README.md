@@ -2,7 +2,8 @@
 
 A Minecraft-style voxel game in JavaScript + Three.js. Infinite procedural
 terrain, block building, a day/night survival loop, and mobs — with no build
-step and no asset files.
+step. Every texture is painted in code; the sound effects are public-domain
+recordings (see [assets/audio/CREDITS.md](assets/audio/CREDITS.md)).
 
 Chose the web stack because it needs zero install, has direct GPU access for
 chunk meshing, and gives you Web Workers for off-thread world generation.
@@ -110,6 +111,8 @@ that broadcast would go.
 | `Ctrl` | Sprint (works while jumping) |
 | `Q` / `Sprint+Q` | Drop one item / the whole stack |
 | `L` | Achievements and statistics |
+| `N` / `Sprint+N` | Drop a waypoint here / remove the nearest one |
+| Middle click | Pick block: put the block you are looking at in your hand |
 | `M` | Mute sound |
 | `F1` | Settings — full control list, and rebind anything |
 
@@ -144,9 +147,22 @@ across a crafting grid practical later:
 | **Left click** | Take the whole stack | Drop it all — merging into a matching stack, otherwise swapping |
 | **Right click** | Take half (rounded up) | Place **one** item; swap if the types differ |
 
+On top of that, everything a player expects from a modern inventory:
+
+| Action | Does |
+| --- | --- |
+| **Shift-click** | Sends a stack where it obviously belongs: between hotbar and backpack, into or out of a chest, ore to the furnace's input and fuel to its fuel slot, armour onto you. On a crafting result, crafts as many as you can |
+| **Drag** a held stack | Left: shares it evenly across the slots you cross. Right: one in each |
+| **Double-click** | Gathers every matching item on screen onto the cursor |
+| `1`–`9` over a slot | Swaps it with that hotbar slot |
+| `Q` over a slot | Throws one; `Ctrl+Q` the whole stack |
+| **Sort** | Merges and orders the backpack, or a chest |
+| Hover | A tooltip with what matters: damage, mining speed, armour, durability, food, fuel, what it smelts into, and which tool a block needs |
+
 In the creative palette, left click takes a full stack and right click takes a
-single item. Closing the inventory while holding a stack returns it rather than
-destroying it.
+single item, and there is a search box. Closing any screen while holding a
+stack returns it, with its wear intact, and anything that will not fit is
+thrown at your feet rather than deleted.
 | `G` | Toggle creative / survival |
 | `F` | Toggle flight (creative only) |
 | `F3` | Debug overlay |
@@ -312,11 +328,21 @@ reshapes nothing you have already built in.
 
 ### Sound
 
-All audio is synthesised at runtime from Web Audio oscillators and noise buffers
-— there are no sound files, matching how the textures are painted rather than
-shipped. Footsteps, digging and block breaks are **material-aware** (stone rings,
-sand hisses, wool thuds), each species has its own voice, and glass gets a
-shatter tail. `M` mutes.
+Everything physical is a **recording**: footsteps per surface, pickaxe on
+rock, soft thuds for earth, wood, glass and metal impacts, door and chest
+creaks, the flint strike, bow swishes, menu clicks. They come from three of
+Kenney's public-domain (CC0) packs, trimmed to the 155 files the game uses
+(about 1.2 MB). Every play picks a random variant, never the same twice
+running, and nudges its pitch a few percent, which is what stops a walk
+across a field sounding like a metronome.
+
+Synthesis stays where no recording could exist: the jukebox tunes and the
+voices of the made-up creatures. Everything in the world runs through a **cave
+reverb** that swells as you go underground, and distant sounds lose their top
+end before they lose their volume, so a zombie far off sounds far off rather
+than just quiet. Recordings load in the background; until one has, the old
+synthesised sound plays in its place. Master, music and effects each have a
+slider in Settings, and `M` mutes.
 
 Animal calls went through a round of rework after they turned out to be shrill
 and relentless. Three things were wrong: raw square and sawtooth waves at
@@ -510,6 +536,98 @@ mean a search every time you stepped in, and a half-broken frame would leave a
 portal that no longer knew where it went. The id **is** the destination.
 
 ---
+
+## The quality-of-life and detail update
+
+A pass over everything that made the game harder to enjoy than it needed to
+be, followed by a new look. The design calls were made by **Jev**, TypeSafe's
+decision model: I drafted the options and Jev picked, with its probabilities
+recorded in [JEV_DECISIONS.md](JEV_DECISIONS.md). It also ranked fifteen
+smaller changes, and everything above the cut shipped.
+
+### Dying no longer costs you everything
+
+Dying used to delete every item you carried and hand you a fresh starter kit,
+which also let you farm the kit by dying on purpose. Now everything you carried,
+armour included, goes into a **gravestone** where you fell. It never expires;
+one right-click gives it all back (armour straight onto you), and breaking it
+spills it. Die in lava or the void and the grave goes on the last solid ground
+you stood on. The compass strip points to it.
+
+Three bugs surfaced on the way:
+
+- **Respawning in the wrong dimension.** Die in the Nether or the Aether and you
+  came back in *that* dimension at your Overworld coordinates: inside the rock,
+  or in open void, where you died again and again. You now always wake at your
+  bed in the Overworld, or at world spawn if the bed has gone.
+- **The Aether had an invisible floor.** The world treats everything below y=0
+  as bedrock, so falling off an island landed you on nothing, sixty blocks down.
+  The Aether now has a real void, which hurts until it kills, as in Minecraft.
+- **Beds put you on the roof.** Respawning used the topmost solid block, which in
+  a house is the roof. You now wake exactly at the bed.
+
+Water can drown you now (fifteen seconds of air, shown as bubbles), healing costs
+the hunger it does in Minecraft, and starving stops at half a heart instead of
+killing you.
+
+### Settings
+
+Settings used to be key bindings and nothing else. It now has four pages:
+**Video** (graphics level, render distance, field of view, brightness, clouds,
+swaying plants, particles, view bobbing, speed effects), **Audio** (master,
+music, effects), **Controls** (sensitivity, invert mouse, auto-jump, and every
+key binding) and **Interface** (interface size, coordinates, compass strip,
+damage flash). They live in `localStorage`, apart from world saves, and apply
+the moment you move a slider.
+
+### A new look
+
+Jev's pick was a "modern voxel" renderer, keeping the 16x16 pixel textures:
+
+- **Sun and moon shadows.** A shadow map follows you, snapped to its own texel
+  grid so edges do not shimmer as you walk; at the highest setting one shadow
+  texel is one pixel of a block texture. Trees, overhangs and mobs all cast
+  them, and they swing round through the day.
+- **Light with colour.** Torchlight is warm, sky light is cool, and they no
+  longer merge into one grey. The Nether, which has a rock roof and so no sky,
+  gets a dim red glow of its own.
+- **HDR, bloom and grading.** Lava, glowstone, torches and the sun glow; the
+  whole frame is graded warm at golden hour and cool at night, then tone mapped
+  with a curve that keeps pixel-art colours true.
+- **A real sky.** A gradient dome with a glow along the horizon at dawn and dusk,
+  a square pixel sun and moon (the moon goes through eight phases, one per day),
+  pixel stars and a faint milky way, and 3D blocky clouds whose undersides catch
+  the sunset.
+- **Life in the world.** Leaves and plants sway, harder in a storm; water
+  ripples, sparkles in the sun, and throws caustics on shallow floors; leaves
+  drift down from canopies, fireflies come out over grass on clear nights, ash
+  and embers drift in the Nether, sparkles hang in the Aether, and bubbles rise
+  when you hold your breath.
+- **Feedback.** Mining cracks the block itself in ten stages; a hit shows a red
+  arc on the side it came from; mobs go up in a puff of smoke; dropped items
+  glide to you; the hand dips to place, rises on switching, and brings food to
+  your mouth.
+- **Menus.** Dark glass with a pixel bevel and a pixel font, slots sunk in like
+  the frames in the block textures, and an accent colour that follows the
+  dimension (green, ember orange, gold, blood red). Health, hunger, armour and
+  air are pixel art, and hearts you have just lost linger as white ghost hearts
+  before draining. Achievements slide in as cards with an icon.
+- **Title screen.** A camera slowly circles a real world behind the menu, and
+  each world in the list has a thumbnail from its last save.
+
+### Finding your way, and finding out how
+
+A **compass strip** runs along the top of the screen: the points of the compass
+scroll past as you turn, with markers for your bed, your grave, every portal you
+have lit or come through, and your own waypoints (`N` drops one, named after the
+biome; `Sprint+N` removes the nearest), each with its distance. Anything behind
+you is pinned to the nearer end, so it is never lost.
+
+A **recipe book** sits beside both crafting grids. It lists every block and item,
+with whatever you can make right now pinned at the top; clicking one lays the
+ingredients out in the grid for you (shift-click for as many as you can afford).
+Anything else opens its page: how it is made, how many of each ingredient you
+have, what it smelts from, and what it is used in.
 
 ## Underground
 
@@ -849,11 +967,14 @@ src/
 ├─ main.js                 Game loop + state machine (loading/menu/playing/paused/dead)
 ├─ settings.js             All tunables in one place
 ├─ engine/
-│  ├─ renderer.js          Three.js scene, camera, lights, block highlight
+│  ├─ renderer.js          Scene, camera, sun shadows, bloom + grade, cracks, highlight
+│  ├─ terrainMaterial.js   The terrain shader: sky/torch light, sway, ripples, caustics
+│  ├─ atmosphere.js        Sky dome, sun and moon, stars, voxel clouds
+│  ├─ sky.js               Day/night cycle; decides every light and colour per frame
+│  ├─ preferences.js       Per-browser options (video, audio, controls, interface)
 │  ├─ input.js             Keyboard/mouse state + edges, pointer lock
-│  ├─ audio.js             Procedural Web Audio synthesis (no sound files)
-│  ├─ viewmodel.js         First-person hand + held item overlay pass
-│  └─ sky.js               Day/night cycle; authority on isDay/isNight
+│  ├─ audio.js             Recordings + synthesis, cave reverb, distance filtering
+│  └─ viewmodel.js         First-person hand + held item overlay pass
 ├─ world/
 │  ├─ blocks.js            Block + item registry  ← add content here
 │  ├─ textures.js          Procedurally painted texture atlas
@@ -880,7 +1001,12 @@ src/
 │  ├─ projectile.js        Arrows
 │  └─ entityManager.js     Spawning, separation, despawning, ray picking
 └─ ui/
-   └─ hud.js               All DOM UI
+   ├─ hud.js               DOM UI: slots, screens, tooltips, cards
+   ├─ vitals.js            Pixel-art hearts (with ghost hearts), hunger, armour, air
+   ├─ recipeBook.js        Searchable recipes that fill the crafting grid
+   ├─ compassStrip.js      Bearings and markers along the top of the screen
+   └─ settings.js          The settings screen: option pages + key rebinding
+assets/audio/              Public-domain recordings (see CREDITS.md)
 ```
 
 ### How performance is achieved
@@ -897,10 +1023,12 @@ The world is infinite, so the work has to be bounded at every stage:
    invisible underside of the world (another 512 triangles each).
 3. **One draw call per chunk.** A single procedural texture atlas plus one
    material means each chunk is one `Mesh`, and Three.js frustum-culls it for free.
-4. **Baked lighting.** Ambient occlusion, sky exposure and per-face shading are
-   computed once at mesh time and stored in vertex colours, so the runtime
-   material is unlit `MeshBasicMaterial` — no per-fragment lighting cost. Day/night
-   is a single material colour multiply.
+4. **Light measured once, applied cheaply.** Sky exposure, torchlight and
+   ambient occlusion are computed at mesh time and stored as three vertex
+   channels. The shader only combines them with the sun, so the per-fragment
+   cost is a handful of multiplies plus one shadow-map lookup. The Graphics
+   option scales the expensive parts (shadow resolution, bloom), and "auto"
+   steps down by itself if the frame rate drops.
 5. **Budgeted uploads.** At most 2 chunk meshes are pushed to the GPU per frame
    (`Settings.maxUploadsPerFrame`) and at most 6 generation jobs are in flight,
    so streaming never causes a frame hitch.
@@ -1368,6 +1496,21 @@ page reload; a creative world toggles both ways; a save claiming `creative: true
 loads as survival anyway if the world is survival; saving reads the mode from the
 world rather than the player; and a v1 save migrates to v2 grandfathered as
 creative-capable with everything else intact.
+
+**Quality-of-life update** — shift-click keeps a tool's wear (100/250 in, 100/250
+out); dragging 40 cobble across three slots leaves 13/13/13 and one on the
+cursor; right-drag places one each; double-click gathers all 40 back; closing a
+screen with a full inventory throws the overflow instead of deleting it. Dying
+buries cobble, an iron pickaxe at 77 wear and an iron helmet in a gravestone,
+and right-clicking it re-equips the helmet and returns the rest. Falling off an
+Aether island now drops through y=0, dies to the void within about five
+seconds, buries the inventory on the island you left, and respawns you in the
+Overworld. Drowning starts once air runs out, at a heart a second. A dropped
+stack 2.4 blocks away reaches you in under a second. Middle click swaps sand from
+the backpack into the hand. The recipe book lists four craftable items from logs
+and planks and lays a crafting table's four planks into the grid. Facing
+north-east, a waypoint due east sits right of centre on the strip, while a bed
+and a grave behind you pin to its ends.
 
 **Persistence** — a full round trip through a page reload restores position,
 health, hunger, time of day, every inventory slot in place, tool durability,

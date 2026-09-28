@@ -76,6 +76,12 @@ export const DIMENSION_INFO = {
     hasWeather: false,
     /** The view opens right out, so the islands read as an archipelago. */
     fogScale: 1.8,
+    /**
+     * No bedrock floor: below the islands is a real void you fall out of.
+     * Without this the world's floor rule made y=0 solid everywhere, so falling
+     * off an island landed you on an invisible floor sixty blocks down.
+     */
+    openVoid: true,
   },
 };
 

@@ -6,11 +6,12 @@
  * it never touches rendering or the HUD directly.
  */
 
+import { prefs } from '../engine/preferences.js';
 import * as THREE from 'three';
 import Settings from '../settings.js';
 import { moveWithCollision, isInLiquid, collidesWithWorld, isSupported } from './physics.js';
 import { raycastVoxels } from './raycast.js';
-import { Inventory } from './inventory.js';
+import { Inventory, HOTBAR_SIZE } from './inventory.js';
 import { Survival, EXHAUSTION } from './survival.js';
 import { Skateboard, BAIL_FALL_DISTANCE } from './skateboard.js';
 import {
@@ -18,7 +19,7 @@ import {
   ITEM_ID, WATER, LAVA,
   GRASS, DIRT, DRY_GRASS, PODZOL, SWAMP_GRASS,
   FARMLAND, FARMLAND_MOIST, isFarmland, WHEAT_STAGES, wheatStage,
-  RAIL, isDoor, isBed, doorBlock, bedBlock, FACINGS, facingFromLook,
+  RAIL, isDoor, isBed, doorBlock, bedBlock, FACINGS, facingFromLook, getMaxStack,
 } from '../world/blocks.js';
 import { PORTAL_SURFACES, igniterOf } from '../world/portal.js';
 import { audio } from '../engine/audio.js';
@@ -60,6 +61,11 @@ const ROCKET_BOOST = 18;
  */
 const ROCKET_LIFT = 8.4;
 
+/** Seconds you can hold your breath, as in Minecraft. */
+export const MAX_AIR = 15;
+/** Breath comes back five times faster than it goes. */
+const AIR_REFILL_RATE = 5;
+
 export class Player {
   /**
    * @param {import('../world/world.js').World} world
@@ -74,6 +80,29 @@ export class Player {
     this.position = new THREE.Vector3(options.x ?? 0.5, options.y ?? 80, options.z ?? 0.5);
     this.velocity = new THREE.Vector3();
     this.spawnPoint = this.position.clone();
+    /** Where your bed is, if you have slept in one; respawn prefers it. */
+    this.bedSpawn = null;
+    /** Gravestone from your last death, `{dimension, x, y, z}`, or null. */
+    this.lastDeath = null;
+    /** Your own named marks, `{name, dimension, x, y, z}`. */
+    this.waypoints = [];
+    /** Portals you have lit or arrived through, `{kind, dimension, x, y, z}`. */
+    this.portals = [];
+    /**
+     * Last place you stood on solid ground out of lava. A death in the void or
+     * in a lava lake buries your things here instead of where you ended up.
+     */
+    this.lastSafe = this.position.clone();
+    /** Seconds of breath left; see MAX_AIR. */
+    this.air = MAX_AIR;
+    this._drownTimer = 0;
+    /** Seconds left of the eating and placing hand animations. */
+    this.eatAnim = 0;
+    this.placeAnim = 0;
+    /** Where the last hit came from, for the damage arc: {x, z, at}. */
+    this.hitFrom = null;
+    /** Horizontal direction you are trying to move, for auto-jump. */
+    this._wish = { x: 0, z: 0 };
 
     this.yaw = 0;
     this.pitch = 0;
@@ -186,6 +215,8 @@ export class Player {
     this._placeCooldown = Math.max(0, this._placeCooldown - dt);
     this._eatCooldown = Math.max(0, this._eatCooldown - dt);
     this._attackCooldown = Math.max(0, this._attackCooldown - dt);
+    this.eatAnim = Math.max(0, this.eatAnim - dt);
+    this.placeAnim = Math.max(0, this.placeAnim - dt);
 
     this._updateLook();
     this._updateHotbarSelection();
@@ -215,8 +246,10 @@ export class Player {
 
   _updateLook() {
     if (!this.input.locked) return;
-    this.yaw -= this.input.mouseDeltaX * this.mouseSensitivity;
-    this.pitch -= this.input.mouseDeltaY * this.mouseSensitivity;
+    const sensitivity = this.mouseSensitivity * prefs.get('sensitivity');
+    const invert = prefs.get('invertY') ? -1 : 1;
+    this.yaw -= this.input.mouseDeltaX * sensitivity;
+    this.pitch -= this.input.mouseDeltaY * sensitivity * invert;
     // Clamp just shy of straight up/down to avoid gimbal weirdness.
     this.pitch = Math.max(-HALF_PI + 0.001, Math.min(HALF_PI - 0.001, this.pitch));
   }
@@ -225,7 +258,7 @@ export class Player {
     let bobOffset = 0;
     // Subtle head bob while walking; purely cosmetic, safe to delete.
     const horizontalSpeed = Math.hypot(this.velocity.x, this.velocity.z);
-    if (this.onGround && horizontalSpeed > 0.5) {
+    if (this.onGround && horizontalSpeed > 0.5 && prefs.get('viewBobbing')) {
       this.bobPhase += dt * horizontalSpeed * 1.7;
       bobOffset = Math.sin(this.bobPhase * 2) * 0.035;
     }
@@ -297,6 +330,8 @@ export class Player {
       dirZ = -wishX * sin + wishZ * cos;
     }
 
+    this._wish.x = dirX;
+    this._wish.z = dirZ;
     const speed = this._currentSpeed();
     const targetVX = dirX * speed;
     const targetVZ = dirZ * speed;
@@ -495,6 +530,7 @@ export class Player {
       }
     );
     this.blockedByLedge = result.blockedByLedge;
+    if (result.hitWall) this._autoJump();
 
     // --- Fall damage -------------------------------------------------------
     if (!result.onGround) {
@@ -528,10 +564,22 @@ export class Player {
 
     this.onGround = result.onGround;
 
-    // Safety net: if the player ends up under the world, put them back.
+    // Below the world. In survival the void hurts until you die, as in
+    // Minecraft, and your grave goes where you last stood. It used to teleport
+    // you to the Overworld spawn coordinates in whatever dimension you were in,
+    // which in the Aether is more void, so you fell forever. Creative players
+    // cannot be hurt, so they are lifted back to their last footing instead.
     if (this.position.y < -10) {
-      this.survival.damage(4, 'void');
-      this.respawn();
+      if (this.creative) {
+        this.teleportTo(this.lastSafe);
+      } else {
+        this._voidTimer = (this._voidTimer ?? 0) + dt;
+        if (this._voidTimer >= 0.5) {
+          this._voidTimer = 0;
+          this.survival.invulnerableFor = 0;
+          this.survival.damage(4, 'void');
+        }
+      }
     }
   }
 
@@ -576,8 +624,9 @@ export class Player {
     }
   }
 
-  /** Environmental hazards. Currently just lava; extend here for drowning etc. */
+  /** Environmental hazards: comb spines, drowning and lava. */
   _updateEnvironment(dt) {
+    this._updateAir(dt);
     // --- Contact hazards (comb spines) --------------------------------------
     // Anything with `contactDamage` hurts while you stand in it. Checked at foot
     // height only, so a spine you are walking over catches you but one at head
@@ -612,6 +661,35 @@ export class Player {
       this._lavaTimer = 0;
       this.survival.invulnerableFor = 0;
       this.survival.damage(4, 'lava');
+    }
+  }
+
+  /**
+   * Breath. Water used to be completely safe, which made every lake and
+   * flooded cave a free corridor. Fifteen seconds under, as in Minecraft, then
+   * a heart a second until you surface.
+   */
+  _updateAir(dt) {
+    const eye = this.eyePosition;
+    this.headUnderwater = this.world.isWater(eye.x, eye.y, eye.z);
+    if (!this.headUnderwater || this.creative) {
+      this.air = Math.min(MAX_AIR, this.air + dt * AIR_REFILL_RATE);
+      this._drownTimer = 0;
+    } else {
+      this.air = Math.max(0, this.air - dt);
+      if (this.air <= 0) {
+        this._drownTimer += dt;
+        if (this._drownTimer >= 1) {
+          this._drownTimer = 0;
+          this.survival.damage(2, 'drown');
+        }
+      }
+    }
+
+    // Remember solid footing for the gravestone, but never a spot in lava or
+    // a portal, which would bury your things somewhere you cannot reach.
+    if (this.onGround && !this.inLava && !this.inPortal && this.position.y >= 1) {
+      this.lastSafe.copy(this.position);
     }
   }
 
@@ -710,6 +788,9 @@ export class Player {
     }
     this.drawProgress = 0;
 
+    // --- Middle click: pick block ------------------------------------------
+    if (input.mouseWasPressed(1)) this.pickBlock();
+
     // --- Right click: use a station, else eat, else place ------------------
     // MouseEvent.button: 0 = left, 1 = middle, 2 = right.
     if (input.isMouseDown(2) && this._placeCooldown === 0) {
@@ -737,10 +818,75 @@ export class Player {
       } else if (this._tryEat()) {
         this._eatCooldown = 0.8;
         this._placeCooldown = 0.8;
+        this.eatAnim = 0.8;
       } else if (this._tryPlace(ctx)) {
         this._placeCooldown = 0.18;
+        this.placeAnim = 0.2;
       }
     }
+  }
+
+  /**
+   * Auto-jump (an option, off by default): walking into a one-block step hops
+   * you onto it. Only when the step really is one block, with room above it
+   * for you to stand, so it never launches you at a wall.
+   */
+  _autoJump() {
+    if (!prefs.get('autoJump') || !this.onGround || this.flying || this.inLiquid) return;
+    if (this.crouching || this.board.riding || this.boating) return;
+    const { x, z } = this._wish;
+    if (x === 0 && z === 0) return;
+    const fx = Math.floor(this.position.x + x * 0.6);
+    const fz = Math.floor(this.position.z + z * 0.6);
+    const y = Math.floor(this.position.y + 0.01);
+    const solid = (by) => this.world.isSolid(fx, by, fz);
+    if (!solid(y) || solid(y + 1) || solid(y + 2)) return;
+    // Headroom above you as well, or the jump would just bump your head.
+    if (this.world.isSolid(Math.floor(this.position.x), y + 2, Math.floor(this.position.z))) return;
+    this.velocity.y = P.jumpVelocity;
+  }
+
+  /**
+   * Middle click: put the block you are looking at in your hand. In survival
+   * that means finding it in your inventory, and swapping it onto the hotbar
+   * if it is in the backpack; in creative it is conjured into the hotbar.
+   * @returns whether anything changed
+   */
+  pickBlock() {
+    const target = this.targetBlock;
+    if (!target) return false;
+    const def = getBlock(target.block);
+    if (!def) return false;
+    // What you would get from the block: itself if you can hold it, otherwise
+    // whatever it drops (a door half gives the door, a lit furnace a furnace).
+    const id = def.obtainable ? def.id : def.drops;
+    if (!id) return false;
+
+    const inv = this.inventory;
+    for (let i = 0; i < HOTBAR_SIZE; i++) {
+      if (inv.slots[i] && inv.slots[i].id === id) {
+        inv.selectSlot(i);
+        return true;
+      }
+    }
+    for (let i = HOTBAR_SIZE; i < inv.slots.length; i++) {
+      if (!inv.slots[i] || inv.slots[i].id !== id) continue;
+      const held = inv.slots[inv.selected];
+      inv.setSlot(inv.selected, inv.slots[i]);
+      inv.setSlot(i, held);
+      return true;
+    }
+    if (!this.creative) return false;
+    // Creative: an empty hotbar slot if there is one, else the one in hand.
+    let slot = inv.selected;
+    if (inv.slots[slot]) {
+      for (let i = 0; i < HOTBAR_SIZE; i++) {
+        if (!inv.slots[i]) { slot = i; break; }
+      }
+    }
+    inv.setSlot(slot, Inventory.makeStack(id, getMaxStack(id)));
+    inv.selectSlot(slot);
+    return true;
   }
 
   /**
@@ -1622,15 +1768,36 @@ export class Player {
     }
   }
 
-  respawn() {
+  /**
+   * Come back to life at `point` (your bed, or the world spawn).
+   *
+   * Your things are already in a gravestone by now, so there is nothing to
+   * clear. The starter kit is not handed out again either: it used to be, and
+   * dying on purpose was a way to farm it.
+   */
+  respawn(point = this.spawnPoint) {
     this.survival.respawn();
-    this.teleportToSurface(Math.floor(this.spawnPoint.x), Math.floor(this.spawnPoint.z));
+    this.air = MAX_AIR;
+    this._drownTimer = 0;
+    this.teleportTo(point);
+  }
+
+  /**
+   * Stand exactly at a point, nudged up out of anything solid.
+   *
+   * Used for respawning rather than `teleportToSurface`: the surface is the
+   * topmost solid block, so a bed in a house with a roof put you on the roof.
+   */
+  teleportTo(point) {
+    this.position.copy(point);
+    this.velocity.set(0, 0, 0);
     this.fallDistance = 0;
-    if (!this.creative) {
-      // Classic survival penalty: you lose what you were carrying.
-      this.inventory.clear();
-      this.inventory.giveStarterItems();
+    this.onGround = false;
+    let guard = 0;
+    while (collidesWithWorld(this.world, this.position, P.width, P.height) && guard++ < 32) {
+      this.position.y += 1;
     }
+    this.lastSafe.copy(this.position);
   }
 
   /**

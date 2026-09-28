@@ -9,12 +9,16 @@
  * — that keeps the DOM stable and avoids rebuilding the whole UI per world.
  */
 
+import { prefs } from './engine/preferences.js';
+import { terrainUniforms } from './engine/terrainMaterial.js';
 import Settings from './settings.js';
 import { Renderer } from './engine/renderer.js';
 import { Input } from './engine/input.js';
 import { SkyCycle } from './engine/sky.js';
 import { ViewModel } from './engine/viewmodel.js';
 import { World } from './world/world.js';
+import { getTileDataURL } from './world/textures.js';
+import { CHUNK_SX, CHUNK_SY, CHUNK_SZ } from './world/chunk.js';
 import { Player } from './player/player.js';
 import { EntityManager } from './entities/entityManager.js';
 import { ParticleSystem } from './entities/particles.js';
@@ -33,14 +37,14 @@ import {
   isPlate, PRESSURE_PLATE, PRESSURE_PLATE_PRESSED, SIGN, JUKEBOX, MUSIC_DISCS,
   PORTAL, COMBIUM_BLOCK, THRONE, THRONE_AWAKENED, ITEM_ID,
   LOG, ACACIA_LOG, SPRUCE_LOG, DIAMOND_ORE, FURNACE, getItem, getDisplayName,
-  OBSIDIAN, GLOWSTONE,
+  OBSIDIAN, GLOWSTONE, GRAVESTONE, isFluidFamily,
 } from './world/blocks.js';
 import { audio } from './engine/audio.js';
 import { DIMENSIONS, dimensionInfo } from './world/dimensions.js';
 import {
   CombTerrainGenerator, SHRINE_SPACING, SHRINE_LAYOUT, nearestShrineAnchor, HIVE_SPACING,
 } from './world/combTerrain.js';
-import { DUNGEON_SPACING } from './world/terrain.js';
+import { DUNGEON_SPACING, BIOME_NAMES } from './world/terrain.js';
 import {
   ignitePortal, extinguishPortal, buildReturnPortal, destinationOf,
   portalKindForIgniter, portalKindForFrame, kindForDimension,
@@ -78,6 +82,11 @@ const SPAWNABLE_GROUND = new Set([
 /** Seconds between automatic saves while playing. */
 const AUTOSAVE_INTERVAL = 30;
 
+/** Seed of the world behind the title screen, chosen for its view. */
+const PANORAMA_SEED = 20260928;
+/** Seconds between thumbnail grabs while playing, for the world list. */
+const THUMBNAIL_INTERVAL = 30;
+
 export class Game {
   constructor() {
     this.canvas = el('game');
@@ -103,7 +112,7 @@ export class Game {
     this.stats = new Statistics();
     this.achievements = new Achievements(this.stats);
     this.achievements.onUnlock = (achievement) => {
-      this.hud.showToast(`Achievement: ${achievement.title}`);
+      this.hud.showAchievement(achievement);
       audio.achievement();
     };
 
@@ -148,9 +157,59 @@ export class Game {
     this._travelling = false;
 
     this._lastFrameTime = performance.now();
+    /** Current FOV multiplier from speed effects, eased toward its target. */
+    this._fovKick = 1;
 
     this._bindUI();
     this._bindGameEvents();
+
+    // Per-browser options. `onChange` also replays the current values, so this
+    // one subscription is both the initial setup and every later change.
+    prefs.onChange((id, value) => this._applyPreference(id, value));
+  }
+
+  /** Push one option into whichever system owns it. */
+  _applyPreference(id, value) {
+    switch (id) {
+      case 'renderDistance':
+        Settings.renderDistance = value;
+        if (this.world) this.world.renderDistance = value;
+        this.renderer.setViewDistance(value);
+        break;
+      case 'fov':
+        this.renderer.setBaseFov(value);
+        break;
+      case 'masterVolume':
+        audio.setVolume(value);
+        break;
+      case 'musicVolume':
+        audio.setMusicVolume(value);
+        break;
+      case 'effectsVolume':
+        audio.setEffectsVolume(value);
+        break;
+      case 'guiScale':
+        document.documentElement.style.setProperty('--gui-scale', String(value));
+        break;
+      case 'showCoords':
+        Settings.showLocator = value;
+        break;
+      case 'graphics':
+        // Auto starts from wherever it last settled on this machine.
+        this._autoQuality = { total: 0, frames: 0 };
+        this.renderer.setQuality(value === 'auto' ? loadAutoQuality() : value);
+        break;
+      case 'clouds':
+        this.sky.atmosphere.cloudsEnabled = value;
+        break;
+      case 'foliageSway':
+        terrainUniforms.uSway.value = value ? 1 : 0;
+        break;
+      case 'brightness':
+        // A floor under the darkest shade: caves go from black to very dark.
+        terrainUniforms.uMinLight.value = 0.006 + value * 0.09;
+        break;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -179,6 +238,9 @@ export class Game {
     // Browsers refuse to start audio before a user gesture, so every button
     // and the canvas double as the unlock.
     const unlockAudio = () => audio.init();
+    document.addEventListener('click', (e) => {
+      if (e.target instanceof HTMLElement && e.target.closest('button')) audio.uiClick();
+    });
     document.addEventListener('mousedown', unlockAudio);
     document.addEventListener('keydown', unlockAudio);
 
@@ -188,7 +250,7 @@ export class Game {
 
     // Clicking the dimmed area outside a container panel throws the held stack
     // into the world, mirroring Minecraft.
-    for (const screen of ['inventoryScreen', 'craftingScreen', 'furnaceScreen']) {
+    for (const screen of ['inventoryScreen', 'craftingScreen', 'furnaceScreen', 'chestScreen']) {
       el(screen).addEventListener('mousedown', (e) => {
         // Only when the click misses the panel itself.
         if (e.target !== e.currentTarget) return;
@@ -382,6 +444,9 @@ export class Game {
       // --- Jukebox: put a record in, or take one out ------------------------
       if (blockId === JUKEBOX.id) return this._useJukebox(x, y, z);
 
+      // --- Gravestones: take back what you died with ----------------------
+      if (blockId === GRAVESTONE.id) return this._recoverGrave(x, y, z);
+
       // --- Chests -----------------------------------------------------------
       if (blockId === CHEST.id) {
         const entity = this.world.getBlockEntity(x, y, z, () => ({
@@ -433,6 +498,9 @@ export class Game {
         for (const field of ['input', 'fuel', 'output']) recover(entity.state[field]);
       } else if (entity && blockId === CHEST.id) {
         for (const stack of entity.state.slots) recover(stack);
+      } else if (entity && blockId === GRAVESTONE.id) {
+        for (const stack of entity.state.slots) recover(stack);
+        this._forgetGrave(target.x, target.y, target.z);
       } else if (entity && blockId === JUKEBOX.id && entity.state.disc) {
         // Breaking a loaded jukebox gives the record back and stops the music.
         recover({ id: entity.state.disc, count: 1 });
@@ -491,6 +559,7 @@ export class Game {
     }
     audio.ignite();
     this.hud.showToast(`${kind.name} opens`);
+    this._rememberPortal(kind.id, x, y, z);
     this.achievements.unlock('portal');
     return true;
   }
@@ -537,6 +606,7 @@ export class Game {
     const built = buildReturnPortal(this.world, targetX, landingY, targetZ, kind);
 
     this.player.position.set(built.stand.x, built.stand.y, built.stand.z);
+    this._rememberPortal(kind.id, built.stand.x, built.stand.y, built.stand.z);
     this.player.velocity.set(0, 0, 0);
     this.player.fallDistance = 0;
     // Do not immediately bounce back through the portal we just arrived in.
@@ -1161,6 +1231,15 @@ export class Game {
       }
     }
 
+    // Leaves, fireflies, ash and sparkles, and bubbles when you are under.
+    this.particles.ambient(dt, {
+      dimension: this.world.dimension,
+      isNight: this.sky.isNight,
+      player,
+      underwater: player.headUnderwater,
+      rain: !!this.weather.falling,
+    });
+
     // Motes drifting off any portal within a few blocks.
     this._portalMoteTimer = (this._portalMoteTimer ?? 0) - dt;
     if (this._portalMoteTimer <= 0) {
@@ -1198,6 +1277,9 @@ export class Game {
     const covered = surface > py + 1;
     const underground = covered && py < surface - 4;
 
+    // Tunnels and caves ring; a roof overhead rings a little.
+    audio.setEnclosure(underground ? 1 : covered ? 0.35 : 0);
+
     audio.ambience({
       underground,
       depth: py,
@@ -1221,6 +1303,8 @@ export class Game {
   _applyDimensionLook() {
     const info = dimensionInfo(this.world.dimension);
     this.sky.setDimension(info);
+    // The menus take their accent colour from where you are.
+    document.documentElement.dataset.dimension = this.world.dimension;
   }
 
   /**
@@ -1229,7 +1313,13 @@ export class Game {
    * bed is not simply a "skip the danger" button.
    */
   _useBed(x, y, z) {
-    this.player.spawnPoint.set(x + 0.5, y + 1, z + 0.5);
+    // Only the Overworld has nights to skip and a spawn point to return to.
+    if (this.world.dimension !== DIMENSIONS.OVERWORLD) {
+      this.hud.showToast('Beds only work in the Overworld');
+      return;
+    }
+    if (!this.player.bedSpawn) this.player.bedSpawn = this.player.spawnPoint.clone();
+    this.player.bedSpawn.set(x + 0.5, y + 1, z + 0.5);
 
     if (!this.sky.isNight) {
       this.hud.showToast('You can only sleep at night');
@@ -1265,6 +1355,7 @@ export class Game {
   }
 
   async _showWorldScreen() {
+    this._startPanorama();
     this._setState('worlds');
     this._showCreateForm(false);
     el('worldError').textContent = '';
@@ -1299,6 +1390,9 @@ export class Game {
       row.className = 'worldRow' + (world.tooNew ? ' tooNew' : '');
 
       const played = Math.round(world.playTimeSeconds / 60);
+      const thumb = document.createElement('div');
+      thumb.className = 'wthumb';
+      if (world.thumbnail) thumb.style.backgroundImage = `url(${world.thumbnail})`;
       const info = document.createElement('div');
       info.className = 'info';
       info.innerHTML =
@@ -1306,7 +1400,7 @@ export class Game {
         (world.allowCreative ? '<span class="badge">Creative</span>' : '') +
         (world.tooNew ? '<span class="badge warn">Newer version</span>' : '') +
         '</div>' +
-        `<div class="wmeta">seed ${world.seed} &middot; ${played}m played &middot; ` +
+        `<div class="wmeta">Day ${world.dayCount + 1} &middot; ${played}m played &middot; seed ${world.seed} &middot; ` +
         `${world.editedBlocks.toLocaleString()} blocks changed &middot; ${formatWhen(world.updatedAt)}</div>`;
 
       const play = document.createElement('button');
@@ -1330,7 +1424,7 @@ export class Game {
         await this._refreshWorldList();
       });
 
-      row.append(info, play, exportBtn, del);
+      row.append(thumb, info, play, exportBtn, del);
       if (!world.tooNew) row.addEventListener('click', () => this._openWorld(world.id));
       list.appendChild(row);
     }
@@ -1433,8 +1527,11 @@ export class Game {
     this._setState('loading');
     el('loadingFill').style.width = '0%';
 
-    // Tear down any previous session, including its worker.
+    // Tear down any previous session, including its worker, and the title
+    // screen's world if that is what was loaded.
     if (this.world) this.world.dispose();
+    this._panorama = null;
+    this._panoramaWorld = false;
     this.entities.clear();
 
     this.world = new World(this.renderer.scene, {
@@ -1492,6 +1589,9 @@ export class Game {
     this.worldName = save.name;
     this._playTime = save.playTimeSeconds ?? 0;
     this._autosaveTimer = 0;
+    this._thumbnail = save.thumbnail ?? null;
+    // First grab a few seconds in, once the view has settled.
+    this._thumbTimer = 4;
 
     if (isNew) {
       this.player.survival.respawn();
@@ -1515,6 +1615,16 @@ export class Game {
     }
 
     el('startWorldName').textContent = save.name;
+
+    // Dying saves the world, so quitting from the death screen saves you at
+    // zero health. That used to load back as a living player with no hearts,
+    // killed outright by the next scratch. Load back onto the death screen.
+    if (!isNew && this.player.survival.health <= 0) {
+      this.player.survival.dead = true;
+      el('deathCause').textContent = 'You died.';
+      this._setState('dead');
+      return;
+    }
     this._setState('menu');
   }
 
@@ -1578,6 +1688,7 @@ export class Game {
       const save = await captureState(this, {
         ...this.saveMeta,
         playTimeSeconds: this._playTime,
+        thumbnail: this._thumbnail,
       });
       await SaveManager.put(save);
       if (toast) this.hud.showSaveToast(toast);
@@ -1589,12 +1700,188 @@ export class Game {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Title screen
+  // -------------------------------------------------------------------------
+
+  /**
+   * The title screen's backdrop: a camera slowly circling a real world.
+   *
+   * Before any world has been opened that is a scenic seed of its own, with a
+   * short render distance so it costs little. After you quit to the menu it is
+   * the world you were just in, circling the spot where you stood.
+   */
+  _startPanorama() {
+    if (!this.world) {
+      this.world = new World(this.renderer.scene, { seed: PANORAMA_SEED, renderDistance: 6 });
+      this._panoramaWorld = true;
+      const terrain = new TerrainGenerator(PANORAMA_SEED);
+      const ground = Math.max(terrain.columnHeight(0, 0), Settings.seaLevel);
+      this._panorama = { t: 0, x: 0.5, y: ground, z: 0.5 };
+      // Mid-morning: long enough shadows to show the shapes, and a bright sky.
+      this.sky.setTime(0.12);
+    } else {
+      const p = this.player.position;
+      this._panorama = { t: 0, x: p.x, y: p.y, z: p.z };
+    }
+    this._applyDimensionLook();
+  }
+
+  _updatePanorama(dt) {
+    const pan = this._panorama;
+    pan.t += dt * 0.035;
+    const camera = this.renderer.camera;
+    const radius = 34;
+    camera.position.set(
+      pan.x + Math.cos(pan.t) * radius,
+      pan.y + 20,
+      pan.z + Math.sin(pan.t) * radius
+    );
+    camera.lookAt(pan.x, pan.y + 4, pan.z);
+    this.world.update(camera.position, 0);
+    // The clock stands still behind the menu; only the clouds and water move.
+    this.sky.update(0, this.world, dt);
+    this.renderer.setSelection(null);
+    this.renderer.render();
+  }
+
+  /** A small JPEG of the current view, kept for the next save. */
+  _captureThumbnail() {
+    this._thumbTimer = THUMBNAIL_INTERVAL;
+    if (!this._thumbCanvas) {
+      this._thumbCanvas = document.createElement('canvas');
+      this._thumbCanvas.width = 192;
+      this._thumbCanvas.height = 108;
+    }
+    const source = this.canvas;
+    const cropH = Math.min(source.height, (source.width * 9) / 16);
+    const cropW = (cropH * 16) / 9;
+    const ctx = this._thumbCanvas.getContext('2d');
+    ctx.drawImage(source, (source.width - cropW) / 2, (source.height - cropH) / 2, cropW, cropH, 0, 0, 192, 108);
+    try {
+      this._thumbnail = this._thumbCanvas.toDataURL('image/jpeg', 0.72);
+    } catch {
+      // A tainted or lost canvas just means no new thumbnail this time.
+    }
+  }
+
+  /**
+   * Graphics "auto": watch the frame rate while playing and step the quality
+   * down if it stays under about 45 fps. Never back up, so it cannot flicker
+   * between levels; the level it settles on is remembered per browser.
+   */
+  _tuneQuality(dt) {
+    if (prefs.get('graphics') !== 'auto') return;
+    const q = this._autoQuality ?? (this._autoQuality = { total: 0, frames: 0 });
+    // A stall (a chunk burst, a tab switch) says nothing about steady speed.
+    if (dt > 0.12) return;
+    q.total += dt;
+    q.frames++;
+    if (q.total < 4) return;
+    const average = q.total / q.frames;
+    q.total = 0;
+    q.frames = 0;
+    if (average <= 1 / 45) return;
+    const next = { high: 'medium', medium: 'low' }[this.renderer.quality];
+    if (!next) return;
+    this.renderer.setQuality(next);
+    saveAutoQuality(next);
+    this.hud.showSaveToast(`Graphics: ${next}`);
+  }
+
+  // -------------------------------------------------------------------------
+  // Compass markers
+  // -------------------------------------------------------------------------
+
+  /** Remember a portal for the compass, once per portal. */
+  _rememberPortal(kind, x, y, z) {
+    const dimension = this.world.dimension;
+    const known = this.player.portals.some(
+      (p) => p.dimension === dimension && Math.abs(p.x - x) < 5 && Math.abs(p.z - z) < 5
+    );
+    if (!known) this.player.portals.push({ kind, dimension, x, y, z });
+  }
+
+  /** Waypoint key: drop a named mark here, or with Sprint held remove the nearest. */
+  _markWaypoint(remove) {
+    const p = this.player.position;
+    const dimension = this.world.dimension;
+    const list = this.player.waypoints;
+    if (remove) {
+      let nearest = -1;
+      let best = 12;
+      list.forEach((w, i) => {
+        if (w.dimension !== dimension) return;
+        const d = Math.hypot(w.x - p.x, w.z - p.z);
+        if (d < best) { best = d; nearest = i; }
+      });
+      if (nearest < 0) {
+        this.hud.showToast('No waypoint nearby');
+        return;
+      }
+      const [gone] = list.splice(nearest, 1);
+      this.hud.showToast(`Removed ${gone.name}`);
+      return;
+    }
+    if (list.length >= 24) {
+      this.hud.showToast('Too many waypoints: remove one first');
+      return;
+    }
+    // Named after where it is, so a list of them still means something.
+    let place = dimensionInfo(dimension).name;
+    if (dimension === DIMENSIONS.OVERWORLD && this.terrainInfo) {
+      const biome = this.terrainInfo.biomeAt?.(Math.floor(p.x), Math.floor(p.z));
+      if (biome !== undefined && BIOME_NAMES[biome]) place = BIOME_NAMES[biome];
+    }
+    const number = list.filter((w) => w.name.startsWith(place)).length + 1;
+    const name = `${place} ${number}`;
+    list.push({ name, dimension, x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
+    audio.uiConfirm?.();
+    this.hud.showToast(`Waypoint: ${name}`);
+  }
+
+  /** Everything the compass strip should show, in the current dimension. */
+  compassMarkers() {
+    const dimension = this.world.dimension;
+    const player = this.player;
+    const marks = [];
+    if (dimension === DIMENSIONS.OVERWORLD && player.bedSpawn) {
+      marks.push({ label: 'Bed', kind: 'bed', x: player.bedSpawn.x, z: player.bedSpawn.z, icon: this._markerIcon('bed') });
+    }
+    const death = player.lastDeath;
+    if (death && death.dimension === dimension) {
+      marks.push({ label: 'Grave', kind: 'grave', x: death.x + 0.5, z: death.z + 0.5, icon: this._markerIcon('grave') });
+    }
+    for (const portal of player.portals) {
+      if (portal.dimension !== dimension) continue;
+      marks.push({ label: 'Portal', kind: 'portal', x: portal.x, z: portal.z, icon: this._markerIcon(portal.kind) });
+    }
+    for (const w of player.waypoints) {
+      if (w.dimension === dimension) marks.push({ label: w.name, kind: 'waypoint', x: w.x + 0.5, z: w.z + 0.5 });
+    }
+    return marks;
+  }
+
+  /** A block picture for a marker, cached. */
+  _markerIcon(kind) {
+    this._markerIcons ??= {};
+    if (!(kind in this._markerIcons)) {
+      const ids = {
+        bed: BED.id, grave: GRAVESTONE.id, comb: PORTAL.id,
+        nether: Blocks.PORTAL_NETHER.id, aether: Blocks.PORTAL_AETHER.id,
+      };
+      const id = ids[kind];
+      this._markerIcons[kind] = id ? getTileDataURL(Blocks.getIconTile(id)) : null;
+    }
+    return this._markerIcons[kind];
+  }
+
   /** Save and return to the world list. */
   async exitToMenu() {
     await this.saveWorld();
     this.hud.closeAllContainers();
     this.input.releaseLock();
-    if (this.world) this.world.unloadAll();
+    // The world stays loaded: the title screen circles the spot you left.
     this.entities.clear();
     // The ambience bed is held open indefinitely; leaving the world must close
     // it or the menu keeps whistling.
@@ -1613,6 +1900,7 @@ export class Game {
     el('startScreen').classList.toggle('show', next === 'menu');
     el('pauseScreen').classList.toggle('show', next === 'paused');
     el('deathScreen').classList.toggle('show', next === 'dead');
+    el('ui').classList.toggle('offstage', next === 'worlds' || next === 'loading');
     if (next !== 'settings' && this.settings && this.settings.isOpen) {
       this.settings.screen.classList.remove('show');
     }
@@ -1664,6 +1952,7 @@ export class Game {
       lava: 'You tried to swim in lava.',
       spine: 'The Comb drank you dry.',
       explosion: 'A creeper got too close.',
+      drown: 'You drowned.',
     };
 
     // Name the actual killer. This used to read "slain by a zombie" whatever hit
@@ -1674,17 +1963,182 @@ export class Game {
       const name = killer.displayName ?? killer.name;
       text = killer.boss ? `The ${name} destroyed you.` : `You were slain by a ${name.toLowerCase()}.`;
     }
-    el('deathCause').textContent = text;
+    // Close menus first, so a stack on the cursor or in a crafting grid goes
+    // back into the inventory and from there into the grave.
     this.hud.closeAllContainers();
+    const grave = this._buryInventory(cause);
+    if (grave) text += ` Your things are in a gravestone at ${grave.x}, ${grave.y}, ${grave.z}.`;
+    el('deathCause').textContent = text;
     this._setState('dead');
     this.input.releaseLock();
     this.saveWorld();
   }
 
-  _respawn() {
-    this.player.respawn();
+  /**
+   * Respawn at your bed, or the world spawn if the bed is gone.
+   *
+   * Spawn points only exist in the Overworld. This used to respawn you in
+   * whatever dimension you died in, at Overworld coordinates: in the Nether
+   * that is inside the rock, and in the Aether it is open void, so you fell out
+   * of the world and died again, over and over.
+   */
+  async _respawn() {
+    if (this._respawning) return;
+    this._respawning = true;
+
+    const player = this.player;
+    if (this.world.dimension !== DIMENSIONS.OVERWORLD) {
+      this._setState('loading');
+      el('loadingFill').style.width = '0%';
+      this.entities.clear();
+      await this.world.setDimension(DIMENSIONS.OVERWORLD);
+      this.dimension = DIMENSIONS.OVERWORLD;
+      if (this.signRenderer) this.signRenderer.clear();
+      this._applyDimensionLook();
+    }
+
+    let point = player.bedSpawn ?? player.spawnPoint;
+    await this._preloadAround(point.x, point.z);
+    if (player.bedSpawn && !isBed(this.world.getBlock(point.x, point.y - 1, point.z))) {
+      player.bedSpawn = null;
+      point = player.spawnPoint;
+      await this._preloadAround(point.x, point.z);
+      this.hud.showToast('Your bed was missing, so you woke at spawn');
+    }
+
+    player.respawn(point);
+    this._lastProgressPos = null;
     this._setState('playing');
     this.input.requestLock();
+    this._respawning = false;
+  }
+
+  /**
+   * Put everything the player carried into a gravestone where they fell.
+   *
+   * The death penalty used to be deleting all of it, which turned every death
+   * into a disaster and made long trips into the Nether or the Comb not worth
+   * the risk. A grave keeps the sting (you still have to get back there) without
+   * the robbery. Jev's pick; see JEV_DECISIONS.md.
+   *
+   * @returns the grave's position, or null if there was nothing to bury
+   */
+  _buryInventory(cause) {
+    const player = this.player;
+    if (player.creative) return null;
+    const inv = player.inventory;
+
+    const stacks = [];
+    for (let i = 0; i < inv.slots.length; i++) {
+      if (inv.slots[i]) stacks.push(inv.slots[i]);
+    }
+    for (let i = 0; i < inv.armor.length; i++) {
+      if (inv.armor[i]) stacks.push(inv.armor[i]);
+    }
+    if (stacks.length === 0) return null;
+
+    const spot = this._graveSpot(cause);
+    if (!spot) {
+      // Nowhere loaded to put it. Keeping the items is the lesser evil.
+      console.warn('[death] no room for a gravestone; inventory kept');
+      return null;
+    }
+
+    inv.slots.fill(null);
+    inv.armor.fill(null);
+    inv.touch();
+
+    this.world.setBlock(spot.x, spot.y, spot.z, GRAVESTONE.id);
+    const entity = this.world.getBlockEntity(spot.x, spot.y, spot.z, () => ({
+      type: 'grave',
+      state: { slots: [], cause },
+    }));
+    // Dying twice on the same spot adds to the same grave.
+    entity.state.slots.push(...stacks);
+
+    player.lastDeath = { dimension: this.world.dimension, x: spot.x, y: spot.y, z: spot.z };
+    if (this.particles) this.particles.blockBreak(spot.x, spot.y, spot.z, GRAVESTONE.id, 10);
+    return spot;
+  }
+
+  /**
+   * Where to put a grave: where you fell, unless that was the void or a lava
+   * lake, in which case the last solid ground you stood on.
+   */
+  _graveSpot(cause) {
+    const player = this.player;
+    const candidates = [];
+    if (cause !== 'void' && cause !== 'lava') candidates.push(player.position);
+    candidates.push(player.lastSafe);
+
+    for (const c of candidates) {
+      const spot = this._findGraveCell(Math.floor(c.x), Math.floor(c.y), Math.floor(c.z));
+      if (spot) return spot;
+    }
+    return null;
+  }
+
+  /** The nearest cell a gravestone can go in: air or water, never lava. */
+  _findGraveCell(x, y, z) {
+    const fits = (cx, cy, cz) => {
+      if (cy < 1 || cy >= CHUNK_SY - 1) return false;
+      const chunk = this.world.getChunk(Math.floor(cx / CHUNK_SX), Math.floor(cz / CHUNK_SZ));
+      if (!chunk || !chunk.voxels) return false;
+      const id = this.world.getBlock(cx, cy, cz);
+      return id === 0 || isFluidFamily(id, 'water');
+    };
+    for (let r = 0; r <= 2; r++) {
+      for (let dy = 0; dy <= 3; dy++) {
+        for (let dz = -r; dz <= r; dz++) {
+          for (let dx = -r; dx <= r; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+            if (fits(x + dx, y + dy, z + dz)) return { x: x + dx, y: y + dy, z: z + dz };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Right-click a gravestone: everything that fits comes back. */
+  _recoverGrave(x, y, z) {
+    const entity = this.world.getBlockEntity(x, y, z);
+    const inv = this.player.inventory;
+    const left = [];
+
+    for (const stack of entity?.state.slots ?? []) {
+      if (!stack) continue;
+      // Armour goes straight back on, if that slot is free.
+      const piece = Inventory.armorSlotFor(stack.id);
+      if (piece >= 0 && !inv.armor[piece]) {
+        inv.armor[piece] = stack;
+        continue;
+      }
+      const leftover = inv.addExisting(stack);
+      if (leftover > 0) left.push({ ...stack, count: leftover });
+    }
+    inv.touch();
+    audio.chest(true);
+
+    if (left.length > 0) {
+      entity.state.slots = left;
+      this.hud.showToast('Your inventory is full; the rest is still in the grave');
+    } else {
+      if (this.particles) this.particles.blockBreak(x, y, z, GRAVESTONE.id, 16);
+      this.world.setBlock(x, y, z, 0);
+      this._forgetGrave(x, y, z);
+      this.hud.showToast('You got everything back');
+    }
+    this.hud.refreshAll();
+    return true;
+  }
+
+  /** Stop the compass pointing at a grave that has been emptied or broken. */
+  _forgetGrave(x, y, z) {
+    const d = this.player.lastDeath;
+    if (d && d.dimension === this.world.dimension && d.x === x && d.y === y && d.z === z) {
+      this.player.lastDeath = null;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1710,6 +2164,13 @@ export class Game {
       return;
     }
 
+    // The title screen draws the panorama and nothing else.
+    if (this.state === 'worlds' && this._panorama) {
+      this._updatePanorama(dt);
+      input.endFrame();
+      return;
+    }
+
     const playing = this.state === 'playing';
 
     // --- Global hotkeys ----------------------------------------------------
@@ -1726,6 +2187,8 @@ export class Game {
       }
 
       if (input.actionWasPressed('settings')) this._openSettings();
+
+      if (playing && input.actionWasPressed('waypoint')) this._markWaypoint(input.isActionDown('sprint'));
 
       // Drop throws one item; holding sprint throws the whole stack.
       if (playing && input.actionWasPressed('drop')) {
@@ -1800,10 +2263,22 @@ export class Game {
     this._updateAmbience(simDt);
 
     if (this.particles) this.particles.update(simDt);
-    this.sky.update(playing ? dt : 0, this.world);
+    // Real time as well as clock time, so water and clouds keep moving behind menus.
+    this.sky.update(playing ? dt : 0, this.world, dt);
 
     // --- Presentation ------------------------------------------------------
     this.renderer.setSelection(playing ? this.player.targetBlock : null);
+    this.renderer.setBreakProgress(playing ? this.player.targetBlock : null, this.player.breakProgress);
+
+    // Speed widens the view a touch; drawing a bow narrows it to aim.
+    let kick = 1;
+    if (playing && prefs.get('fovEffects')) {
+      const speed = Math.hypot(this.player.velocity.x, this.player.velocity.z);
+      kick += Math.min(0.16, Math.max(0, (speed - Settings.player.walkSpeed) / 22));
+      kick -= this.player.drawProgress * 0.12;
+    }
+    this._fovKick += (kick - this._fovKick) * (1 - Math.exp(-7 * dt));
+    this.renderer.setFovScale(this._fovKick);
 
     const camera = this.renderer.camera.position;
     this.cameraInWater = this.world.isWater(camera.x, camera.y, camera.z);
@@ -1811,6 +2286,15 @@ export class Game {
 
     this.hud.update(dt);
     this.renderer.render();
+
+    if (playing) this._tuneQuality(dt);
+
+    // Grabbed straight after the world is drawn and before the hand is, so
+    // the thumbnail shows the view and not your arm.
+    if (playing) {
+      this._thumbTimer -= dt;
+      if (this._thumbTimer <= 0) this._captureThumbnail();
+    }
 
     // The hand is drawn last, over the world, so it cannot clip into blocks.
     if (playing || this.state === 'container') {
@@ -1825,6 +2309,26 @@ export class Game {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Where Graphics "auto" last settled on this machine. */
+const AUTO_QUALITY_KEY = 'voxelcraft.autoQuality';
+
+function loadAutoQuality() {
+  try {
+    const stored = localStorage.getItem(AUTO_QUALITY_KEY);
+    return ['high', 'medium', 'low'].includes(stored) ? stored : 'high';
+  } catch {
+    return 'high';
+  }
+}
+
+function saveAutoQuality(level) {
+  try {
+    localStorage.setItem(AUTO_QUALITY_KEY, level);
+  } catch {
+    // Not remembered: auto just re-measures next time.
+  }
+}
 
 function escapeHtml(text) {
   const div = document.createElement('div');

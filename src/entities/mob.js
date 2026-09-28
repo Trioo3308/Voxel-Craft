@@ -321,6 +321,8 @@ export class Mob {
     this.didAttack = true;
 
     // Pass who is hitting, not just "a mob" — the death screen names the killer.
+    // Where the blow came from, for the red arc on the edge of the screen.
+    player.hitFrom = { x: this.position.x, z: this.position.z, at: performance.now() };
     if (!player.survival.damage(this.attackDamage ?? brain.attackDamage, 'mob', this.type)) return;
 
     // Knock the player back and up a little.

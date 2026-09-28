@@ -10,6 +10,7 @@
  * items are shown as flat sprites, the way Minecraft holds them.
  */
 
+import { prefs } from './preferences.js';
 import * as THREE from 'three';
 import { getAtlasTexture, getGripPoint } from '../world/textures.js';
 import { getIconTile, isBlockId, getThing, ATLAS_COLS, FACE_PY, BLOCKS } from '../world/blocks.js';
@@ -150,6 +151,8 @@ export class ViewModel {
   setHeld(id) {
     if (id === this._heldId) return;
     this._heldId = id;
+    // A new item comes up from below rather than popping into the hand.
+    this._raise = 0;
 
     if (this.heldObject) {
       this.pivot.remove(this.heldObject);
@@ -259,7 +262,7 @@ export class ViewModel {
 
     // --- Walk bob ---------------------------------------------------------
     const speed = Math.hypot(player.velocity.x, player.velocity.z);
-    if (player.onGround && speed > 0.5) {
+    if (player.onGround && speed > 0.5 && prefs.get('viewBobbing')) {
       this._bobPhase += dt * speed * 1.7;
     }
     const bobX = Math.cos(this._bobPhase) * 0.014 * Math.min(1, speed / 5);
@@ -268,13 +271,22 @@ export class ViewModel {
     // Crouching pulls the hand down a little.
     const crouchDrop = player.crouching ? 0.06 : 0;
 
+    // Switching items: the hand rises from below over a fifth of a second.
+    this._raise = Math.min(1, (this._raise ?? 1) + dt / 0.2);
+    const raise = (1 - this._raise) * (1 - this._raise) * 0.35;
+    // Eating brings the food to your mouth and bobs as you chew.
+    const eat = player.eatAnim > 0 ? Math.min(1, player.eatAnim * 5, (0.8 - player.eatAnim) * 8) : 0;
+    const chew = eat * Math.abs(Math.sin(player.eatAnim * 26)) * 0.03;
+    // Placing a block is a short push forward and down.
+    const place = player.placeAnim > 0 ? Math.sin((player.placeAnim / 0.2) * Math.PI) : 0;
+
     this.pivot.position.set(
-      this._restPosition.x + bobX - s * 0.12,
-      this._restPosition.y + bobY - crouchDrop - s * 0.06,
-      this._restPosition.z + s * 0.18
+      this._restPosition.x + bobX - s * 0.12 - eat * 0.16,
+      this._restPosition.y + bobY - crouchDrop - s * 0.06 - raise + eat * 0.1 - chew - place * 0.05,
+      this._restPosition.z + s * 0.18 + eat * 0.08 - place * 0.06
     );
     this.pivot.rotation.set(
-      this._restRotation.x - s * 0.9,
+      this._restRotation.x - s * 0.9 + eat * 0.35 - place * 0.25,
       this._restRotation.y + s * 0.25,
       this._restRotation.z
     );

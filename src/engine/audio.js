@@ -76,6 +76,111 @@ function tuneBeats(notes) {
 /** Past this many blocks a jukebox is inaudible. */
 const MUSIC_RANGE = 26;
 
+/** Jukebox level at full music volume: records sit under the world, not over it. */
+const MUSIC_LEVEL = 0.5;
+
+// ---------------------------------------------------------------------------
+// Recorded sounds
+// ---------------------------------------------------------------------------
+//
+// The synthesised foley (footsteps, digging, doors) was the weakest part of
+// the game's audio, so Jev's pick for the overhaul was a hybrid: real
+// recordings for everything physical, from Kenney's public-domain packs (see
+// assets/audio/CREDITS.md), and synthesis kept only where no recording could
+// exist, such as the jukebox tunes and the made-up creatures.
+//
+// Each named set lists its variants. One is picked at random each time, never
+// the same one twice running, and its pitch is nudged a few percent, which is
+// what stops a walk across a field sounding like a metronome.
+
+const range = (prefix, n, start = 0, pad = 3) =>
+  Array.from({ length: n }, (_, i) => `${prefix}${String(start + i).padStart(pad, '0')}`);
+
+const SAMPLE_SETS = {
+  // Footsteps, by block sound material.
+  step_grass: range('impact/footstep_grass_', 5),
+  step_dirt: range('rpg/footstep', 10, 0, 2),
+  step_gravel: range('rpg/footstep', 10, 0, 2),
+  step_stone: range('impact/footstep_concrete_', 5),
+  step_glass: range('impact/footstep_concrete_', 5),
+  step_metal: range('impact/footstep_concrete_', 5),
+  step_wood: range('impact/footstep_wood_', 5),
+  step_sand: range('impact/footstep_snow_', 5),
+  step_snow: range('impact/footstep_snow_', 5),
+  step_wool: range('impact/footstep_carpet_', 5),
+
+  // Mining: repeated while the block is being worked.
+  dig_stone: range('impact/impactMining_', 5),
+  dig_soft: range('impact/impactSoft_medium_', 5),
+  dig_wood: range('impact/impactWood_light_', 5),
+  dig_glass: range('impact/impactGlass_light_', 5),
+  dig_metal: range('impact/impactMetal_light_', 5),
+
+  // A block giving way.
+  break_stone: range('impact/impactMining_', 5),
+  break_soft: range('impact/impactSoft_heavy_', 5),
+  break_wood: range('impact/impactWood_heavy_', 5),
+  break_glass: range('impact/impactGlass_heavy_', 5),
+  break_metal: range('impact/impactMetal_heavy_', 5),
+
+  // A block set down.
+  place_stone: range('impact/impactGeneric_light_', 5),
+  place_soft: range('impact/impactSoft_medium_', 5),
+  place_wood: range('impact/impactPlank_medium_', 5),
+  place_glass: range('impact/impactGlass_light_', 5),
+  place_metal: range('impact/impactMetal_light_', 5),
+
+  hurt: range('impact/impactPunch_medium_', 5),
+  fall: range('impact/impactSoft_heavy_', 5),
+  jump: ['rpg/cloth1', 'rpg/cloth2', 'rpg/cloth3', 'rpg/cloth4'],
+  toolBreak: range('impact/impactPlate_heavy_', 5),
+  arrowHit: range('impact/impactWood_light_', 5),
+  bow: ['rpg/drawKnife1', 'rpg/drawKnife2', 'rpg/drawKnife3'],
+  bowDraw: ['rpg/creak1', 'rpg/creak2', 'rpg/creak3'],
+  flint: ['rpg/metalClick'],
+  chop: ['rpg/chop'],
+  doorOpen: ['rpg/doorOpen_1', 'rpg/doorOpen_2'],
+  doorClose: ['rpg/doorClose_1', 'rpg/doorClose_2', 'rpg/doorClose_3', 'rpg/doorClose_4'],
+  chestOpen: ['rpg/creak1', 'rpg/creak2', 'rpg/creak3'],
+  chestClose: ['rpg/bookClose', 'rpg/metalLatch'],
+  equip: ['rpg/handleSmallLeather', 'rpg/handleSmallLeather2'],
+  drop: ['rpg/dropLeather'],
+
+  // Menus.
+  pickup: ['ui/pluck_001', 'ui/pluck_002'],
+  uiClick: range('ui/click_', 5, 1),
+  uiOpen: range('ui/open_', 4, 1),
+  uiClose: range('ui/close_', 4, 1),
+  uiSlot: ['ui/tick_001', 'ui/tick_002', 'ui/tick_004'],
+  uiSelect: range('ui/select_', 3, 1),
+  uiSwitch: range('ui/switch_', 3, 1),
+  uiError: ['ui/error_001', 'ui/error_002'],
+  uiConfirm: ['ui/confirmation_001', 'ui/confirmation_002'],
+  uiDrop: range('ui/drop_', 4, 1),
+};
+
+/** Block sound materials folded onto the recordings that exist for them. */
+const MATERIAL_FAMILY = {
+  grass: 'soft', dirt: 'soft', sand: 'soft', gravel: 'soft', wool: 'soft', liquid: 'soft',
+  stone: 'stone', glass: 'glass', metal: 'metal', wood: 'wood',
+};
+
+/**
+ * Cave reverb: an impulse response built from noise with an exponential
+ * decay, which is what a room is to an echo. No file needed.
+ */
+function makeImpulse(ctx, seconds = 2.2, decay = 3.2) {
+  const length = Math.floor(ctx.sampleRate * seconds);
+  const impulse = ctx.createBuffer(2, length, ctx.sampleRate);
+  for (let channel = 0; channel < 2; channel++) {
+    const data = impulse.getChannelData(channel);
+    for (let i = 0; i < length; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay);
+    }
+  }
+  return impulse;
+}
+
 export class AudioEngine {
   constructor() {
     /** @type {AudioContext|null} */
@@ -83,6 +188,21 @@ export class AudioEngine {
     this.master = null;
     this.muted = false;
     this.volume = 0.7;
+    /** Separate levels for the jukebox and for everything else. */
+    this.musicVolume = 0.7;
+    this.effectsVolume = 1;
+    /** Bus every sound effect runs through, so effects have their own slider. */
+    this.effects = null;
+    /** World sounds go through the reverb; menu sounds skip it. */
+    this.world = null;
+    this.ui = null;
+    this._reverb = null;
+    this._reverbLevel = 0;
+    /** Decoded recordings by path, filled in the background after init. */
+    this._samples = new Map();
+    this._lastVariant = new Map();
+    /** Where the next synthesised sound connects; see mobSound. */
+    this._dest = null;
     this._noiseBuffers = {};
     this._lastPlay = new Map();
 
@@ -113,6 +233,25 @@ export class AudioEngine {
     limiter.threshold.value = -10;
     limiter.ratio.value = 12;
     this.master.connect(limiter);
+    this.effects = this.ctx.createGain();
+    this.effects.gain.value = this.effectsVolume;
+    this.effects.connect(this.master);
+
+    // World sounds run dry and through a cave reverb whose level follows how
+    // enclosed you are; see setEnclosure.
+    this.world = this.ctx.createGain();
+    this.world.connect(this.effects);
+    const convolver = this.ctx.createConvolver();
+    convolver.buffer = makeImpulse(this.ctx);
+    this._reverb = this.ctx.createGain();
+    this._reverb.gain.value = 0;
+    this.world.connect(convolver);
+    convolver.connect(this._reverb);
+    this._reverb.connect(this.effects);
+    this.ui = this.ctx.createGain();
+    this.ui.connect(this.effects);
+
+    this._loadSamples();
     limiter.connect(this.ctx.destination);
   }
 
@@ -125,11 +264,111 @@ export class AudioEngine {
     if (this.master) this.master.gain.value = this.muted ? 0 : this.volume;
   }
 
+  setMusicVolume(value) {
+    this.musicVolume = Math.max(0, Math.min(1, value));
+    if (this._musicGain) this._musicGain.gain.value = MUSIC_LEVEL * this.musicVolume;
+  }
+
+  setEffectsVolume(value) {
+    this.effectsVolume = Math.max(0, Math.min(1, value));
+    if (this.effects) this.effects.gain.value = this.effectsVolume;
+  }
+
   toggleMute() {
     this.muted = !this.muted;
     if (this.master) this.master.gain.value = this.muted ? 0 : this.volume;
     return this.muted;
   }
+
+  // -------------------------------------------------------------------------
+  // Recordings
+  // -------------------------------------------------------------------------
+
+  /** Fetch and decode every recording, in the background. */
+  _loadSamples() {
+    const paths = new Set(Object.values(SAMPLE_SETS).flat());
+    for (const path of paths) {
+      fetch(new URL(`../../assets/audio/${path}.ogg`, import.meta.url))
+        .then((response) => (response.ok ? response.arrayBuffer() : Promise.reject(response.status)))
+        .then((data) => this.ctx.decodeAudioData(data))
+        .then((buffer) => this._samples.set(path, buffer))
+        // A missing or undecodable file just leaves that sound synthesised.
+        .catch(() => {});
+    }
+  }
+
+  /**
+   * Play one variant from a named set.
+   * @param options gain, rate, jitter (pitch spread), distance (blocks away:
+   *   quieter and duller with distance), pan (-1..1), ui (skip the reverb)
+   * @returns whether a recording played. False means it has not loaded (or
+   *   never will), and the caller falls back to synthesis.
+   */
+  play(set, { gain = 1, rate = 1, jitter = 0.07, distance = 0, pan = 0, ui = false, delay = 0 } = {}) {
+    if (!this.ready) return false;
+    const variants = SAMPLE_SETS[set];
+    if (!variants) return false;
+
+    // Never the same variant twice in a row.
+    let index = Math.floor(Math.random() * variants.length);
+    if (variants.length > 1 && index === this._lastVariant.get(set)) index = (index + 1) % variants.length;
+    const buffer = this._samples.get(variants[index]);
+    if (!buffer) return false;
+    this._lastVariant.set(set, index);
+
+    const t = this.ctx.currentTime + delay;
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    source.playbackRate.value = rate * (1 + (Math.random() * 2 - 1) * jitter);
+
+    const level = this.ctx.createGain();
+    level.gain.value = gain * (distance > 0 ? Math.pow(Math.max(0, 1 - distance / 32), 1.6) : 1);
+    let node = source;
+
+    // Distance dulls a sound before it quietens it: the air eats the top end.
+    if (distance > 2) {
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = Math.max(700, 18000 * Math.exp(-distance / 9));
+      node.connect(filter);
+      node = filter;
+    }
+    if (pan !== 0 && this.ctx.createStereoPanner) {
+      const panner = this.ctx.createStereoPanner();
+      panner.pan.value = Math.max(-1, Math.min(1, pan));
+      node.connect(panner);
+      node = panner;
+    }
+    node.connect(level);
+    level.connect(ui ? this.ui : this.world);
+    source.start(t);
+    return true;
+  }
+
+  /**
+   * How enclosed the listener is, 0 (open sky) to 1 (deep underground). Sets
+   * the cave reverb, eased so walking into a tunnel swells rather than snaps.
+   */
+  setEnclosure(amount) {
+    if (!this._reverb) return;
+    const target = 0.08 + amount * 0.55;
+    this._reverbLevel += (target - this._reverbLevel) * 0.05;
+    this._reverb.gain.value = this._reverbLevel;
+  }
+
+  // Menu sounds. Quiet, dry, and never throttled into silence by world sounds.
+  uiClick() { this.play('uiClick', { gain: 0.35, ui: true, jitter: 0.03 }); }
+  uiOpen() { this.play('uiOpen', { gain: 0.3, ui: true, jitter: 0.03 }); }
+  uiClose() { this.play('uiClose', { gain: 0.28, ui: true, jitter: 0.03 }); }
+  uiSlot() {
+    if (!this._throttle('uiSlot', 0.03)) return;
+    this.play('uiSlot', { gain: 0.3, ui: true, jitter: 0.08 });
+  }
+  uiSelect() { this.play('uiSelect', { gain: 0.3, ui: true, jitter: 0.03 }); }
+  uiSwitch() { this.play('uiSwitch', { gain: 0.3, ui: true, jitter: 0.03 }); }
+  uiError() { this.play('uiError', { gain: 0.3, ui: true, jitter: 0.02 }); }
+  uiConfirm() { this.play('uiConfirm', { gain: 0.32, ui: true, jitter: 0.02 }); }
+  equip() { this.play('equip', { gain: 0.55 }); }
 
   // -------------------------------------------------------------------------
   // Primitives
@@ -183,7 +422,7 @@ export class AudioEngine {
 
     source.connect(filter);
     filter.connect(env);
-    env.connect(this.master);
+    env.connect(this._dest ?? this.world);
     source.start(t, offset, decay + 0.05);
     source.stop(t + decay + 0.05);
   }
@@ -235,7 +474,7 @@ export class AudioEngine {
     }
 
     node.connect(env);
-    env.connect(this.master);
+    env.connect(this._dest ?? this.world);
     osc.start(t);
     osc.stop(t + duration + 0.02);
   }
@@ -260,6 +499,7 @@ export class AudioEngine {
 
   footstep(material = 'grass') {
     if (!this.ready || !this._throttle('step', 0.22)) return;
+    if (this.play(`step_${material}`, { gain: 0.42, jitter: 0.09 })) return;
     const m = MATERIALS[material] ?? MATERIALS.grass;
     const detune = 0.85 + Math.random() * 0.3;
     this.noise({
@@ -271,6 +511,8 @@ export class AudioEngine {
   /** Repeated while mining — quieter and shorter than the break itself. */
   dig(material = 'stone') {
     if (!this.ready || !this._throttle('dig', 0.18)) return;
+    const family = MATERIAL_FAMILY[material] ?? 'stone';
+    if (this.play(`dig_${family}`, { gain: family === 'stone' ? 0.42 : 0.5, jitter: 0.1 })) return;
     const m = MATERIALS[material] ?? MATERIALS.stone;
     this.noise({
       freq: m.freq * (0.8 + Math.random() * 0.4), q: m.q,
@@ -279,6 +521,9 @@ export class AudioEngine {
   }
 
   blockBreak(material = 'stone') {
+    const family = MATERIAL_FAMILY[material] ?? 'stone';
+    // Stone breaks as a lower, heavier strike than the chips before it.
+    if (this.play(`break_${family}`, { gain: 0.75, rate: family === 'stone' ? 0.82 : 1 })) return;
     const m = MATERIALS[material] ?? MATERIALS.stone;
     // Two layers: a bright crack plus a body thump.
     this.noise({ freq: m.freq * 1.2, q: m.q, decay: m.decay * 1.6, gain: m.gain, kind: m.noise });
@@ -292,15 +537,19 @@ export class AudioEngine {
   }
 
   blockPlace(material = 'stone') {
+    const family = MATERIAL_FAMILY[material] ?? 'stone';
+    if (this.play(`place_${family}`, { gain: 0.6, rate: 0.95 })) return;
     const m = MATERIALS[material] ?? MATERIALS.stone;
     this.noise({ freq: m.freq, q: m.q * 1.5, decay: m.decay * 0.5, gain: m.gain * 0.6, kind: m.noise });
     this.thud({ freq: 170, gain: 0.16, duration: 0.1 });
   }
 
   playerHurt() {
-    // Short strained vocal-ish blip, not a scream.
-    this.tone({ freq: 300, endFreq: 190, duration: 0.18, gain: 0.26, type: 'triangle' });
-    this.noise({ freq: 500, q: 1.2, decay: 0.12, gain: 0.14, kind: 'pink' });
+    // The hit itself is a recording; a short, quiet strained blip under it
+    // still says it was you that was hurt.
+    const hit = this.play('hurt', { gain: 0.7, jitter: 0.06 });
+    this.tone({ freq: 300, endFreq: 190, duration: 0.18, gain: hit ? 0.1 : 0.26, type: 'triangle' });
+    if (!hit) this.noise({ freq: 500, q: 1.2, decay: 0.12, gain: 0.14, kind: 'pink' });
   }
 
   playerDeath() {
@@ -310,11 +559,13 @@ export class AudioEngine {
 
   fall(distance) {
     const strength = Math.min(1, distance / 12);
+    if (this.play('fall', { gain: 0.45 + strength * 0.5, rate: 1.05 - strength * 0.25 })) return;
     this.thud({ freq: 90, gain: 0.2 + strength * 0.3, duration: 0.2 + strength * 0.15 });
   }
 
   jump() {
     if (!this._throttle('jump', 0.15)) return;
+    if (this.play('jump', { gain: 0.3, jitter: 0.1 })) return;
     this.noise({ freq: 500, q: 0.8, decay: 0.06, gain: 0.10, kind: 'pink' });
   }
 
@@ -325,6 +576,7 @@ export class AudioEngine {
 
   pickup() {
     if (!this._throttle('pickup', 0.06)) return;
+    if (this.play('pickup', { gain: 0.32, rate: 1.1, jitter: 0.15 })) return;
     this.tone({ freq: 760, endFreq: 1180, duration: 0.1, gain: 0.16, type: 'square' });
   }
 
@@ -335,27 +587,33 @@ export class AudioEngine {
   }
 
   craft() {
+    if (this.play('uiConfirm', { gain: 0.28, ui: true, jitter: 0.04 })) return;
     this.tone({ freq: 520, duration: 0.08, gain: 0.16, type: 'square' });
     this.tone({ freq: 780, duration: 0.1, gain: 0.14, type: 'square', delay: 0.07 });
   }
 
   toolBreak() {
+    if (this.play('toolBreak', { gain: 0.7 })) return;
     this.noise({ freq: 1800, q: 4, decay: 0.2, gain: 0.3 });
     this.tone({ freq: 420, endFreq: 140, duration: 0.25, gain: 0.2, type: 'sawtooth' });
   }
 
   /** Furnace ignition. */
   ignite() {
+    // Flint on steel, then the catch.
+    this.play('flint', { gain: 0.6 });
     this.noise({ freq: 1200, q: 0.6, decay: 0.4, gain: 0.2, kind: 'pink', type: 'lowpass' });
   }
 
   /** Bowstring release. */
   bow() {
+    if (this.play('bow', { gain: 0.5, rate: 1.15 })) return;
     this.tone({ freq: 240, endFreq: 700, duration: 0.12, gain: 0.18, type: 'triangle' });
     this.noise({ freq: 1800, q: 2, decay: 0.09, gain: 0.12 });
   }
 
   arrowHit() {
+    if (this.play('arrowHit', { gain: 0.55, rate: 1.2 })) return;
     this.noise({ freq: 1400, q: 3, decay: 0.09, gain: 0.2 });
     this.thud({ freq: 200, gain: 0.12, duration: 0.08 });
   }
@@ -380,6 +638,15 @@ export class AudioEngine {
     // produce a continuous stream of noise.
     if (kind === 'idle' && !this._throttle('mobIdle', 1.6)) return;
     if (!this._throttle('mob:' + profile.name + kind, 0.25)) return;
+
+    // Distance dulls a call as well as quietening it, which is what makes a
+    // far-off zombie sound far off rather than just faint. Every synthesised
+    // voice below connects through this filter; see `_dest`.
+    const air = this.ctx.createBiquadFilter();
+    air.type = 'lowpass';
+    air.frequency.value = Math.max(700, 18000 * Math.exp(-distance / 9));
+    air.connect(this.world);
+    this._dest = air;
 
     // ±6% pitch jitter: enough to stop repetition sounding mechanical, small
     // enough that a species stays recognisable.
@@ -473,6 +740,7 @@ export class AudioEngine {
       default:
         this.tone({ freq: base, duration, gain: level, type: 'triangle', lowpass: base * 4 });
     }
+    this._dest = null;
   }
 
   /** Explosion: deep boom plus a long debris tail. */
@@ -549,7 +817,7 @@ export class AudioEngine {
       const gain = this.ctx.createGain();
       gain.gain.value = 0;
 
-      source.connect(filter).connect(gain).connect(this.master);
+      source.connect(filter).connect(gain).connect(this.world);
       source.start();
 
       this._rainSource = source;
@@ -590,7 +858,7 @@ export class AudioEngine {
         filter.Q.value = q;
         const gain = this.ctx.createGain();
         gain.gain.value = 0;
-        source.connect(filter).connect(gain).connect(this.master);
+        source.connect(filter).connect(gain).connect(this.world);
         source.start();
         return { source, filter, gain };
       };
@@ -760,7 +1028,7 @@ export class AudioEngine {
     this.stopMusic();
 
     this._musicGain = this.ctx.createGain();
-    this._musicGain.gain.value = 0.5;
+    this._musicGain.gain.value = MUSIC_LEVEL * this.musicVolume;
     this._musicGain.connect(this.master);
     this._music = name;
 
@@ -872,17 +1140,20 @@ export class AudioEngine {
   /** Bowstring being drawn — pitch rises with charge. */
   bowDraw(charge) {
     if (!this._throttle('bowDraw', 0.18)) return;
+    if (this.play('bowDraw', { gain: 0.12 + charge * 0.12, rate: 0.9 + charge * 0.4, jitter: 0.03 })) return;
     this.tone({ freq: 160 + charge * 180, duration: 0.1, gain: 0.06, type: 'triangle', lowpass: 1200 });
   }
 
   /** Door hinge. */
   door(opening) {
+    if (this.play(opening ? 'doorOpen' : 'doorClose', { gain: 0.5 })) return;
     this.noise({ freq: opening ? 700 : 520, q: 2.5, decay: 0.22, gain: 0.18, kind: 'pink' });
     this.tone({ freq: opening ? 220 : 180, endFreq: opening ? 300 : 140, duration: 0.18, gain: 0.1, type: 'triangle', lowpass: 900 });
   }
 
   /** Chest lid. */
   chest(opening) {
+    if (this.play(opening ? 'chestOpen' : 'chestClose', { gain: 0.45, rate: opening ? 1.15 : 1 })) return;
     this.noise({ freq: 400, q: 1.6, decay: 0.2, gain: 0.16, kind: 'pink', type: 'lowpass' });
     this.tone({ freq: opening ? 180 : 150, endFreq: opening ? 260 : 110, duration: 0.16, gain: 0.09, type: 'triangle', lowpass: 800 });
   }

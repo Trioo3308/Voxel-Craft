@@ -223,6 +223,11 @@ export const TILE = {
   PORTAL_AETHER: 254,
   AERCLOUD: 255,
 
+  // --- Death -----------------------------------------------------------------
+  // Two of the last free cells in the atlas; see the note on ATLAS_COLS.
+  GRAVESTONE: 94,
+  GRAVESTONE_TOP: 95,
+
   // --- The Comb -------------------------------------------------------------
   COMB_RESIN: 173,
   COMB_RESIN_ITEM: 174,
@@ -329,6 +334,8 @@ export const SHAPES = {
   PLATE_PRESSED: [[0.0625, 0, 0.0625, 0.9375, 0.03125, 0.9375]],
   // A sign is a panel on a post.
   SIGN: [[0.0625, 0.5, 0.4375, 0.9375, 1, 0.5625], [0.4375, 0, 0.4375, 0.5625, 0.5, 0.5625]],
+  // A headstone on a low plinth.
+  GRAVESTONE: [[0.125, 0, 0.3125, 0.875, 0.125, 0.6875], [0.1875, 0.125, 0.375, 0.8125, 0.8125, 0.625]],
 };
 
 /** Height of a shape's tallest box, used for step-up and headroom checks. */
@@ -1572,6 +1579,20 @@ export const AERCLOUD = defineBlock(147, 'aercloud', {
   opaque: false, cullSameType: false,
   /** Falling into one costs nothing and stops you dead. */
   breaksFall: true,
+});
+
+/**
+ * Gravestone. Holds everything a player was carrying when they died, until
+ * they come back for it: right-click gives it all back, and breaking it
+ * spills it. It never expires, so the cost of a death is the trip back, not
+ * the loss. The death penalty was Jev's call; see JEV_DECISIONS.md.
+ */
+export const GRAVESTONE = defineBlock(150, 'gravestone', {
+  displayName: 'Gravestone',
+  tiles: { side: TILE.GRAVESTONE, top: TILE.GRAVESTONE_TOP, bottom: TILE.GRAVESTONE_TOP },
+  hardness: 0.6, shape: SHAPES.GRAVESTONE,
+  // The contents are the drop; the stone itself is not worth keeping.
+  drops: AIR, obtainable: false,
 });
 
 /** Every log/leaf pair, so terrain can pick a tree style per biome. */

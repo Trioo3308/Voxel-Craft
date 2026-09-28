@@ -12,6 +12,7 @@
  * knowing anything about the block registry.
  */
 
+import { prefs } from '../engine/preferences.js';
 import * as THREE from 'three';
 import { getTilePalette } from '../world/textures.js';
 import { BLOCKS, FACE_PY, isLiquid } from '../world/blocks.js';
@@ -30,6 +31,12 @@ const _position = new THREE.Vector3();
 const _quaternion = new THREE.Quaternion();
 const _scale = new THREE.Vector3();
 const _color = new THREE.Color();
+
+/** Share of particles kept at each Particles setting. */
+const PARTICLE_DENSITY = { all: 1, fewer: 0.45, minimal: 0.15 };
+
+/** Ground fireflies hover over. */
+const GRASSY = new Set(['grass', 'swamp_grass', 'podzol', 'dry_grass']);
 
 export class ParticleSystem {
   /**
@@ -53,6 +60,15 @@ export class ParticleSystem {
     this.mesh.count = capacity;
     scene.add(this.mesh);
 
+    // A second, unlit pool shares the same slots for things that give off
+    // light: fireflies, embers, sparkles. Their colours go past white, so
+    // bloom makes them glow. Each slot draws in exactly one of the two meshes.
+    this.glowMesh = new THREE.InstancedMesh(geometry, new THREE.MeshBasicMaterial(), capacity);
+    this.glowMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.glowMesh.frustumCulled = false;
+    this.glowMesh.count = capacity;
+    scene.add(this.glowMesh);
+
     // Parallel arrays rather than objects: this is the hot loop.
     this.x = new Float32Array(capacity);
     this.y = new Float32Array(capacity);
@@ -74,6 +90,16 @@ export class ParticleSystem {
      * cannot see against the sky; stretched into a streak it reads as rain.
      */
     this.stretch = new Float32Array(capacity);
+    /** 1 = drawn unlit in the glow pool. */
+    this.glow = new Uint8Array(capacity);
+    /**
+     * How it moves beyond plain physics:
+     *   0 ordinary   1 leaf (flutters down)   2 firefly (wanders, blinks)
+     *   3 mote (drifts, twinkles)
+     */
+    this.kind = new Uint8Array(capacity);
+    /** Per-particle phase, so a swarm does not move in lockstep. */
+    this.phase = new Float32Array(capacity);
 
     this._next = 0;
     this._live = 0;
@@ -106,12 +132,17 @@ export class ParticleSystem {
   _hide(index) {
     _matrix.makeScale(0, 0, 0);
     this.mesh.setMatrixAt(index, _matrix);
+    this.glowMesh.setMatrixAt(index, _matrix);
   }
 
   /**
    * @param options {{x,y,z, vx,vy,vz, life, size, color, ghost?, buoyant?}}
    */
   spawn(options) {
+    // The Particles option thins every effect evenly rather than dropping
+    // whole kinds of them, so nothing goes missing, it just gets sparser.
+    const density = PARTICLE_DENSITY[prefs.get('particles')] ?? 1;
+    if (density < 1 && Math.random() > density) return -1;
     const i = this._claim();
     this.x[i] = options.x;
     this.y[i] = options.y;
@@ -126,9 +157,17 @@ export class ParticleSystem {
     this.buoyant[i] = options.buoyant ? 1 : 0;
     this.weightless[i] = options.weightless ? 1 : 0;
     this.stretch[i] = options.stretch ?? 1;
+    this.glow[i] = options.glow ? 1 : 0;
+    this.kind[i] = options.kind ?? 0;
+    this.phase[i] = Math.random() * Math.PI * 2;
 
-    this.mesh.setColorAt(i, _color.setHex(options.color));
-    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
+    // Hide the slot in both pools, then colour it in the one it draws in.
+    this._hide(i);
+    const target = options.glow ? this.glowMesh : this.mesh;
+    _color.setHex(options.color);
+    if (options.brightness) _color.multiplyScalar(options.brightness);
+    target.setColorAt(i, _color);
+    if (target.instanceColor) target.instanceColor.needsUpdate = true;
     return i;
   }
 
@@ -393,6 +432,134 @@ export class ParticleSystem {
   }
 
   // -------------------------------------------------------------------------
+  // Life in the air
+  // -------------------------------------------------------------------------
+
+  /** A mob's last breath: a puff of smoke where it fell. */
+  deathPuff(x, y, z, size = 1) {
+    const n = Math.round(10 + size * 8);
+    for (let k = 0; k < n; k++) {
+      const grey = 0.72 + Math.random() * 0.25;
+      this.spawn({
+        x: x + (Math.random() - 0.5) * 0.7 * size,
+        y: y + Math.random() * 1.2 * size,
+        z: z + (Math.random() - 0.5) * 0.7 * size,
+        vx: (Math.random() - 0.5) * 1.4, vy: 0.6 + Math.random() * 1.1, vz: (Math.random() - 0.5) * 1.4,
+        life: 0.6 + Math.random() * 0.5, size: 0.14 + Math.random() * 0.12,
+        color: _color.setRGB(grey, grey, grey).getHex(), ghost: true, buoyant: true,
+      });
+    }
+  }
+
+  /** Bubbles rising from your mouth while you hold your breath. */
+  bubble(x, y, z) {
+    this.spawn({
+      x: x + (Math.random() - 0.5) * 0.3, y, z: z + (Math.random() - 0.5) * 0.3,
+      vx: (Math.random() - 0.5) * 0.3, vy: 1.4 + Math.random() * 0.8, vz: (Math.random() - 0.5) * 0.3,
+      life: 0.9 + Math.random() * 0.6, size: 0.05 + Math.random() * 0.05,
+      color: 0xbfe6ff, ghost: true, weightless: true,
+    });
+  }
+
+  /**
+   * Ambient particles around the player, driven each frame.
+   *
+   * Picks a few random spots nearby and asks what is there, so it costs the
+   * same whatever the scenery, and nothing is spawned where you cannot see it.
+   *
+   * @param ctx {dimension, isNight, player, underwater, rain}
+   */
+  ambient(dt, ctx) {
+    this._ambientClock = (this._ambientClock ?? 0) - dt;
+    if (this._ambientClock > 0) return;
+    this._ambientClock = 0.1;
+
+    const p = ctx.player.position;
+    const px = p.x, py = p.y, pz = p.z;
+    const rand = (r) => (Math.random() - 0.5) * 2 * r;
+
+    if (ctx.underwater && Math.random() < 0.6) {
+      this.bubble(px, py + 1.5, pz);
+    }
+
+    switch (ctx.dimension) {
+      case 'overworld': {
+        // Leaves drift down from any canopy nearby.
+        for (let n = 0; n < 3; n++) {
+          const x = Math.floor(px + rand(14));
+          const z = Math.floor(pz + rand(14));
+          for (let y = Math.floor(py) + 12; y > py - 4; y--) {
+            const id = this.world.getBlock(x, y, z);
+            if (id === 0) continue;
+            const block = BLOCKS[id];
+            if (block && block.decays && this.world.getBlock(x, y - 1, z) === 0) {
+              const palette = this._paletteFor(id);
+              this.spawn({
+                x: x + Math.random(), y: y - 0.05, z: z + Math.random(),
+                vx: 0, vy: -0.8, vz: 0, life: 5 + Math.random() * 3, size: 0.07,
+                color: palette[Math.floor(Math.random() * palette.length)],
+                kind: 1, ghost: false,
+              });
+            }
+            break;
+          }
+        }
+        // Fireflies over grass on clear nights.
+        if (ctx.isNight && !ctx.rain) {
+          for (let n = 0; n < 2; n++) {
+            const x = Math.floor(px + rand(12));
+            const z = Math.floor(pz + rand(12));
+            const top = this.world.getSurfaceY(x, z);
+            if (top < 0 || Math.abs(top - py) > 10) continue;
+            const ground = this.world.getBlock(x, top, z);
+            if (!GRASSY.has(BLOCKS[ground]?.name)) continue;
+            this.spawn({
+              x: x + Math.random(), y: top + 1.2 + Math.random() * 1.8, z: z + Math.random(),
+              vx: 0, vy: 0, vz: 0, life: 4 + Math.random() * 4, size: 0.06,
+              color: 0xd8ff6a, brightness: 2.6, glow: true, ghost: true, weightless: true, kind: 2,
+            });
+          }
+        }
+        break;
+      }
+      case 'nether': {
+        // Ash sifting down, and now and then an ember rising off the lava.
+        for (let n = 0; n < 3; n++) {
+          const shade = 0.25 + Math.random() * 0.2;
+          this.spawn({
+            x: px + rand(16), y: py + 3 + Math.random() * 10, z: pz + rand(16),
+            vx: rand(0.4), vy: -0.35 - Math.random() * 0.3, vz: rand(0.4),
+            life: 6 + Math.random() * 4, size: 0.045,
+            color: _color.setRGB(shade, shade * 0.95, shade * 0.9).getHex(),
+            ghost: true, weightless: true, kind: 3,
+          });
+        }
+        if (Math.random() < 0.45) {
+          this.spawn({
+            x: px + rand(14), y: py - 2 + Math.random() * 6, z: pz + rand(14),
+            vx: rand(0.3), vy: 0.6 + Math.random() * 0.8, vz: rand(0.3),
+            life: 3 + Math.random() * 2, size: 0.05,
+            color: 0xff8a30, brightness: 3, glow: true, ghost: true, weightless: true, kind: 3,
+          });
+        }
+        break;
+      }
+      case 'aether': {
+        // Sparkles hanging in the bright air.
+        for (let n = 0; n < 2; n++) {
+          this.spawn({
+            x: px + rand(14), y: py - 2 + Math.random() * 10, z: pz + rand(14),
+            vx: rand(0.15), vy: 0.12 + Math.random() * 0.2, vz: rand(0.15),
+            life: 4 + Math.random() * 3, size: 0.05,
+            color: 0xfff4c2, brightness: 2.4, glow: true, ghost: true, weightless: true, kind: 3,
+          });
+        }
+        break;
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Simulation
   // -------------------------------------------------------------------------
 
@@ -413,7 +580,21 @@ export class ParticleSystem {
       }
       live++;
 
-      if (!this.weightless[i]) {
+      const kind = this.kind[i];
+      if (kind === 1) {
+        // A leaf: falls slowly, rocking side to side.
+        this.phase[i] += step * 2.6;
+        this.vx[i] = Math.sin(this.phase[i]) * 0.9;
+        this.vy[i] = -0.9 + Math.cos(this.phase[i] * 2) * 0.25;
+      } else if (kind === 2) {
+        // A firefly: wanders on a slow loop, drifting a little up and down.
+        this.phase[i] += step * 1.3;
+        this.vx[i] = Math.cos(this.phase[i]) * 0.5;
+        this.vz[i] = Math.sin(this.phase[i] * 0.83) * 0.5;
+        this.vy[i] = Math.sin(this.phase[i] * 1.7) * 0.25;
+      } else if (kind === 3) {
+        this.phase[i] += step;
+      } else if (!this.weightless[i]) {
         const gravity = this.buoyant[i] ? -GRAVITY * 0.18 : GRAVITY;
         this.vy[i] += gravity * step;
 
@@ -430,18 +611,27 @@ export class ParticleSystem {
         this._moveWithCollision(i, step);
       }
 
-      // Shrink away over the last third of life, so nothing pops out of view.
+      // Shrink away over the last third of life, so nothing pops out of view,
+      // and grow in over the first tenth, so ambient motes fade up rather than
+      // appear.
       const t = this.life[i] / this.maxLife[i];
-      const scale = this.size[i] * (t > 0.34 ? 1 : t / 0.34);
+      let scale = this.size[i] * (t > 0.34 ? 1 : t / 0.34);
+      if (kind >= 2) {
+        scale *= Math.min(1, (1 - t) * 10);
+        // Fireflies blink; motes twinkle more gently.
+        const pulse = Math.sin(this.phase[i] * (kind === 2 ? 3.1 : 5.3));
+        scale *= kind === 2 ? Math.max(0, pulse) : 0.6 + 0.4 * pulse;
+      }
 
       _position.set(this.x[i], this.y[i], this.z[i]);
       _scale.set(scale, scale * this.stretch[i], scale);
       _matrix.compose(_position, _quaternion, _scale);
-      this.mesh.setMatrixAt(i, _matrix);
+      (this.glow[i] ? this.glowMesh : this.mesh).setMatrixAt(i, _matrix);
     }
 
     this._live = live;
     this.mesh.instanceMatrix.needsUpdate = true;
+    this.glowMesh.instanceMatrix.needsUpdate = true;
   }
 
   /**
@@ -490,6 +680,7 @@ export class ParticleSystem {
     this._live = 0;
     this._next = 0;
     this.mesh.instanceMatrix.needsUpdate = true;
+    this.glowMesh.instanceMatrix.needsUpdate = true;
   }
 
   dispose() {

@@ -13,7 +13,8 @@
 import { getTileDataURL } from '../world/textures.js';
 import {
   getIconTile, getDisplayName, obtainableBlocks, obtainableItems,
-  getMaxStack, getDurability, getArmor, getTool, getThing, ARMOR_PIECES,
+  getMaxStack, getDurability, getArmor, getTool, getThing, getBlock, isBlockId, ARMOR_PIECES,
+  BLOCKS, ITEM_ID, TOOL_KINDS, toolItemId, armorItemId,
 } from '../world/blocks.js';
 import { HOTBAR_SIZE, STORAGE_SIZE, Inventory } from '../player/inventory.js';
 import { findRecipe, consumeGrid, fuelValueFor, smeltResultFor, SMELT_SECONDS } from '../player/crafting.js';
@@ -21,17 +22,105 @@ import { BIOME_NAMES } from '../world/terrain.js';
 import { dimensionInfo } from '../world/dimensions.js';
 import Settings from '../settings.js';
 import { audio } from '../engine/audio.js';
+import { keybinds } from '../engine/keybinds.js';
+import { prefs } from '../engine/preferences.js';
+import { Vitals } from './vitals.js';
+import { RecipeBook } from './recipeBook.js';
+import { CompassStrip } from './compassStrip.js';
 
 const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 
 /** As many characters as fit legibly on a sign in the world. */
 const SIGN_LINE_LENGTH = 15;
 
-const HEART = '❤️';
-const DRUMSTICK = '🍗';
-const SHIELD = '🛡️';
 
 const el = (id) => document.getElementById(id);
+
+/** Two clicks on the same slot within this many ms gather matching items. */
+const DOUBLE_CLICK_MS = 300;
+
+/** Name colours for the better materials, so a good find reads as one. */
+const MATERIAL_COLORS = {
+  iron: '#e8e8e8', gold: '#ffd84d', diamond: '#7ff0e6', combium: '#fff1c9', crown: '#ffd84d',
+};
+
+/** Harvest tiers as the tool a block asks for. Matches the gear table in blocks.js. */
+const TIER_NAMES = ['wooden', 'stone', 'iron', 'diamond', 'combium'];
+
+/**
+ * What a tooltip says about a stack: its name, and only the facts that change
+ * what you would do with it.
+ */
+function describeStack(stack) {
+  const lines = [];
+  let color = null;
+  const tool = getTool(stack.id);
+  const armor = getArmor(stack.id);
+
+  if (tool) {
+    color = MATERIAL_COLORS[tool.material] ?? null;
+    if (tool.kind === 'sword') lines.push(`${tool.damage} attack damage`);
+    else if (['pickaxe', 'axe', 'shovel', 'hoe'].includes(tool.kind)) lines.push(`Mining speed ×${tool.speed}`);
+  }
+  if (armor) {
+    color = MATERIAL_COLORS[armor.material] ?? color;
+    lines.push(`+${armor.defense} armour`);
+  }
+
+  const max = getDurability(stack.id);
+  if (max > 0) lines.push(`Durability ${stack.durability ?? max} / ${max}`);
+
+  const thing = getThing(stack.id);
+  if (thing && thing.food > 0) {
+    lines.push(`Restores ${thing.food} hunger` + (thing.healing > 0 ? `, heals ${thing.healing}` : ''));
+  }
+
+  if (isBlockId(stack.id)) {
+    const block = getBlock(stack.id);
+    if (block.requiresTool && block.toolType) {
+      const tier = TIER_NAMES[block.harvestLevel ?? 0] ?? 'better';
+      lines.push(`Needs a ${tier} ${block.toolType} or better`);
+    }
+  }
+
+  const smelt = smeltResultFor(stack.id);
+  if (smelt) lines.push(`Smelts into ${getDisplayName(smelt.id)}`);
+  const fuel = fuelValueFor(stack.id);
+  if (fuel > 0) {
+    const items = fuel / SMELT_SECONDS;
+    const text = Number.isInteger(items) ? String(items) : items.toFixed(1);
+    lines.push(`Fuel: smelts ${text} item${items === 1 ? '' : 's'}`);
+  }
+
+  if (stack.count > 1) lines.push(`Stack of ${stack.count}`);
+  return { name: getDisplayName(stack.id), color, lines };
+}
+
+/**
+ * The picture on each achievement's card: an item or block that stands for
+ * it. By name, like the achievements themselves. Anything missing just shows
+ * a card without a picture.
+ */
+const ACHIEVEMENT_ICONS = {
+  wood: 'log', bench: 'crafting_table', pickaxe: ['pickaxe', 'wood'], furnace: 'furnace',
+  iron: 'IRON_INGOT', diamonds: 'DIAMOND', deep: 'bedrock', farmer: 'BREAD', shepherd: 'wool',
+  angler: 'FISH', tamer: 'BONE', sailor: 'BOAT', dj: 'jukebox', combium: 'COMBIUM_INGOT',
+  portal: 'obsidian', comb: 'combium_ore', obsidian: 'obsidian', nether: 'netherrack',
+  glowstone: 'glowstone', aether: 'aether_grass', warden: ['sword', 'combium'], throne: 'CROWN',
+  skater: 'SKATEBOARD', grinder: 'rail', sevenTwenty: 'SKATEBOARD', stylish: 'ROCKET',
+  miner: ['pickaxe', 'iron'], walker: ['boots', 'iron'], survivor: 'bed_foot_north',
+};
+
+function achievementIcon(name) {
+  const key = ACHIEVEMENT_ICONS[name];
+  if (!key) return null;
+  if (Array.isArray(key)) {
+    const [kind, material] = key;
+    return TOOL_KINDS.includes(kind) ? toolItemId(kind, material) : armorItemId(kind, material);
+  }
+  if (key === key.toUpperCase()) return ITEM_ID[key] ?? null;
+  return BLOCKS.find((b) => b && b.name === key)?.id ?? null;
+}
 
 export class HUD {
   /** @param {import('../main.js').Game} game */
@@ -41,8 +130,6 @@ export class HUD {
 
     // --- Element refs ------------------------------------------------------
     this.hotbarEl = el('hotbar');
-    this.healthEl = el('health');
-    this.hungerEl = el('hunger');
     this.statsEl = el('stats');
     this.itemNameEl = el('itemName');
     this.breakBarEl = el('breakBar');
@@ -111,6 +198,17 @@ export class HUD {
     this._fps = 0;
     this._debugTimer = 0;
 
+    /** Slot the pointer is over, for tooltips and hover shortcuts. */
+    this.hovered = null;
+    /** Drag in progress, {button, parts[]}, resolved on mouseup. */
+    this._drag = null;
+    this._lastClick = null;
+    this.tooltipEl = el('tooltip');
+    this.compassStrip = el('compassStrip') ? new CompassStrip(el('compassStrip')) : null;
+    // One binding per inventory slot, shared by every screen that shows it.
+    this._hotbarBindings = Array.from({ length: HOTBAR_SIZE }, (_, i) => this._invBinding(i));
+    this._backpackBindings = Array.from({ length: STORAGE_SIZE }, (_, i) => this._invBinding(HOTBAR_SIZE + i));
+
     this._buildHotbar();
     this._buildStatRows();
     this._buildInventoryScreen();
@@ -123,14 +221,27 @@ export class HUD {
   // -------------------------------------------------------------------------
   // Slot construction
   // -------------------------------------------------------------------------
+  //
+  // Every interactive slot is backed by a *binding* — where its stack lives and
+  // what it will accept — rather than by a click handler. That one change is
+  // what lets a single implementation do everything a player expects of an
+  // inventory: click and split, shift-click across screens, drag a stack out
+  // over several slots, double-click to gather, swap with a hotbar key, and
+  // throw from under the cursor.
+  //
+  //   get()          -> stack | null
+  //   set(stack)
+  //   accept?(stack) -> whether this slot may receive it (armour, fuel, ...)
+  //   role           'inv' | 'chest' | 'grid' | 'armor' | 'furnace' | 'output'
+  //                  | 'result' | 'palette'
+  //   index?         inventory index, for role 'inv'
+  //   special?       (button, shift) => void. Results and the palette act at
+  //                  once and never take part in a drag.
 
-  /**
-   * @param {(button:number)=>void} [onAction] receives the mouse button:
-   *   0 = left (whole stack), 2 = right (half / single item).
-   */
-  _makeSlot(onAction, className = '') {
+  /** @param binding null for a display-only slot (the in-game hotbar) */
+  _makeSlot(binding = null, className = '') {
     const slot = document.createElement('div');
-    slot.className = 'slot ' + className;
+    slot.className = 'slot ' + className + (binding ? ' interactive' : '');
     const icon = document.createElement('div');
     icon.className = 'icon';
     const count = document.createElement('div');
@@ -140,32 +251,77 @@ export class HUD {
     durability.innerHTML = '<i></i>';
     slot.append(icon, count, durability);
 
-    if (onAction) {
+    const parts = { slot, icon, count, durability, bar: durability.firstChild, binding };
+    if (binding) {
       // mousedown rather than click, so the right button registers at all.
       slot.addEventListener('mousedown', (e) => {
         e.preventDefault();
-        onAction(e.button);
+        this._onSlotDown(parts, e);
       });
+      slot.addEventListener('mouseenter', () => this._onSlotEnter(parts));
+      slot.addEventListener('mouseleave', () => this._onSlotLeave(parts));
       slot.addEventListener('contextmenu', (e) => e.preventDefault());
     }
-    return { slot, icon, count, durability, bar: durability.firstChild };
+    return parts;
   }
 
-  /** Build a row of slots backed by an arbitrary array. */
+  /**
+   * Binding for one slot of the player's own inventory. Reads through
+   * `this.player.inventory` on every call rather than capturing it, so the
+   * bindings survive the inventory object being replaced.
+   */
+  _invBinding(index) {
+    return {
+      role: 'inv',
+      index,
+      get: () => this.player.inventory.slots[index],
+      set: (s) => this.player.inventory.setSlot(index, s),
+    };
+  }
+
+  /** Build a row of slots backed by an arbitrary array (the crafting grids). */
   _buildArrayGrid(container, array, size, onChange, className = '') {
     const views = [];
     for (let i = 0; i < size; i++) {
-      const parts = this._makeSlot(
-        (button) => {
-          this._slotAction(button, () => array[i], (s) => { array[i] = s; onChange?.(); });
-          this.refreshAll();
-        },
-        className
-      );
+      const parts = this._makeSlot({
+        role: 'grid',
+        get: () => array[i],
+        set: (s) => { array[i] = s; onChange?.(); },
+      }, className);
       container.appendChild(parts.slot);
       views.push(parts);
     }
     return views;
+  }
+
+  /** The backpack and hotbar rows that every container screen repeats. */
+  _buildPlayerRows(storageId, hotbarId) {
+    const storage = [];
+    for (let i = 0; i < STORAGE_SIZE; i++) {
+      const parts = this._makeSlot(this._backpackBindings[i]);
+      el(storageId).appendChild(parts.slot);
+      storage.push(parts);
+    }
+    const hotbar = [];
+    for (let i = 0; i < HOTBAR_SIZE; i++) {
+      const parts = this._makeSlot(this._hotbarBindings[i]);
+      el(hotbarId).appendChild(parts.slot);
+      hotbar.push(parts);
+    }
+    return { storage, hotbar };
+  }
+
+  /** A crafting result: shows what the grid makes, and crafts when clicked. */
+  _resultBinding(grid, size) {
+    return {
+      role: 'result',
+      get: () => findRecipe(grid, size),
+      set: () => {},
+      special: (button, shift) => {
+        if (shift) this._craftAll(grid, size);
+        else this._takeCraftResult(grid, size);
+      },
+    };
   }
 
   _buildHotbar() {
@@ -178,197 +334,459 @@ export class HUD {
   }
 
   _buildStatRows() {
-    this.heartPips = [];
-    this.hungerPips = [];
-    for (let i = 0; i < 10; i++) {
-      const heart = document.createElement('span');
-      heart.className = 'pip';
-      heart.textContent = HEART;
-      this.healthEl.appendChild(heart);
-      this.heartPips.push(heart);
-
-      const food = document.createElement('span');
-      food.className = 'pip';
-      food.textContent = DRUMSTICK;
-      this.hungerEl.appendChild(food);
-      this.hungerPips.push(food);
-    }
-    // Armour readout sits between the two bars, only shown when wearing gear.
-    this.armorLabel = document.createElement('span');
-    this.armorLabel.style.cssText = 'font-size:12px;margin-left:8px;text-shadow:1px 1px 2px #000';
-    this.healthEl.appendChild(this.armorLabel);
+    // Health, hunger, armour and air: pixel art with ghost hearts. See vitals.js.
+    this.vitals = new Vitals(this.statsEl);
   }
 
   _buildInventoryScreen() {
-    const inv = this.player.inventory;
-
-    // Backpack + hotbar rows share the inventory array.
-    this.storageSlots = [];
-    for (let i = 0; i < STORAGE_SIZE; i++) {
-      const index = HOTBAR_SIZE + i;
-      const parts = this._makeSlot((b) => this._inventorySlotAction(index, b));
-      el('storageGrid').appendChild(parts.slot);
-      this.storageSlots.push(parts);
-    }
-
-    this.invHotbarSlots = [];
-    for (let i = 0; i < HOTBAR_SIZE; i++) {
-      const parts = this._makeSlot((b) => this._inventorySlotAction(i, b));
-      el('invHotbarGrid').appendChild(parts.slot);
-      this.invHotbarSlots.push(parts);
-    }
+    const rows = this._buildPlayerRows('storageGrid', 'invHotbarGrid');
+    this.storageSlots = rows.storage;
+    this.invHotbarSlots = rows.hotbar;
 
     // Armour slots reject anything that is not the matching piece.
+    this.armorBindings = [];
     this.armorSlots = [];
     for (let i = 0; i < ARMOR_PIECES.length; i++) {
-      const parts = this._makeSlot((b) => {
-        this._slotAction(
-          b,
-          () => inv.armor[i],
-          (s) => { inv.armor[i] = s; inv.touch(); },
-          (stack) => Inventory.armorSlotFor(stack.id) === i
-        );
-        this.refreshAll();
-      }, 'armorSlot');
-      parts.slot.title = ARMOR_PIECES[i];
+      const binding = {
+        role: 'armor',
+        get: () => this.player.inventory.armor[i],
+        set: (s) => {
+          if (s && !this.player.inventory.armor[i]) audio.equip();
+          this.player.inventory.armor[i] = s;
+          this.player.inventory.touch();
+        },
+        accept: (stack) => Inventory.armorSlotFor(stack.id) === i,
+      };
+      const parts = this._makeSlot(binding, `armorSlot armor-${ARMOR_PIECES[i]}`);
+      // Shown in the tooltip while the slot is empty, so it says what goes there.
+      parts.emptyHint = ARMOR_PIECES[i][0].toUpperCase() + ARMOR_PIECES[i].slice(1);
       el('armorGrid').appendChild(parts.slot);
       this.armorSlots.push(parts);
+      this.armorBindings.push(binding);
     }
 
     // 2x2 crafting grid + its result.
     this.invCraftSlots = this._buildArrayGrid(el('invCraftGrid'), this.invCraftGrid, 4);
-    this.invCraftResultSlot = this._makeSlot(
-      () => { this._takeCraftResult(this.invCraftGrid, 2); this.refreshAll(); },
-      'resultSlot'
-    );
+    this.invRecipes = new RecipeBook(this, {
+      panel: el('invRecipes'), grid: this.invCraftGrid, size: 2, toggle: el('invRecipeToggle'),
+    });
+    this.invCraftResultSlot = this._makeSlot(this._resultBinding(this.invCraftGrid, 2), 'resultSlot');
     el('invCraftResult').appendChild(this.invCraftResultSlot.slot);
 
     // Creative palette: every block, then every item.
     this.paletteIds = [...obtainableBlocks(), ...obtainableItems()];
+    this.paletteSlots = [];
     for (const id of this.paletteIds) {
-      const parts = this._makeSlot((button) => this._onPaletteClick(id, button));
+      const parts = this._makeSlot({
+        role: 'palette',
+        get: () => ({ id, count: 1 }),
+        set: () => {},
+        special: (button, shift) => this._onPaletteClick(id, button, shift),
+      });
       parts.icon.style.backgroundImage = `url(${getTileDataURL(getIconTile(id))})`;
-      parts.slot.title = getDisplayName(id);
+      parts.searchText = getDisplayName(id).toLowerCase();
       this.paletteGrid.appendChild(parts.slot);
+      this.paletteSlots.push(parts);
     }
+
+    // Filter the palette as you type. The game ignores keys while a text field
+    // has focus, so typing here cannot trigger hotkeys.
+    const search = el('paletteSearch');
+    if (search) {
+      search.addEventListener('input', () => {
+        const query = search.value.trim().toLowerCase();
+        for (const parts of this.paletteSlots) {
+          parts.slot.style.display = !query || parts.searchText.includes(query) ? '' : 'none';
+        }
+      });
+    }
+
+    el('sortInvButton')?.addEventListener('click', () => {
+      this._sortBindings(this._backpackBindings);
+      this.refreshAll();
+    });
   }
 
   _buildCraftingScreen() {
     this.tableCraftSlots = this._buildArrayGrid(el('tableCraftGrid'), this.tableCraftGrid, 9);
-    this.tableResultSlot = this._makeSlot(
-      () => { this._takeCraftResult(this.tableCraftGrid, 3); this.refreshAll(); },
-      'resultSlot'
-    );
+    this.tableRecipes = new RecipeBook(this, {
+      panel: el('tableRecipes'), grid: this.tableCraftGrid, size: 3, toggle: el('tableRecipeToggle'),
+    });
+    this.tableResultSlot = this._makeSlot(this._resultBinding(this.tableCraftGrid, 3), 'resultSlot');
     el('tableCraftResult').appendChild(this.tableResultSlot.slot);
 
-    this.tableStorageSlots = [];
-    for (let i = 0; i < STORAGE_SIZE; i++) {
-      const index = HOTBAR_SIZE + i;
-      const parts = this._makeSlot((b) => this._inventorySlotAction(index, b));
-      el('tableStorageGrid').appendChild(parts.slot);
-      this.tableStorageSlots.push(parts);
-    }
-    this.tableHotbarSlots = [];
-    for (let i = 0; i < HOTBAR_SIZE; i++) {
-      const parts = this._makeSlot((b) => this._inventorySlotAction(i, b));
-      el('tableHotbarGrid').appendChild(parts.slot);
-      this.tableHotbarSlots.push(parts);
-    }
+    const rows = this._buildPlayerRows('tableStorageGrid', 'tableHotbarGrid');
+    this.tableStorageSlots = rows.storage;
+    this.tableHotbarSlots = rows.hotbar;
   }
 
   _buildFurnaceScreen() {
-    const furnaceSlot = (field, filter) =>
-      this._makeSlot((b) => {
-        if (!this.activeFurnace) return;
-        this._slotAction(b, () => this.activeFurnace[field], (s) => { this.activeFurnace[field] = s; }, filter);
-        this.refreshAll();
-      });
-
-    // Only smeltable things go in the top slot, only fuels in the bottom.
-    this.furnaceInputSlot = furnaceSlot('input', (s) => !!smeltResultFor(s.id));
-    this.furnaceFuelSlot = furnaceSlot('fuel', (s) => fuelValueFor(s.id) > 0);
-    // The output slot is take-only — you cannot put things back into it.
-    this.furnaceOutputSlot = this._makeSlot((button) => {
-      if (!this.activeFurnace || !this.activeFurnace.output) return;
-      this._slotAction(button, () => this.activeFurnace.output, (s) => { this.activeFurnace.output = s; }, () => false);
-      this.refreshAll();
+    const field = (name, role, accept) => ({
+      role,
+      get: () => this.activeFurnace?.[name] ?? null,
+      set: (s) => { if (this.activeFurnace) this.activeFurnace[name] = s; },
+      accept,
     });
+
+    // Only smeltable things go in the top slot, only fuels in the bottom, and
+    // the output is take-only.
+    this.furnaceInputBinding = field('input', 'furnace', (s) => !!smeltResultFor(s.id));
+    this.furnaceFuelBinding = field('fuel', 'furnace', (s) => fuelValueFor(s.id) > 0);
+    this.furnaceInputSlot = this._makeSlot(this.furnaceInputBinding);
+    this.furnaceFuelSlot = this._makeSlot(this.furnaceFuelBinding);
+    this.furnaceOutputSlot = this._makeSlot(field('output', 'output', () => false));
 
     el('furnaceInput').appendChild(this.furnaceInputSlot.slot);
     el('furnaceFuel').appendChild(this.furnaceFuelSlot.slot);
     el('furnaceOutput').appendChild(this.furnaceOutputSlot.slot);
 
-    this.furnaceStorageSlots = [];
-    for (let i = 0; i < STORAGE_SIZE; i++) {
-      const index = HOTBAR_SIZE + i;
-      const parts = this._makeSlot((b) => this._inventorySlotAction(index, b));
-      el('furnaceStorageGrid').appendChild(parts.slot);
-      this.furnaceStorageSlots.push(parts);
-    }
-    this.furnaceHotbarSlots = [];
-    for (let i = 0; i < HOTBAR_SIZE; i++) {
-      const parts = this._makeSlot((b) => this._inventorySlotAction(i, b));
-      el('furnaceHotbarGrid').appendChild(parts.slot);
-      this.furnaceHotbarSlots.push(parts);
-    }
+    const rows = this._buildPlayerRows('furnaceStorageGrid', 'furnaceHotbarGrid');
+    this.furnaceStorageSlots = rows.storage;
+    this.furnaceHotbarSlots = rows.hotbar;
   }
 
   _buildChestScreen() {
-    // The chest's own 27 slots live on the block entity, so they are wired
-    // through a getter that reads whichever chest is currently open.
+    // The chest's own 27 slots live on the block entity, so they read through
+    // whichever chest is currently open.
+    this.chestBindings = [];
     this.chestSlots = [];
     for (let i = 0; i < 27; i++) {
-      const parts = this._makeSlot((button) => {
-        if (!this.activeChest) return;
-        this._slotAction(
-          button,
-          () => this.activeChest.slots[i],
-          (s) => { this.activeChest.slots[i] = s; }
-        );
-        this.refreshAll();
-      });
+      const binding = {
+        role: 'chest',
+        get: () => this.activeChest?.slots[i] ?? null,
+        set: (s) => { if (this.activeChest) this.activeChest.slots[i] = s; },
+      };
+      const parts = this._makeSlot(binding);
       el('chestGrid').appendChild(parts.slot);
       this.chestSlots.push(parts);
+      this.chestBindings.push(binding);
     }
 
-    this.chestStorageSlots = [];
-    for (let i = 0; i < STORAGE_SIZE; i++) {
-      const index = HOTBAR_SIZE + i;
-      const parts = this._makeSlot((b) => this._inventorySlotAction(index, b));
-      el('chestStorageGrid').appendChild(parts.slot);
-      this.chestStorageSlots.push(parts);
-    }
-    this.chestHotbarSlots = [];
-    for (let i = 0; i < HOTBAR_SIZE; i++) {
-      const parts = this._makeSlot((b) => this._inventorySlotAction(i, b));
-      el('chestHotbarGrid').appendChild(parts.slot);
-      this.chestHotbarSlots.push(parts);
-    }
+    const rows = this._buildPlayerRows('chestStorageGrid', 'chestHotbarGrid');
+    this.chestStorageSlots = rows.storage;
+    this.chestHotbarSlots = rows.hotbar;
+
+    el('sortChestButton')?.addEventListener('click', () => {
+      if (!this.activeChest) return;
+      this._sortBindings(this.chestBindings);
+      this.refreshAll();
+    });
   }
 
   _bindEvents() {
     document.addEventListener('mousemove', (e) => {
-      if (!this.cursorStack) return;
-      this.cursorStackEl.style.left = e.clientX + 'px';
-      this.cursorStackEl.style.top = e.clientY + 'px';
+      this._mouseX = e.clientX;
+      this._mouseY = e.clientY;
+      if (this.cursorStack) {
+        this.cursorStackEl.style.left = e.clientX + 'px';
+        this.cursorStackEl.style.top = e.clientY + 'px';
+      }
+      if (this.tooltipEl.classList.contains('show')) this._placeTooltip();
     });
+
+    // A drag resolves wherever the button comes up, even off the panel.
+    document.addEventListener('mouseup', (e) => this._onSlotUp(e));
+
+    // While hovering a slot: number keys swap with the hotbar, Drop throws.
+    document.addEventListener('keydown', (e) => this._onContainerKey(e));
 
     // Right-clicking inside any container UI is a game action, never a menu.
     for (const screen of [this.inventoryScreen, this.craftingScreen, this.furnaceScreen, this.chestScreen]) {
       screen.addEventListener('contextmenu', (e) => e.preventDefault());
     }
 
-    this.player.survival.onDamage(() => this.flashDamage());
+    this.player.survival.onDamage(() => {
+      this.flashDamage();
+      this._showHitArc();
+    });
   }
 
   // -------------------------------------------------------------------------
-  // Generic slot interaction
+  // Slot interaction
   // -------------------------------------------------------------------------
 
-  _inventorySlotAction(index, button) {
-    const inv = this.player.inventory;
-    this._slotAction(button, () => inv.slots[index], (s) => inv.setSlot(index, s));
+  _onSlotDown(parts, e) {
+    const b = parts.binding;
+    const button = e.button;
+    if (button !== 0 && button !== 2) return;
+    // A second button pressed mid-drag is ignored rather than half-applied.
+    if (this._drag) return;
+
+    if (b.special) {
+      b.special(button, e.shiftKey);
+      this.refreshAll();
+      this._showTooltip(parts);
+      return;
+    }
+
+    if (e.shiftKey && button === 0) {
+      audio.uiSlot();
+      this._quickMove(b);
+      this.refreshAll();
+      this._showTooltip(parts);
+      return;
+    }
+
+    const now = performance.now();
+    const last = this._lastClick;
+    const doubleClick = button === 0 && last && last.parts === parts &&
+      last.pickedUp && now - last.time < DOUBLE_CLICK_MS;
+    this._lastClick = { parts, time: now, pickedUp: false };
+
+    if (doubleClick && this.cursorStack) {
+      this._gather();
+      this._lastClick = null;
+      this.refreshAll();
+      return;
+    }
+
+    if (this.cursorStack) {
+      // Holding something: resolve on release, so dragging across several
+      // slots can spread the stack out instead of dropping it all in one.
+      this._drag = { button, parts: [parts] };
+      parts.slot.classList.add('dragTarget');
+      this._hideTooltip();
+      return;
+    }
+
+    // Empty hand: pick up now, which is what makes a following drag possible.
+    this._slotAction(button, b.get, b.set, b.accept);
+    if (this.cursorStack) audio.uiSlot();
+    this._lastClick.pickedUp = !!this.cursorStack;
     this.refreshAll();
+    this._hideTooltip();
+  }
+
+  _onSlotEnter(parts) {
+    this.hovered = parts;
+    if (this._drag) this._extendDrag(parts);
+    this._showTooltip(parts);
+  }
+
+  _onSlotLeave(parts) {
+    if (this.hovered === parts) this.hovered = null;
+    this._hideTooltip();
+  }
+
+  _onSlotUp(e) {
+    const drag = this._drag;
+    if (!drag || e.button !== drag.button) return;
+    this._drag = null;
+    for (const p of drag.parts) p.slot.classList.remove('dragTarget');
+
+    audio.uiSlot();
+    if (drag.parts.length === 1) {
+      const b = drag.parts[0].binding;
+      this._slotAction(drag.button, b.get, b.set, b.accept);
+    } else {
+      this._distribute(drag.parts.map((p) => p.binding), drag.button);
+    }
+    this.refreshAll();
+    if (this.hovered) this._showTooltip(this.hovered);
+  }
+
+  _extendDrag(parts) {
+    const b = parts.binding;
+    if (!b || b.special || this._drag.parts.includes(parts)) return;
+    if (!this._canReceive(b, this.cursorStack)) return;
+    this._drag.parts.push(parts);
+    parts.slot.classList.add('dragTarget');
+  }
+
+  /** Whether a slot could take at least one of this stack. */
+  _canReceive(b, stack) {
+    if (!stack || (b.accept && !b.accept(stack))) return false;
+    const slot = b.get();
+    if (!slot) return true;
+    return slot.id === stack.id && slot.durability === undefined &&
+      stack.durability === undefined && slot.count < getMaxStack(slot.id);
+  }
+
+  /**
+   * Spread the held stack over the slots a drag crossed. The left button
+   * shares it out evenly; the right lays exactly one in each.
+   */
+  _distribute(bindings, button) {
+    const held = this.cursorStack;
+    const targets = bindings.filter((b) => this._canReceive(b, held));
+    if (!held || targets.length === 0) return;
+
+    const max = getMaxStack(held.id);
+    const share = button === 2 ? 1 : Math.max(1, Math.floor(held.count / targets.length));
+    for (const b of targets) {
+      if (held.count <= 0) break;
+      const slot = b.get();
+      const n = Math.min(share, slot ? max - slot.count : max, held.count);
+      if (n <= 0) continue;
+      if (slot) {
+        slot.count += n;
+        b.set(slot);
+      } else {
+        b.set({ ...held, count: n });
+      }
+      held.count -= n;
+    }
+    this.cursorStack = held.count > 0 ? held : null;
+  }
+
+  /** Which container screen is showing, for deciding where shift-click goes. */
+  _openScreen() {
+    if (this.chestScreen.classList.contains('show')) return 'chest';
+    if (this.furnaceScreen.classList.contains('show')) return 'furnace';
+    if (this.craftingScreen.classList.contains('show')) return 'table';
+    if (this.inventoryScreen.classList.contains('show')) return 'inventory';
+    return null;
+  }
+
+  /** Shift-click: send a whole stack to wherever it obviously belongs. */
+  _quickMove(b) {
+    const stack = b.get();
+    if (!stack) return;
+    b.set(this._moveInto(stack, this._quickTargets(b, stack)));
+  }
+
+  _quickTargets(b, stack) {
+    const screen = this._openScreen();
+    if (b.role !== 'inv') return [...this._backpackBindings, ...this._hotbarBindings];
+
+    if (screen === 'chest' && this.activeChest) return this.chestBindings;
+    if (screen === 'furnace' && this.activeFurnace) {
+      if (smeltResultFor(stack.id)) return [this.furnaceInputBinding];
+      if (fuelValueFor(stack.id) > 0) return [this.furnaceFuelBinding];
+    }
+    if (screen === 'inventory') {
+      const piece = Inventory.armorSlotFor(stack.id);
+      if (piece >= 0 && !this.player.inventory.armor[piece]) return [this.armorBindings[piece]];
+    }
+    // Otherwise hop between the hotbar and the backpack.
+    return b.index < HOTBAR_SIZE ? this._backpackBindings : this._hotbarBindings;
+  }
+
+  /**
+   * Put as much of a stack as fits into a list of slots: topping up matching
+   * stacks first, then filling empty ones.
+   * @returns what is left of the stack, or null if it all moved
+   */
+  _moveInto(stack, targets) {
+    const max = getMaxStack(stack.id);
+    const gear = stack.durability !== undefined;
+    let count = stack.count;
+
+    if (!gear) {
+      for (const t of targets) {
+        if (count <= 0) break;
+        const slot = t.get();
+        if (!slot || slot.id !== stack.id || slot.durability !== undefined || slot.count >= max) continue;
+        if (t.accept && !t.accept(stack)) continue;
+        const n = Math.min(max - slot.count, count);
+        slot.count += n;
+        t.set(slot);
+        count -= n;
+      }
+    }
+    for (const t of targets) {
+      if (count <= 0) break;
+      if (t.get() || (t.accept && !t.accept(stack))) continue;
+      const n = Math.min(max, count);
+      // Gear moves as the same object, so its wear goes with it.
+      t.set(gear ? stack : { ...stack, count: n });
+      count -= n;
+    }
+
+    if (count <= 0) return null;
+    stack.count = count;
+    return stack;
+  }
+
+  /** Double-click: pull every matching item on screen onto the held stack. */
+  _gather() {
+    const held = this.cursorStack;
+    if (!held || held.durability !== undefined) return;
+    const max = getMaxStack(held.id);
+    const chest = this._openScreen() === 'chest' ? this.chestBindings : [];
+    const sources = [...chest, ...this._backpackBindings, ...this._hotbarBindings];
+
+    // Partial stacks first, so whole stacks elsewhere stay whole if they can.
+    for (const takeWhole of [false, true]) {
+      for (const b of sources) {
+        if (held.count >= max) return;
+        const slot = b.get();
+        if (!slot || slot.id !== held.id || slot.durability !== undefined) continue;
+        if (!takeWhole && slot.count >= max) continue;
+        const n = Math.min(max - held.count, slot.count);
+        held.count += n;
+        slot.count -= n;
+        b.set(slot.count > 0 ? slot : null);
+      }
+    }
+  }
+
+  /** Hovering a slot and pressing 1-9 swaps it with that hotbar slot. */
+  _swapWithHotbar(b, index) {
+    const hot = this._hotbarBindings[index];
+    if (b.role === 'inv' && b.index === index) return;
+    const here = b.get();
+    const there = hot.get();
+    if (there && b.accept && !b.accept(there)) return;
+    b.set(there ?? null);
+    hot.set(here ?? null);
+  }
+
+  _onContainerKey(e) {
+    if (!this.hovered || !this.anyContainerOpen || e.repeat) return;
+    if (e.target instanceof HTMLInputElement) return;
+    const b = this.hovered.binding;
+    if (!b || b.special || this.cursorStack) return;
+
+    const digit = /^Digit([1-9])$/.exec(e.code);
+    if (digit) {
+      e.preventDefault();
+      this._swapWithHotbar(b, Number(digit[1]) - 1);
+    } else if (e.code === keybinds.get('drop')) {
+      const stack = b.get();
+      if (!stack || !this.game.entities) return;
+      // As in the world: Ctrl throws the whole stack.
+      const n = e.ctrlKey ? stack.count : 1;
+      this.player.throwItem(stack.id, n, this.game.entities, stack.durability);
+      stack.count -= n;
+      b.set(stack.count > 0 ? stack : null);
+    } else {
+      return;
+    }
+    this.refreshAll();
+    this._showTooltip(this.hovered);
+  }
+
+  /** Merge and order a run of slots: blocks, then items, then gear. */
+  _sortBindings(bindings) {
+    const stacks = [];
+    for (const b of bindings) {
+      const s = b.get();
+      if (s) stacks.push(s);
+      b.set(null);
+    }
+
+    const merged = [];
+    for (const s of stacks) {
+      const max = getMaxStack(s.id);
+      if (s.durability !== undefined || max <= 1) {
+        merged.push(s);
+        continue;
+      }
+      let count = s.count;
+      for (const m of merged) {
+        if (count <= 0) break;
+        if (m.id !== s.id || m.durability !== undefined || m.count >= max) continue;
+        const n = Math.min(max - m.count, count);
+        m.count += n;
+        count -= n;
+      }
+      if (count > 0) merged.push({ ...s, count });
+    }
+
+    const rank = (s) => (s.durability !== undefined ? 2 : isBlockId(s.id) ? 0 : 1);
+    merged.sort((a, c) => rank(a) - rank(c) || a.id - c.id || c.count - a.count);
+    merged.forEach((s, i) => bindings[i].set(s));
   }
 
   /**
@@ -418,7 +836,17 @@ export class HUD {
 
     // ---- Left click -------------------------------------------------------
     if (held) {
-      if (!allowed(held)) return;
+      if (!allowed(held)) {
+        // A take-only slot (the furnace output) still tops up a matching stack
+        // in hand, so collecting a batch of ingots is one click, not two.
+        if (slot && slot.id === held.id && held.durability === undefined) {
+          const moved = Math.min(getMaxStack(held.id) - held.count, slot.count);
+          held.count += moved;
+          slot.count -= moved;
+          set(slot.count > 0 ? slot : null);
+        }
+        return;
+      }
       if (!slot) {
         set(held);
         this.cursorStack = null;
@@ -444,17 +872,81 @@ export class HUD {
     if (this.cursorStack.count <= 0) this.cursorStack = null;
   }
 
-  _onPaletteClick(id, button) {
+  _onPaletteClick(id, button, shift = false) {
     if (button !== 0 && button !== 2) return;
     const wanted = button === 2 ? 1 : getMaxStack(id);
+
+    // Shift sends it straight to the inventory, skipping the cursor.
+    if (shift) {
+      this.player.inventory.add(id, wanted);
+      return;
+    }
 
     if (this.cursorStack && this.cursorStack.id === id) {
       this.cursorStack.count = Math.min(getMaxStack(id), this.cursorStack.count + wanted);
     } else {
-      if (this.cursorStack) this.player.inventory.add(this.cursorStack.id, this.cursorStack.count);
+      if (this.cursorStack) this._giveBack(this.cursorStack);
       this.cursorStack = Inventory.makeStack(id, wanted);
     }
-    this.refreshAll();
+  }
+
+  // -------------------------------------------------------------------------
+  // Tooltips
+  // -------------------------------------------------------------------------
+
+  _showTooltip(parts) {
+    const b = parts.binding;
+    if (!b || this.cursorStack || this._drag) {
+      this._hideTooltip();
+      return;
+    }
+
+    const stack = b.get();
+    let info;
+    if (stack) {
+      info = describeStack(stack);
+      if (b.role === 'result') info.lines.push('Shift-click to craft as many as you can');
+      if (b.role === 'palette') info.lines.push('Shift-click to put a stack in your inventory');
+      if (parts.hint) info.lines.push(parts.hint);
+    } else if (parts.emptyHint) {
+      info = { name: `${parts.emptyHint} slot`, color: '#9aa4b8', lines: [] };
+    } else {
+      this._hideTooltip();
+      return;
+    }
+
+    const t = this.tooltipEl;
+    t.textContent = '';
+    const name = document.createElement('div');
+    name.className = 'ttName';
+    name.textContent = info.name;
+    if (info.color) name.style.color = info.color;
+    t.appendChild(name);
+    for (const line of info.lines) {
+      const row = document.createElement('div');
+      row.className = 'ttLine';
+      row.textContent = line;
+      t.appendChild(row);
+    }
+    t.classList.add('show');
+    this._placeTooltip();
+  }
+
+  _hideTooltip() {
+    this.tooltipEl.classList.remove('show');
+  }
+
+  /** Beside the cursor, flipped to the other side at the screen edge. */
+  _placeTooltip() {
+    const t = this.tooltipEl;
+    const x = this._mouseX ?? 0;
+    const y = this._mouseY ?? 0;
+    const w = t.offsetWidth;
+    const h = t.offsetHeight;
+    const left = x + 16 + w > window.innerWidth ? x - 12 - w : x + 16;
+    const top = Math.min(window.innerHeight - h - 4, Math.max(4, y - 10));
+    t.style.left = left + 'px';
+    t.style.top = top + 'px';
   }
 
   // -------------------------------------------------------------------------
@@ -482,12 +974,43 @@ export class HUD {
     }
   }
 
+  /**
+   * Shift-click on a result: craft batch after batch straight into the
+   * inventory until the grid runs out or there is no room left.
+   */
+  _craftAll(grid, size) {
+    const inv = this.player.inventory;
+    for (let guard = 0; guard < 64; guard++) {
+      const recipe = findRecipe(grid, size);
+      if (!recipe || inv.roomFor(recipe.id) < recipe.count) break;
+      inv.add(recipe.id, recipe.count);
+      consumeGrid(grid);
+      if (this.game._notePlayerMilestone) {
+        this.game._notePlayerMilestone('crafted', recipe.id, null);
+      }
+    }
+  }
+
+  /**
+   * Return a stack to the inventory, throwing whatever does not fit.
+   *
+   * `addExisting` rather than `add`: plain `add` mints a fresh stack, which
+   * silently repaired any tool that passed through a crafting grid or the
+   * cursor. It also reports what did not fit rather than keeping it, and that
+   * overflow used to simply vanish.
+   */
+  _giveBack(stack) {
+    if (!stack) return;
+    const left = this.player.inventory.addExisting(stack);
+    if (left > 0 && this.game.entities) {
+      this.player.throwItem(stack.id, left, this.game.entities, stack.durability);
+    }
+  }
+
   /** Return a crafting grid's contents to the inventory (on close). */
   _emptyGrid(grid) {
     for (let i = 0; i < grid.length; i++) {
-      const stack = grid[i];
-      if (!stack) continue;
-      this.player.inventory.add(stack.id, stack.count);
+      this._giveBack(grid[i]);
       grid[i] = null;
     }
   }
@@ -528,8 +1051,13 @@ export class HUD {
     this._updateLocator(dt);
     this._updateCompass(dt);
     this._updateStyle(dt);
-    this._updateStats();
-    this._updateBreakBar();
+    this._updateStats(dt);
+    if (this.compassStrip && this.game.world) {
+      const heading = ((-this.player.yaw * 180) / Math.PI + 360) % 360;
+      this.compassStrip.update(heading, this.player.position, this.game.compassMarkers(), this.game.state === 'playing');
+    }
+    // Mining progress is drawn as cracks on the block itself now (see the
+    // renderer); the old bar stays hidden.
     this._updateBossBar();
     this._updateOverlays();
 
@@ -694,45 +1222,9 @@ export class HUD {
     this.styleTotal.textContent = `STYLE ${board.totalStyle}`;
   }
 
-  _updateStats() {
-    const survival = this.player.survival;
+  _updateStats(dt) {
     this.statsEl.classList.toggle('hidden', this.player.creative);
-
-    // Health can exceed the starting twenty — awakening a Comb throne raises the
-    // cap permanently — so the row grows to fit rather than clipping the bonus
-    // silently. Extra hearts are tinted so it reads as a boon, not a miscount.
-    const wanted = Math.ceil(survival.maxHealth / 2);
-    while (this.heartPips.length < wanted) {
-      const heart = document.createElement('span');
-      heart.className = 'pip bonus';
-      heart.textContent = HEART;
-      this.healthEl.appendChild(heart);
-      this.heartPips.push(heart);
-    }
-
-    for (let i = 0; i < this.heartPips.length; i++) {
-      const pip = this.heartPips[i];
-      const threshold = (i + 1) * 2;
-      // A pip past the current cap is hidden entirely, so losing a boost (or
-      // loading a world without one) does not leave dead hearts on screen.
-      pip.style.display = threshold - 1 <= survival.maxHealth ? '' : 'none';
-      this._setPip(pip, survival.health, threshold);
-    }
-
-    for (let i = 0; i < 10; i++) {
-      this._setPip(this.hungerPips[i], survival.hunger, (i + 1) * 2);
-    }
-
-    const armor = this.player.inventory.armorPoints;
-    this.armorLabel.textContent = armor > 0 ? ` ${SHIELD} ${armor}` : '';
-  }
-
-  /** Each pip represents 2 points: full, half or empty. */
-  _setPip(pip, value, threshold) {
-    const full = value >= threshold;
-    const half = !full && value >= threshold - 1;
-    pip.classList.toggle('empty', !full && !half);
-    pip.classList.toggle('half', half);
+    this.vitals.update(dt, this.player);
   }
 
   _updateBreakBar() {
@@ -867,6 +1359,9 @@ export class HUD {
 
     if (this.activeFurnace) this._paintFurnace();
     this._paintCursorStack();
+    // What you can craft changes with every move, so the books follow.
+    this.invRecipes?.refresh();
+    this.tableRecipes?.refresh();
   }
 
   /** Backwards-compatible alias — some call sites still use this name. */
@@ -879,13 +1374,11 @@ export class HUD {
       parts.icon.style.backgroundImage = '';
       parts.count.textContent = '';
       parts.durability.classList.remove('show');
-      parts.slot.title = '';
       return;
     }
 
     parts.icon.style.backgroundImage = `url(${getTileDataURL(getIconTile(stack.id))})`;
     parts.count.textContent = stack.count > 1 ? stack.count : '';
-    parts.slot.title = getDisplayName(stack.id);
 
     // Wear bar, green fading to red as the tool nears breaking.
     const max = getDurability(stack.id);
@@ -894,7 +1387,6 @@ export class HUD {
       parts.durability.classList.add('show');
       parts.bar.style.width = (ratio * 100).toFixed(1) + '%';
       parts.bar.style.background = `hsl(${Math.round(ratio * 110)}, 85%, 45%)`;
-      parts.slot.title += `  ${stack.durability}/${max}`;
     } else {
       parts.durability.classList.remove('show');
     }
@@ -934,24 +1426,30 @@ export class HUD {
     this.modeBadge.classList.toggle('warn', locked);
     this.refreshAll();
     this.inventoryScreen.classList.add('show');
+    this.invRecipes.refresh();
+    audio.uiOpen();
   }
 
   closeInventory() {
     this._emptyGrid(this.invCraftGrid);
     this._returnCursor();
     this.inventoryScreen.classList.remove('show');
+    audio.uiClose();
     this.refreshAll();
   }
 
   openCraftingTable() {
     this.refreshAll();
     this.craftingScreen.classList.add('show');
+    this.tableRecipes.refresh();
+    audio.uiOpen();
   }
 
   closeCraftingTable() {
     this._emptyGrid(this.tableCraftGrid);
     this._returnCursor();
     this.craftingScreen.classList.remove('show');
+    audio.uiClose();
     this.refreshAll();
   }
 
@@ -1085,8 +1583,11 @@ export class HUD {
 
   /** Never let the held stack vanish when a screen closes. */
   _returnCursor() {
+    this._drag = null;
+    this.hovered = null;
+    this._hideTooltip();
     if (!this.cursorStack) return;
-    this.player.inventory.add(this.cursorStack.id, this.cursorStack.count);
+    this._giveBack(this.cursorStack);
     this.cursorStack = null;
     this._paintCursorStack();
   }
@@ -1102,10 +1603,51 @@ export class HUD {
   }
 
   flashDamage() {
+    if (!prefs.get('damageFlash')) return;
     this.damageFlashEl.classList.add('hit');
     requestAnimationFrame(() => {
       requestAnimationFrame(() => this.damageFlashEl.classList.remove('hit'));
     });
+  }
+
+  /**
+   * A red arc on the edge of the screen, on the side the hit came from.
+   * Only for hits with a direction (mobs, arrows, explosions), and only if
+   * the hit was recorded this instant, so a stale one is never shown.
+   */
+  _showHitArc() {
+    const from = this.player.hitFrom;
+    if (!from || performance.now() - from.at > 250) return;
+    const p = this.player.position;
+    const look = this.player.getLookDirection();
+    const len = Math.hypot(look.x, look.z) || 1;
+    const fx = look.x / len, fz = look.z / len;
+    const dx = from.x - p.x, dz = from.z - p.z;
+    // Angle from straight ahead, clockwise: positive means to your right.
+    const angle = Math.atan2(dx * -fz + dz * fx, dx * fx + dz * fz);
+    const arc = document.createElement('div');
+    arc.className = 'hitArc';
+    arc.style.transform = `rotate(${angle}rad)`;
+    el('ui').appendChild(arc);
+    setTimeout(() => arc.remove(), 1100);
+  }
+
+  /** Slide in a card with the achievement's icon, title and what it was for. */
+  showAchievement(achievement) {
+    const card = el('achievementCard');
+    if (!card) {
+      this.showToast(`Achievement: ${achievement.title}`);
+      return;
+    }
+    const icon = achievementIcon(achievement.name);
+    card.querySelector('.acIcon').style.backgroundImage = icon ? `url(${getTileDataURL(getIconTile(icon))})` : '';
+    card.querySelector('.acTitle').textContent = achievement.title;
+    card.querySelector('.acHint').textContent = achievement.hint;
+    card.classList.remove('show');
+    void card.offsetWidth; // restart the slide if one is already showing
+    card.classList.add('show');
+    clearTimeout(this._achievementTimer);
+    this._achievementTimer = setTimeout(() => card.classList.remove('show'), 4200);
   }
 
   _showItemName() {

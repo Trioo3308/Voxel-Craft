@@ -216,6 +216,8 @@ export async function captureState(game, meta = {}) {
     // Fixed at creation; never taken from the live player state, so a bug
     // elsewhere cannot quietly promote a survival world.
     allowCreative: meta.allowCreative === true,
+    /** A small JPEG of the view at the last save, for the world list. */
+    thumbnail: typeof meta.thumbnail === 'string' ? meta.thumbnail : null,
 
     palette: buildPalette(),
 
@@ -227,6 +229,13 @@ export async function captureState(game, meta = {}) {
       pitch: player.pitch,
       creative: player.creative,
       spawn: player.spawnPoint.toArray(),
+      /** Bed position, or null. Older saves folded the bed into `spawn`. */
+      bed: player.bedSpawn ? player.bedSpawn.toArray() : null,
+      /** Where your gravestone is, so the compass can point at it. */
+      lastDeath: player.lastDeath ?? null,
+      waypoints: player.waypoints,
+      portals: player.portals,
+      air: player.air,
       health: player.survival.health,
       hunger: player.survival.hunger,
       saturation: player.survival.saturation,
@@ -289,6 +298,12 @@ export async function applyState(game, save) {
   // A survival world can never come back as creative, whatever the save says.
   player.creative = save.allowCreative === true && !!p.creative;
   player.spawnPoint.fromArray(p.spawn);
+  player.bedSpawn = Array.isArray(p.bed) ? player.spawnPoint.clone().fromArray(p.bed) : null;
+  player.lastDeath = p.lastDeath && typeof p.lastDeath.x === 'number' ? { ...p.lastDeath } : null;
+  player.air = typeof p.air === 'number' ? p.air : player.air;
+  player.waypoints = Array.isArray(p.waypoints) ? p.waypoints.filter((w) => w && typeof w.x === 'number') : [];
+  player.portals = Array.isArray(p.portals) ? p.portals.filter((w) => w && typeof w.x === 'number') : [];
+  player.lastSafe.copy(player.position);
   // Restore the cap before the value, or a boosted player loads clamped back
   // down to twenty. Old saves have no field and keep the default.
   player.survival.maxHealth = p.maxHealth ?? Settings.survival.maxHealth;
@@ -432,6 +447,8 @@ export const SaveManager = {
         formatVersion: w.formatVersion,
         terrainVersion: w.terrainVersion,
         allowCreative: w.allowCreative === true,
+        thumbnail: typeof w.thumbnail === 'string' ? w.thumbnail : null,
+        dayCount: w.dayCount ?? 0,
         // `list()` reads raw records without migrating, so it sees both the v2
         // flat array and the v3 per-dimension map.
         editedBlocks: editChunks(w.edits).reduce((n, c) => n + c.ids.length, 0),

@@ -2074,6 +2074,38 @@ export const PAINTERS = {
     }
   },
 
+  /**
+   * Headstone face. The mesher crops a shaped block's texture to its box, so
+   * only columns 3-12 and rows 3-13 of this ever show on the stone; the cross
+   * is centred in that window rather than in the tile.
+   */
+  [TILE.GRAVESTONE]: (set, rnd) => {
+    noiseFill(set, rnd, [128, 128, 132], 12);
+    // Worn bevel: lighter top-left, darker bottom-right.
+    for (let i = 0; i < T; i++) {
+      set(i, 3, 158, 158, 162);
+      set(3, i, 150, 150, 154);
+      set(i, 13, 92, 92, 98);
+      set(12, i, 96, 96, 102);
+    }
+    // Engraved cross, cut in shadow with a lit lower edge.
+    for (let y = 5; y <= 11; y++) { set(7, y, 70, 70, 76); set(8, y, 78, 78, 84); }
+    for (let x = 5; x <= 10; x++) { set(x, 7, 70, 70, 76); set(x, 8, 142, 142, 148); }
+    set(7, 12, 142, 142, 148); set(8, 12, 142, 142, 148);
+    // Moss creeping up from the plinth.
+    for (let x = 3; x <= 12; x++) {
+      const h = 1 + Math.floor(rnd() * 3);
+      for (let y = 13 - h; y <= 13; y++) {
+        if (rnd() < 0.7) set(x, y, 74 + rnd() * 20, 104 + rnd() * 24, 58 + rnd() * 12);
+      }
+    }
+  },
+
+  [TILE.GRAVESTONE_TOP]: (set, rnd) => {
+    noiseFill(set, rnd, [136, 136, 140], 14);
+    speckle(set, rnd, [104, 110, 96], 10, 1);
+  },
+
   [TILE.AERCLOUD]: (set, rnd) => {
     for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
       const d = (rnd() - 0.5) * 12;

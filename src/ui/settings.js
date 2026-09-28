@@ -1,12 +1,14 @@
 /**
- * settings.js — Settings screen, primarily key rebinding.
+ * settings.js — The settings screen: option pages plus key rebinding.
  *
- * Rows are built from the ACTIONS table in engine/keybinds.js, so adding a
- * rebindable action needs no changes here.
+ * Both halves are table-driven. Option rows come from PREFERENCES in
+ * engine/preferences.js and key rows from ACTIONS in engine/keybinds.js, so
+ * adding either kind of setting needs no changes here.
  */
 
 import { ACTIONS, FIXED_CONTROLS, keybinds, keyLabel } from '../engine/keybinds.js';
 import { RESERVED_COMBOS } from '../engine/input.js';
+import { PREFERENCES, PREFERENCE_GROUPS, prefs } from '../engine/preferences.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -24,11 +26,120 @@ export class SettingsScreen {
     /** Action currently waiting for a key, or null. */
     this.listening = null;
     this.rows = new Map();
+    /** Repaint functions for option rows, keyed by preference id. */
+    this.prefRows = new Map();
+    this.page = 'video';
 
+    this._buildTabs();
+    this._buildPrefRows();
     this._buildBindRows();
     this._buildFixedList();
     this._bindButtons();
+
+    // Keep the rows honest if something else changes an option (the mute key,
+    // say) while the screen is open.
+    prefs.onChange((id) => this.prefRows.get(id)?.());
   }
+
+  // -------------------------------------------------------------------------
+  // Tabs
+  // -------------------------------------------------------------------------
+
+  _buildTabs() {
+    const bar = el('settingsTabs');
+    this.tabButtons = new Map();
+    for (const group of PREFERENCE_GROUPS) {
+      const button = document.createElement('button');
+      button.textContent = group.label;
+      button.addEventListener('click', () => this.showPage(group.id));
+      bar.appendChild(button);
+      this.tabButtons.set(group.id, button);
+    }
+    this.showPage(this.page);
+  }
+
+  showPage(page) {
+    this.page = page;
+    for (const [id, button] of this.tabButtons) button.classList.toggle('active', id === page);
+    for (const node of this.screen.querySelectorAll('.tabPage')) {
+      node.classList.toggle('active', node.dataset.page === page);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Option rows
+  // -------------------------------------------------------------------------
+
+  _buildPrefRows() {
+    for (const def of PREFERENCES) {
+      const list = el(`prefs-${def.group}`);
+      if (!list) continue;
+
+      const row = document.createElement('div');
+      row.className = 'prefRow';
+      const label = document.createElement('div');
+      label.className = 'prefLabel';
+      label.textContent = def.label;
+      row.appendChild(label);
+
+      let repaint;
+      if (def.type === 'range') {
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.min = def.min;
+        slider.max = def.max;
+        slider.step = def.step;
+        const value = document.createElement('div');
+        value.className = 'prefValue';
+        slider.addEventListener('input', () => prefs.set(def.id, Number(slider.value)));
+        row.append(slider, value);
+        repaint = () => {
+          const v = prefs.get(def.id);
+          slider.value = v;
+          value.textContent = def.format ? def.format(v) : String(v);
+        };
+      } else if (def.type === 'toggle') {
+        const button = document.createElement('button');
+        button.className = 'toggle';
+        button.addEventListener('click', () => prefs.set(def.id, !prefs.get(def.id)));
+        row.appendChild(button);
+        repaint = () => {
+          const on = prefs.get(def.id);
+          button.textContent = on ? 'On' : 'Off';
+          button.classList.toggle('on', on);
+        };
+      } else {
+        const group = document.createElement('div');
+        group.className = 'segmented';
+        const buttons = def.options.map((option) => {
+          const button = document.createElement('button');
+          button.textContent = option;
+          button.addEventListener('click', () => prefs.set(def.id, option));
+          group.appendChild(button);
+          return [option, button];
+        });
+        row.appendChild(group);
+        repaint = () => {
+          for (const [option, button] of buttons) button.classList.toggle('on', prefs.get(def.id) === option);
+        };
+      }
+
+      if (def.desc) {
+        const desc = document.createElement('div');
+        desc.className = 'prefDesc';
+        desc.textContent = def.desc;
+        row.appendChild(desc);
+      }
+
+      list.appendChild(row);
+      this.prefRows.set(def.id, repaint);
+      repaint();
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Key bindings
+  // -------------------------------------------------------------------------
 
   _buildBindRows() {
     let lastGroup = null;
@@ -90,8 +201,11 @@ export class SettingsScreen {
       this.close();
     });
 
+    // Resets only the page you are looking at: nobody wants to lose their key
+    // bindings because the brightness slider went too far.
     el('resetBindsButton').addEventListener('click', () => {
-      keybinds.reset();
+      prefs.reset(this.page);
+      if (this.page === 'controls') keybinds.reset();
       this._refresh();
     });
 
@@ -142,12 +256,13 @@ export class SettingsScreen {
     };
   }
 
-  /** Repaint every row from the current bindings. */
+  /** Repaint every row from the current bindings and options. */
   _refresh() {
     for (const [actionId, button] of this.rows) {
       button.classList.remove('listening');
       button.textContent = keyLabel(keybinds.get(actionId));
     }
+    for (const repaint of this.prefRows.values()) repaint();
   }
 
   open() {

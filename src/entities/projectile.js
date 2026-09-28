@@ -88,6 +88,8 @@ export class Arrow {
         player.position.x + hw, player.position.y + player.height, player.position.z + hw
       )) {
         // Credit the shooter, so the death screen names it.
+        const from = this.owner?.position ?? this.position;
+        player.hitFrom = { x: from.x, z: from.z, at: performance.now() };
         player.survival.damage(this.damage, 'mob', this.owner?.type ?? null);
         this.removed = true;
         audio.arrowHit();

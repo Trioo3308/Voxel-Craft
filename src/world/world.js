@@ -10,6 +10,7 @@
  * frame of latency to every block you place.
  */
 
+import { createTerrainMaterial, createWaterMaterial } from '../engine/terrainMaterial.js';
 import * as THREE from 'three';
 import Settings from '../settings.js';
 import {
@@ -26,7 +27,7 @@ import { growTree } from './treeGrowth.js';
 import { getAtlasTexture } from './textures.js';
 import { FluidSimulator } from './fluids.js';
 import { TERRAIN_VERSION } from './terrain.js';
-import { DIMENSIONS } from './dimensions.js';
+import { DIMENSIONS, dimensionInfo } from './dimensions.js';
 import { tickFurnace } from '../player/crafting.js';
 
 /**
@@ -94,6 +95,7 @@ export class World {
     this.terrainVersion = options.terrainVersion ?? TERRAIN_VERSION;
     /** Which dimension is currently streamed. */
     this.dimension = options.dimension ?? DIMENSIONS.OVERWORLD;
+    this.openVoid = dimensionInfo(this.dimension).openVoid === true;
     this.renderDistance = options.renderDistance ?? Settings.renderDistance;
 
     /** @type {Map<string, Chunk>} */
@@ -141,27 +143,9 @@ export class World {
 
   _initMaterials() {
     const map = getAtlasTexture();
-
-    // Unlit material: all shading is already baked into the vertex colours by
-    // the mesher, so there is no per-fragment lighting cost. `color` doubles as
-    // the global day/night tint.
-    this.opaqueMaterial = new THREE.MeshBasicMaterial({
-      map,
-      vertexColors: true,
-      alphaTest: 0.5, // cutout for leaves + glass, still in the opaque pass
-      side: THREE.FrontSide,
-      fog: true,
-    });
-
-    this.waterMaterial = new THREE.MeshBasicMaterial({
-      map,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.85,
-      depthWrite: false,
-      side: THREE.DoubleSide, // so the surface is visible from underwater too
-      fog: true,
-    });
+    // Lit, shadowed and animated; see terrainMaterial.js for the model.
+    this.opaqueMaterial = createTerrainMaterial(map);
+    this.waterMaterial = createWaterMaterial(map);
   }
 
   _initWorker() {
@@ -185,6 +169,7 @@ export class World {
   setDimension(dimension) {
     if (dimension === this.dimension) return Promise.resolve();
     this.dimension = dimension;
+    this.openVoid = dimensionInfo(dimension).openVoid === true;
 
     return new Promise((resolve) => {
       this._dimensionResolve = resolve;
@@ -489,12 +474,17 @@ export class World {
     geometry.setAttribute('normal', new THREE.BufferAttribute(data.normals, 3));
     geometry.setAttribute('uv', new THREE.BufferAttribute(data.uvs, 2));
     geometry.setAttribute('color', new THREE.BufferAttribute(data.colors, 3));
+    // Sway weight and surface flag, as normalised bytes.
+    if (data.fx) geometry.setAttribute('fx', new THREE.BufferAttribute(data.fx, 2, true));
     geometry.setIndex(new THREE.BufferAttribute(data.indices, 1));
     geometry.computeBoundingSphere(); // required for frustum culling
 
     const mesh = new THREE.Mesh(geometry, material);
     mesh.position.set(chunk.cx * CHUNK_SX, 0, chunk.cz * CHUNK_SZ);
     mesh.renderOrder = renderOrder;
+    // Solid terrain throws shadows; water only catches them.
+    mesh.castShadow = renderOrder === 0;
+    mesh.receiveShadow = true;
     // Chunks never move, so skip the per-frame matrix recomputation.
     mesh.updateMatrix();
     mesh.matrixAutoUpdate = false;
@@ -650,7 +640,7 @@ export class World {
    */
   isSolid(wx, wy, wz) {
     wx = Math.floor(wx); wy = Math.floor(wy); wz = Math.floor(wz);
-    if (wy < 0) return true;             // bedrock floor
+    if (wy < 0) return !this.openVoid;   // bedrock floor, unless this dimension has none
     if (wy >= CHUNK_SY) return false;    // open sky above the build limit
 
     const chunk = this.getChunk(toChunkCoord(wx), toChunkCoord(wz));
@@ -698,11 +688,6 @@ export class World {
     return -1;
   }
 
-  /** Global light tint, driven by the day/night cycle. */
-  setLightTint(color) {
-    this.opaqueMaterial.color.copy(color);
-    this.waterMaterial.color.copy(color);
-  }
 
   dispose() {
     this.worker.terminate();
