@@ -52,6 +52,7 @@ import { MINING_XP, xpBetween, roundXp } from './player/experience.js';
 import { countBookshelves } from './player/enchanting.js';
 import { caneCanStand } from './world/sugarCane.js';
 import { RecipeDiscovery } from './player/discovery.js';
+import { FarTerrain, FAR_REACH } from './engine/farTerrain.js';
 import { audio } from './engine/audio.js';
 import { DIMENSIONS, dimensionInfo } from './world/dimensions.js';
 import {
@@ -127,6 +128,8 @@ export class Game {
       this.hud.showAchievement(achievement);
       audio.achievement();
     };
+    /** Low-detail land past the render distance; see farTerrain.js. */
+    this.farTerrain = new FarTerrain(this.renderer.scene);
     /** Which recipes this world's player has found out about; see discovery.js. */
     this.discovery = new RecipeDiscovery();
     this.discovery.onDiscover = (ids) => this.hud.showRecipes(ids);
@@ -230,6 +233,10 @@ export class Game {
         this._autoQuality = { total: 0, frames: 0 };
         this.renderer.setQuality(value === 'auto' ? loadAutoQuality() : value);
         this.world?.setFastLeaves(this.renderer.quality === 'low');
+        this._applyFarTerrain();
+        break;
+      case 'farTerrain':
+        this._applyFarTerrain();
         break;
       case 'clouds':
         this.sky.atmosphere.cloudsEnabled = value;
@@ -683,6 +690,7 @@ export class Game {
     await this.world.setDimension(to);
     this.dimension = to;
     this.dynamicLight.clear();
+    this._applyFarTerrain();
 
     // Stream the arrival area before deciding where the ground is.
     await this._preloadAround(targetX, targetZ);
@@ -1394,6 +1402,8 @@ export class Game {
     this.sky.setDimension(info);
     // The menus take their accent colour from where you are.
     document.documentElement.dataset.dimension = this.world.dimension;
+    // Distant terrain is Overworld-only; this catches respawns and the title screen.
+    this._applyFarTerrain();
   }
 
   /**
@@ -1646,6 +1656,8 @@ export class Game {
       terrainVersion: save.terrainVersion,
     });
     this.world.setFastLeaves(this.renderer.quality === 'low');
+    this.farTerrain.start(save.seed, save.terrainVersion);
+    this._applyFarTerrain();
     this.player.world = this.world;
     this.entities.world = this.world;
     this.terrainInfo = new TerrainGenerator(save.seed, save.terrainVersion);
@@ -1937,6 +1949,7 @@ export class Game {
     if (!next) return;
     this.renderer.setQuality(next);
     this.world?.setFastLeaves(next === 'low');
+    this._applyFarTerrain();
     saveAutoQuality(next);
     this.hud.showSaveToast(`Graphics: ${next}`);
   }
@@ -2444,6 +2457,19 @@ export class Game {
     }
   }
 
+  /**
+   * Distant terrain shows in the Overworld only (the Nether and the Comb have
+   * roofs, the Aether is mostly sky), above Low graphics, with its option on.
+   * The fog follows it out when it is showing.
+   */
+  _applyFarTerrain() {
+    const on = !!this.world && !this._panoramaWorld &&
+      this.world.dimension === DIMENSIONS.OVERWORLD &&
+      this.renderer.quality !== 'low' && prefs.get('farTerrain');
+    this.farTerrain.setActive(on);
+    this.renderer.fogReach = this.farTerrain.active ? FAR_REACH : null;
+  }
+
   /** Teach an older world every recipe its belongings point to, quietly. */
   _seedDiscovery() {
     const ids = [];
@@ -2639,6 +2665,8 @@ export class Game {
 
     if (playing || this.state === 'container') this._updateLighting(dt);
     if (playing || this.state === 'container') this._updateDiscovery();
+    // The ring follows whatever the chunks are following, loading screens included.
+    if (this.farTerrain.active) this.farTerrain.update(this._loadFocus ?? this.player.position, this.world);
     this.captions.update(dt, this.player);
     this.worldMap.updateMinimap(dt, playing);
     if (this.worldMap.isOpen) this.worldMap.draw();

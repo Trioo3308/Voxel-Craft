@@ -291,13 +291,6 @@ export class SkyCycle {
     r.sunLight.color.copy(look.sunColor);
     r.sunLight.intensity = look.sun;
 
-    // Fog is scaled per dimension: the Nether closes in, the Aether opens out.
-    const info = this.dimensionInfo;
-    if (r.scene.fog && info && info.fogScale) {
-      const far = Settings.renderDistance * 16;
-      r.scene.fog.near = far * Settings.fogStart * info.fogScale;
-      r.scene.fog.far = far * info.fogScale;
-    }
 
     this._apply({
       ambient: look.ambient,
@@ -312,8 +305,30 @@ export class SkyCycle {
     });
   }
 
+  /**
+   * Where the fog starts and ends: scaled per dimension (the Nether closes in,
+   * the Aether opens out), and pushed out to the far edge of the distant
+   * terrain when that is showing (farTerrain.js), so the haze starts where
+   * the real chunks end.
+   */
+  _applyFogDistance() {
+    const r = this.renderer;
+    const info = this.dimensionInfo;
+    if (!r.scene.fog || !info) return;
+    const scale = info.fogScale ?? 1;
+    const far = Settings.renderDistance * 16;
+    if (r.fogReach) {
+      r.scene.fog.near = far * 0.8 * scale;
+      r.scene.fog.far = r.fogReach * scale;
+    } else {
+      r.scene.fog.near = far * Settings.fogStart * scale;
+      r.scene.fog.far = far * scale;
+    }
+  }
+
   /** Push the frame's light to terrain, entities, fog and the post chain. */
   _apply(look) {
+    this._applyFogDistance();
     const r = this.renderer;
     const s = this._state;
     const u = terrainUniforms;

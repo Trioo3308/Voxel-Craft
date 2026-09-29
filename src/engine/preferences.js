@@ -45,6 +45,10 @@ export const PREFERENCES = [
   },
   { id: 'clouds', group: 'video', label: 'Clouds', type: 'toggle', default: true },
   {
+    id: 'farTerrain', group: 'video', label: 'Distant terrain', type: 'toggle', default: true,
+    desc: 'Low-detail land past your render distance, out to 512 blocks. Not drawn on Low graphics.',
+  },
+  {
     id: 'foliageSway', group: 'video', label: 'Swaying plants', type: 'toggle', default: true,
     desc: 'Leaves, grass and crops move in the wind.',
   },

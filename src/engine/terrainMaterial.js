@@ -71,6 +71,16 @@ export const terrainUniforms = {
   uDynInvSize: { value: 1 / 40 },
   /** Tiles across and down the atlas. */
   uAtlasGrid: { value: new THREE.Vector2(ATLAS_COLS, ATLAS_ROWS) },
+  /**
+   * The coarse second shadow map past the sun's own (farShadow.js): its
+   * depth, world-to-map matrix and texel size, the sun's own map's matrix to
+   * know where that one ends, and 0 to switch it off (below High).
+   */
+  uFarShadowMap: { value: null },
+  uFarShadowMatrix: { value: new THREE.Matrix4() },
+  uNearShadowMatrix: { value: new THREE.Matrix4() },
+  uFarShadowOn: { value: 0 },
+  uFarShadowTexel: { value: 1 / 2048 },
 };
 
 /**
@@ -230,6 +240,38 @@ float caustic(vec2 p, float t) {
 }
 `;
 
+/**
+ * How much sun the far shadow map (farShadow.js) lets through, 1 for all of it.
+ * Nothing inside the sun's own map, whose shadow Three has already applied;
+ * faded in over that map's outer edge, then used alone past it. Nine taps
+ * soften its coarser texels. Placed after Three's packing functions.
+ */
+const FAR_SHADOW_PARS = /* glsl */ `
+#include <shadowmap_pars_fragment>
+uniform sampler2D uFarShadowMap;
+uniform mat4 uFarShadowMatrix;
+uniform mat4 uNearShadowMatrix;
+uniform float uFarShadowOn;
+uniform float uFarShadowTexel;
+float farShadow(vec3 wp, vec3 n) {
+  if (uFarShadowOn < 0.5) return 1.0;
+  vec2 nearUv = (uNearShadowMatrix * vec4(wp, 1.0)).xy;
+  float edge = max(abs(nearUv.x - 0.5), abs(nearUv.y - 0.5)) * 2.0;
+  float blend = smoothstep(0.8, 0.97, edge);
+  if (blend <= 0.0) return 1.0;
+  vec3 c = (uFarShadowMatrix * vec4(wp + n * 0.35, 1.0)).xyz;
+  if (any(lessThan(c, vec3(0.0))) || any(greaterThan(c, vec3(1.0)))) return 1.0;
+  float lit = 0.0;
+  for (int i = -1; i <= 1; i++) {
+    for (int j = -1; j <= 1; j++) {
+      vec2 at = c.xy + vec2(float(i), float(j)) * uFarShadowTexel;
+      lit += step(c.z, unpackRGBAToDepth(texture2D(uFarShadowMap, at)));
+    }
+  }
+  return mix(1.0, lit / 9.0, blend);
+}
+`;
+
 /** Albedo stays pure texture: the vertex channels are light, not colour. */
 const FRAGMENT_COLOR = /* glsl */ ``;
 
@@ -256,7 +298,7 @@ const FRAGMENT_LIGHT = /* glsl */ `
   // The sun only reaches places open to the sky. The shadow map handles trees
   // and overhangs; this keeps it out of caves the shadow box does not cover.
   float sunReach = smoothstep(0.35, 0.85, sky);
-  vec3 direct = reflectedLight.directDiffuse * sunReach * mix(0.75, 1.0, occ);
+  vec3 direct = reflectedLight.directDiffuse * sunReach * mix(0.75, 1.0, occ) * farShadow(vWorldPos, n);
 
   // Sky ambient: strongest from above. The fixed per-face tint keeps the six
   // sides of a block distinct in shade, which is what makes voxels read.
@@ -321,6 +363,7 @@ function patch(material, water) {
       .replace('#include <project_vertex>', VERTEX_WORLDPOS);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', FRAGMENT_PARS)
+      .replace('#include <shadowmap_pars_fragment>', FAR_SHADOW_PARS)
       .replace('#include <map_fragment>', FRAGMENT_MAP)
       .replace('#include <color_fragment>', FRAGMENT_COLOR)
       .replace(
@@ -363,6 +406,87 @@ export function createTerrainDepthMaterial() {
       .replace('#include <map_fragment>', DEPTH_MAP);
   };
   material.customProgramCacheKey = () => 'terrain-depth';
+  return material;
+}
+
+/** Chunks across the distant terrain's mask of real chunks; see farTerrain.js. */
+export const FAR_MASK_SIZE = 64;
+
+/**
+ * Where the distant land must not draw: one texel per chunk, set where a real
+ * chunk is on screen, with `uMaskOrigin` the world x/z of texel (0, 0).
+ */
+export const farUniforms = {
+  uChunkMask: { value: null },
+  uMaskOrigin: { value: new THREE.Vector2() },
+};
+
+const FAR_FRAGMENT_PARS = /* glsl */ `
+#include <common>
+uniform vec3 uSkyAmbient;
+uniform vec3 uFlatAmbient;
+uniform float uMinLight;
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
+uniform vec3 uSunFogColor;
+uniform float uSunFogStrength;
+uniform sampler2D uChunkMask;
+uniform vec2 uMaskOrigin;
+varying vec3 vWorldPos;
+varying vec3 vWorldNormal;
+`;
+
+/**
+ * Nothing where a real chunk is drawn. Chunk by chunk rather than a circle
+ * round the player, so the two meet exactly at chunk edges however the loaded
+ * area is shaped, and a chunk still loading shows distant land, not a hole.
+ */
+const FAR_MASK = /* glsl */ `
+#include <clipping_planes_fragment>
+{
+  vec2 cell = floor((vWorldPos.xz - uMaskOrigin) / 16.0);
+  if (all(greaterThanEqual(cell, vec2(0.0))) && all(lessThan(cell, vec2(${FAR_MASK_SIZE}.0))) &&
+      texture2D(uChunkMask, (cell + 0.5) / ${FAR_MASK_SIZE}.0).r > 0.5) discard;
+}
+`;
+
+/**
+ * Distant land is lit like open ground: full sky, no torches, no occlusion,
+ * the sun unshadowed. Same sums as FRAGMENT_LIGHT with those channels pinned,
+ * so the two meet without a visible change in brightness.
+ */
+const FAR_LIGHT = /* glsl */ `
+  vec3 albedo = diffuseColor.rgb;
+  vec3 n = normalize(vWorldNormal);
+  float faceTint = n.y > 0.5 ? 1.0 : (n.y < -0.5 ? 0.55 : 0.85);
+  vec3 outgoingLight = reflectedLight.directDiffuse
+    + albedo * (uSkyAmbient + uFlatAmbient) * faceTint
+    + albedo * uMinLight * faceTint;
+`;
+
+/**
+ * The distant-terrain material (engine/farTerrain.js): vertex colours for
+ * albedo, the terrain's lighting and sun-tinted fog, and nothing drawn where
+ * real chunks stand.
+ */
+export function createFarTerrainMaterial() {
+  const material = new THREE.MeshLambertMaterial({ vertexColors: true, fog: true, side: THREE.DoubleSide });
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, terrainUniforms, farUniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWorldPos;\nvarying vec3 vWorldNormal;')
+      .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\nvWorldNormal = normalize(mat3(modelMatrix) * objectNormal);')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', FAR_FRAGMENT_PARS)
+      .replace('#include <clipping_planes_fragment>', FAR_MASK)
+      .replace(
+        'vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;',
+        FAR_LIGHT
+      )
+      .replace('#include <fog_fragment>', FRAGMENT_FOG);
+  };
+  material.customProgramCacheKey = () => 'terrain-far';
   return material;
 }
 

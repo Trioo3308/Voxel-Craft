@@ -27,6 +27,7 @@ import {
 import { growTree } from './treeGrowth.js';
 import { caneCanStand, caneHeight, CANE_MAX_HEIGHT } from './sugarCane.js';
 import { getAtlasTexture } from './textures.js';
+import { FAR_SHADOW_LAYER } from '../engine/farShadow.js';
 import { FluidSimulator } from './fluids.js';
 import { TERRAIN_VERSION } from './terrain.js';
 import { DIMENSIONS, dimensionInfo } from './dimensions.js';
@@ -134,6 +135,11 @@ export class World {
 
     this.stats = { loaded: 0, pending: 0, triangles: 0 };
     this.onFirstChunk = null;
+    /**
+     * Bumped whenever a chunk starts or stops being drawn, so the distant
+     * terrain (farTerrain.js) knows when to redraw its mask of real chunks.
+     */
+    this.readyEpoch = 0;
 
     // Block writes queued for the worker. Batching them means a spreading pool
     // costs one remesh per affected chunk instead of one per changed voxel.
@@ -248,6 +254,7 @@ export class World {
       if (chunk.waterMesh) { this.scene.remove(chunk.waterMesh); chunk.waterMesh.geometry.dispose(); }
     }
     this.chunks.clear();
+    this.readyEpoch++;
     this.uploadQueue.length = 0;
     this.queue.length = 0;
     this.pendingRequests = 0;
@@ -502,6 +509,7 @@ export class World {
       this._uploadMeshes(chunk, msg.opaque, msg.water);
       const wasReady = chunk.ready;
       chunk.ready = true;
+      if (!wasReady) this.readyEpoch++;
       uploads++;
 
       if (!wasReady && this.onFirstChunk) {
@@ -541,7 +549,10 @@ export class World {
     mesh.renderOrder = renderOrder;
     // Solid terrain throws shadows; water only catches them.
     mesh.castShadow = renderOrder === 0;
-    if (mesh.castShadow) mesh.customDepthMaterial = this.shadowMaterial;
+    if (mesh.castShadow) {
+      mesh.customDepthMaterial = this.shadowMaterial;
+      mesh.layers.enable(FAR_SHADOW_LAYER);
+    }
     mesh.receiveShadow = true;
     // Chunks never move, so skip the per-frame matrix recomputation.
     mesh.updateMatrix();
@@ -569,6 +580,7 @@ export class World {
         chunk.waterMesh.geometry.dispose();
       }
       if (chunk.requested && !chunk.ready) this.pendingRequests = Math.max(0, this.pendingRequests - 1);
+      if (chunk.ready) this.readyEpoch++;
 
       this.chunks.delete(key);
       this.worker.postMessage({ type: 'unload', cx: chunk.cx, cz: chunk.cz });

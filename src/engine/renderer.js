@@ -21,6 +21,8 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import Settings from '../settings.js';
 import { CHUNK_SX } from '../world/chunk.js';
+import { FarShadow, FAR_SHADOW_LAYER } from './farShadow.js';
+import { terrainUniforms } from './terrainMaterial.js';
 
 /**
  * Shadow map settings per Graphics level.
@@ -28,9 +30,10 @@ import { CHUNK_SX } from '../world/chunk.js';
  *   reach  half-width of the shadowed area, in blocks
  * At "high", 2048 texels over 128 blocks is one texel per pixel of a 16x16
  * block texture, so shadow edges land on the same grid as the art.
+ *   far    a second, coarser map over the rest of the loaded area (farShadow.js)
  */
 const QUALITY = {
-  high: { shadows: true, size: 2048, reach: 64, post: true, soft: true, shadowEvery: 1 },
+  high: { shadows: true, size: 2048, reach: 64, post: true, soft: true, shadowEvery: 1, far: true },
   // Hard-edged shadows, redrawn every other frame: the sun moves slowly, and
   // half the shadow passes is most of the saving on an integrated GPU.
   medium: { shadows: true, size: 1024, reach: 44, post: true, soft: false, shadowEvery: 2 },
@@ -168,6 +171,9 @@ export class Renderer {
     this.scene.background = new THREE.Color(0x87ceeb);
 
     this._initLights();
+    this.farShadow = new FarShadow();
+    /** Where the shadow maps are centred; set each frame by updateShadowFocus. */
+    this._shadowFocus = new THREE.Vector3();
     this._initSelectionBox();
     this._initCracks();
     this._initPost();
@@ -191,11 +197,17 @@ export class Renderer {
     this.sunLight.shadow.camera.far = 420;
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
+    // The terrain shader needs to know where this map ends and the far one takes over.
+    terrainUniforms.uNearShadowMatrix.value = this.sunLight.shadow.matrix;
     /** Unit vector toward the light, set by the sky each frame. */
     this.sunDirection = new THREE.Vector3(0.3, 0.9, 0.3).normalize();
 
     this.ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
     this.scene.add(this.ambientLight);
+
+    // The far shadow pass (farShadow.js) has to see the same lights as the main
+    // one, or Three rechecks every lit material's program after each pass.
+    for (const light of [this.hemiLight, this.sunLight, this.ambientLight]) light.layers.enable(FAR_SHADOW_LAYER);
   }
 
   _initPost() {
@@ -225,6 +237,7 @@ export class Renderer {
     this.shadowEvery = q.shadowEvery;
     this.renderer.shadowMap.autoUpdate = q.shadowEvery <= 1;
     this.sunLight.castShadow = q.shadows;
+    this.farShadow.setEnabled(q.shadows && !!q.far);
     this.shadowReach = q.reach;
     const cam = this.sunLight.shadow.camera;
     cam.left = -q.reach;
@@ -259,6 +272,7 @@ export class Renderer {
   updateShadowFocus(center) {
     const dir = this.sunDirection;
     const light = this.sunLight;
+    this._shadowFocus.copy(center);
     if (!light.castShadow) {
       light.position.copy(center).addScaledVector(dir, 200);
       light.target.position.copy(center);
@@ -385,6 +399,11 @@ export class Renderer {
   }
 
   render() {
+    // The far map covers the loaded area; nothing to draw with the light gone.
+    if (this.sunLight.castShadow && this.sunLight.intensity > 0.01) {
+      const reach = Math.max(96, Settings.renderDistance * CHUNK_SX + CHUNK_SX);
+      this.farShadow.update(this.renderer, this.scene, this._shadowFocus, this.sunDirection, reach);
+    }
     if (this.shadowEvery > 1) {
       this._frame = (this._frame ?? 0) + 1;
       if (this._frame % this.shadowEvery === 0) this.renderer.shadowMap.needsUpdate = true;
