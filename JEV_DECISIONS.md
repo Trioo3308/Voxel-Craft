@@ -77,3 +77,16 @@ Scale: 0 = not worth doing now, 3 = clearly worth doing now.
 | Fast leaves on the Low graphics tier | 2.30 | yes |
 | Second paintings of the commonest ground blocks | 1.99 | yes, as re-seeded paintings rather than hand-drawn ones |
 | Merging faces whose light varies along one axis only | 0.79 | no; about 4% fewer triangles for real mesher complexity |
+
+## Phase 3: depth, distance and company (2026-09-29)
+
+Five reworks from the roadmap, asked together.
+
+| Question | Pick | p | Runner-up | Applied as |
+|---|---|---|---|---|
+| How much content moves into data | Content packs | 0.88 | Recipes and loot only (0.10) | Built-in blocks stay in code; a JSON pack loader adds blocks (painted from a small spec or a pixel grid), items, recipes, smelting, fuels, loot, mining XP and advancements. The game's own recipes, smelting and loot moved into `content/core.json`; `content/decor.json` is the worked example |
+| XP and enchanting | Classic | 0.87 | Pick-your-enchantment (0.08) | Orbs from mobs, ores, smelting, breeding and fishing; a level bar; an enchanting table offering three rolls boosted by up to fifteen bookshelves, paid in levels and lapis; an anvil for books, merging and repairs; fifteen enchantments, Mending only as loot |
+| Progression | Advancement tree with recipe discovery | 0.85 | Tree with "new" badges (0.12) | Tabs per stage and dimension, nodes hidden until their parent is earned, drag to look around; recipes appear in the book when you first hold their telling ingredient |
+| Far rendering | Distant terrain | 0.92 | Simplified far chunks (0.06) | Heightfield tiles from the seed out to 512 blocks, coarser with distance, masked chunk by chunk under real terrain; a second, coarser shadow map over the loaded area on High |
+| Multiplayer transport | Both | 0.71 | Join codes only (0.22) | WebRTC with six-character join codes through a Netlify Function mailbox, plus a WebSocket relay in `npm run host` for same-network play; one protocol over either |
+| Multiplayer scope | Building and presence | 0.88 | Full co-op (0.12) | Shared block edits in every dimension, one-at-a-time chests and furnaces, avatars with name tags and held items, chat, and the host's clock and weather; mobs, drops and survival stay each player's own, with guests' belongings kept in the host's save by name |

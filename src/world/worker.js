@@ -18,6 +18,7 @@
  *  in  { type: 'request',  cx, cz }        -> generate + mesh a chunk
  *  in  { type: 'setBlock', x, y, z, id }   -> apply an edit, remesh what moved
  *  in  { type: 'setBlocks', changes }      -> batched edits, one remesh per chunk
+ *  in  { type: 'storeEdits', dimension, changes } -> edits in another dimension, stored only
  *  in  { type: 'unload',   cx, cz }        -> free voxel memory (edits are kept)
  *  in  { type: 'options',  fastLeaves }    -> mesher options; remeshes every sent chunk
  *  out { type: 'ready' }
@@ -576,6 +577,24 @@ self.onmessage = (event) => {
     case 'setBlocks':
       applyEdits(msg.changes);
       break;
+
+    case 'storeEdits': {
+      // Another player's changes in a dimension this game is not showing
+      // (multiplayer). Recorded against that dimension — its edit store, any
+      // voxels it has cached, its light registry — with nothing to remesh.
+      if (msg.dimension === activeDim) {
+        applyEdits(msg.changes);
+        break;
+      }
+      const shown = activeDim;
+      activeDim = msg.dimension;
+      invalidateSampleCache();
+      const dirty = new Set();
+      for (const c of msg.changes) recordEdit(c.x, c.y, c.z, c.id, dirty);
+      activeDim = shown;
+      invalidateSampleCache();
+      break;
+    }
 
     case 'unload': {
       const key = chunkKey(msg.cx, msg.cz);

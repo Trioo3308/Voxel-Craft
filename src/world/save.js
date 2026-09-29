@@ -208,28 +208,14 @@ function isIdentityRemap(map) {
 // Capture / restore
 // ---------------------------------------------------------------------------
 
-/** Snapshot everything needed to reconstruct the session. */
-export async function captureState(game, meta = {}) {
+/**
+ * One player's own things: where they are, what they carry and have done.
+ * The body of every save, and in multiplayer what a guest sends the host to
+ * keep under their name (net/session.js), so it is the same shape both ways.
+ */
+export function capturePlayerRecord(game) {
   const player = game.player;
-  const edits = await game.world.exportEdits();
-
   return {
-    formatVersion: SAVE_FORMAT_VERSION,
-    terrainVersion: game.world.terrainVersion,
-    id: meta.id,
-    name: meta.name,
-    seed: game.world.seed,
-    createdAt: meta.createdAt ?? Date.now(),
-    updatedAt: Date.now(),
-    playTimeSeconds: Math.round(meta.playTimeSeconds ?? 0),
-    // Fixed at creation; never taken from the live player state, so a bug
-    // elsewhere cannot quietly promote a survival world.
-    allowCreative: meta.allowCreative === true,
-    /** A small JPEG of the view at the last save, for the world list. */
-    thumbnail: typeof meta.thumbnail === 'string' ? meta.thumbnail : null,
-
-    palette: buildPalette(),
-
     player: {
       x: player.position.x,
       y: player.position.y,
@@ -271,14 +257,45 @@ export async function captureState(game, meta = {}) {
       armor: player.inventory.armor.map(saveStack),
     },
 
-    time: game.sky.time,
-    /** Dawns survived, for the statistics screen. */
-    dayCount: game.sky.dayCount,
     /** Achievements earned, by name — never by index. See progress.js. */
     achievements: game.achievements ? game.achievements.serialize() : [],
     stats: game.stats ? game.stats.serialize() : {},
     /** Which dimension the player logged out in. */
     dimension: game.world.dimension,
+  };
+}
+
+/** Snapshot everything needed to reconstruct the session. */
+export async function captureState(game, meta = {}) {
+  const edits = await game.world.exportEdits();
+  const record = capturePlayerRecord(game);
+
+  return {
+    formatVersion: SAVE_FORMAT_VERSION,
+    terrainVersion: game.world.terrainVersion,
+    id: meta.id,
+    name: meta.name,
+    seed: game.world.seed,
+    createdAt: meta.createdAt ?? Date.now(),
+    updatedAt: Date.now(),
+    playTimeSeconds: Math.round(meta.playTimeSeconds ?? 0),
+    // Fixed at creation; never taken from the live player state, so a bug
+    // elsewhere cannot quietly promote a survival world.
+    allowCreative: meta.allowCreative === true,
+    /** A small JPEG of the view at the last save, for the world list. */
+    thumbnail: typeof meta.thumbnail === 'string' ? meta.thumbnail : null,
+
+    palette: buildPalette(),
+
+    player: record.player,
+    inventory: record.inventory,
+
+    time: game.sky.time,
+    /** Dawns survived, for the statistics screen. */
+    dayCount: game.sky.dayCount,
+    achievements: record.achievements,
+    stats: record.stats,
+    dimension: record.dimension,
     /** `{ [dimensionId]: chunkEditList }` — see World.exportEdits. */
     edits,
     /** Shrines already stocked, so returning does not re-roll their loot. */
@@ -296,6 +313,13 @@ export async function captureState(game, meta = {}) {
       type: entity.type,
       state: entity.state,
     })),
+
+    /**
+     * Multiplayer guests' own things, by name, as capturePlayerRecord makes
+     * them — kept with the world they played in. Optional; only worlds that
+     * have had guests have it.
+     */
+    guests: game.guestRecords && Object.keys(game.guestRecords).length > 0 ? game.guestRecords : undefined,
   };
 }
 
@@ -359,6 +383,22 @@ export async function applyState(game, save) {
 
   restoreSlots(save.inventory.slots, player.inventory.slots);
   restoreSlots(save.inventory.armor, player.inventory.armor);
+
+  // Guests' belongings go through the same remap: they were saved by whatever
+  // build the world was last saved with, like everything else in it.
+  game.guestRecords = {};
+  for (const [name, record] of Object.entries(save.guests ?? {})) {
+    if (!record?.player || !record.inventory) continue;
+    const remapped = (list) => (Array.isArray(list) ? list.map((s) => {
+      if (!s) return null;
+      const id = translate(s.id);
+      return id === AIR ? null : { ...s, id };
+    }) : []);
+    game.guestRecords[name] = {
+      ...record,
+      inventory: { ...record.inventory, slots: remapped(record.inventory.slots), armor: remapped(record.inventory.armor) },
+    };
+  }
   player.inventory.selected = save.inventory.selected ?? 0;
   player.inventory.touch();
 

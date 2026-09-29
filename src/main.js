@@ -53,6 +53,10 @@ import { countBookshelves } from './player/enchanting.js';
 import { caneCanStand } from './world/sugarCane.js';
 import { RecipeDiscovery } from './player/discovery.js';
 import { FarTerrain, FAR_REACH } from './engine/farTerrain.js';
+import { HostSession, GuestSession, cleanName } from './net/session.js';
+import { probeTransports, normalizeCode, isCode, formatCode } from './net/transport.js';
+import { decodeEdits } from './net/codec.js';
+import { Chat } from './ui/chat.js';
 import { audio } from './engine/audio.js';
 import { DIMENSIONS, dimensionInfo } from './world/dimensions.js';
 import {
@@ -136,6 +140,21 @@ export class Game {
     this._discoveryVersion = -1;
 
     this.hud = new HUD(this);
+    /**
+     * Multiplayer (net/session.js): the HostSession or GuestSession while
+     * playing with others, else null. `remoteWorld` is set while in someone
+     * else's world, which this browser must never save as its own, and
+     * `guestRecords` holds this world's guests' belongings by name.
+     */
+    this.net = null;
+    this.remoteWorld = false;
+    this.guestRecords = {};
+    /** What the page's server offers for multiplayer; see probeTransports. */
+    this._netCaps = null;
+    this.chat = new Chat(this);
+    this.chat.onSend = (text) => this.net?.say(text);
+    /** The block entity whose screen is open, so closing it can hand it back. */
+    this._openEntity = null;
     // Remembers where settings was opened from, so closing returns there.
     this._settingsReturnState = 'menu';
     this.settings = new SettingsScreen(this.input, () => this._closeSettings());
@@ -276,6 +295,21 @@ export class Game {
     });
     el('newWorldName').addEventListener('keydown', (e) => { if (e.key === 'Enter') this._createWorld(); });
     el('newWorldSeed').addEventListener('keydown', (e) => { if (e.key === 'Enter') this._createWorld(); });
+
+    // Multiplayer: joining from the title screen, hosting from the pause menu.
+    el('joinWorldButton').addEventListener('click', () => this._showJoinForm(true));
+    el('joinCancelButton').addEventListener('click', () => this._showJoinForm(false));
+    el('joinConfirmButton').addEventListener('click', () => this._joinGame());
+    for (const id of ['joinName', 'joinCode']) {
+      el(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') this._joinGame(); });
+    }
+    el('hostButton').addEventListener('click', () => this._startHosting());
+    el('stopHostButton').addEventListener('click', () => this._endNet());
+    el('hostName').addEventListener('keydown', (e) => { if (e.key === 'Enter') this._startHosting(); });
+    probeTransports().then((caps) => {
+      this._netCaps = caps;
+      this._refreshNetUi();
+    });
 
     el('importWorldButton').addEventListener('click', () => el('importFileInput').click());
     el('importFileInput').addEventListener('change', (e) => this._importWorld(e));
@@ -507,11 +541,10 @@ export class Game {
 
       // --- Signs: read, or edit if it is still blank ------------------------
       if (blockId === SIGN.id) {
-        const entity = this.world.getBlockEntity(x, y, z, () => ({
+        this._openShared(x, y, z, () => ({
           type: 'sign',
           state: { lines: ['', '', '', ''] },
-        }));
-        this._openContainer(() => this.hud.openSign(entity.state));
+        }), (entity) => this.hud.openSign(entity.state));
         return true;
       }
 
@@ -523,22 +556,22 @@ export class Game {
 
       // --- Chests -----------------------------------------------------------
       if (blockId === CHEST.id) {
-        const entity = this.world.getBlockEntity(x, y, z, () => ({
+        this._openShared(x, y, z, () => ({
           type: 'chest',
           state: { slots: new Array(27).fill(null) },
-        }));
-        audio.chest(true, { x: x + 0.5, y, z: z + 0.5 });
-        this._openContainer(() => this.hud.openChest(entity.state));
+        }), (entity) => {
+          audio.chest(true, { x: x + 0.5, y, z: z + 0.5 });
+          this.hud.openChest(entity.state);
+        });
         return true;
       }
 
       if (isFurnaceBlock(blockId)) {
-        const entity = this.world.getBlockEntity(x, y, z, () => ({
+        this._openShared(x, y, z, () => ({
           type: 'furnace',
           state: makeFurnaceState(),
           wasLit: false,
-        }));
-        this._openContainer(() => this.hud.openFurnace(entity.state));
+        }), (entity) => this.hud.openFurnace(entity.state));
         return true;
       }
       return false;
@@ -936,6 +969,7 @@ export class Game {
       // Eject. Whatever will not fit lands on the floor rather than vanishing.
       const id = entity.state.disc;
       entity.state.disc = 0;
+      this.world.touchBlockEntity(x, y, z);
       audio.stopMusic();
       this._playingJukebox = null;
       const left = this.player.inventory.add(id, 1);
@@ -952,6 +986,7 @@ export class Game {
     }
 
     entity.state.disc = slot.id;
+    this.world.touchBlockEntity(x, y, z);
     this.player.inventory.consumeSelected(1);
     audio.playMusic(item.disc);
     this._playingJukebox = { x: x + 0.5, y: y + 0.5, z: z + 0.5 };
@@ -1420,6 +1455,12 @@ export class Game {
     if (!this.player.bedSpawn) this.player.bedSpawn = this.player.spawnPoint.clone();
     this.player.bedSpawn.set(x + 0.5, y + 1, z + 0.5);
 
+    // In someone else's world the clock is theirs (net/session.js).
+    if (this.net?.role === 'guest') {
+      this.hud.showToast('Spawn point set. Only the host can sleep the night away');
+      return;
+    }
+
     if (!this.sky.isNight) {
       this.hud.showToast('You can only sleep at night');
       return;
@@ -1451,6 +1492,13 @@ export class Game {
     this._lastFrameTime = performance.now();
     requestAnimationFrame(this._loop);
     await this._showWorldScreen();
+    // An invite link (?join=CODE) opens the join form with the code filled in.
+    const invite = normalizeCode(new URLSearchParams(location.search).get('join'));
+    if (isCode(invite)) {
+      this._showJoinForm(true);
+      el('joinCode').value = formatCode(invite);
+      (el('joinName').value ? el('joinConfirmButton') : el('joinName')).focus();
+    }
   }
 
   async _showWorldScreen() {
@@ -1531,6 +1579,7 @@ export class Game {
 
   _showCreateForm(show) {
     el('newWorldForm').style.display = show ? '' : 'none';
+    el('joinForm').style.display = 'none';
     el('worldActions').style.display = show ? 'none' : '';
     if (show) {
       el('newWorldName').value = 'New World';
@@ -1640,9 +1689,17 @@ export class Game {
    * Load a world and get it ready to play.
    * @param isNew true when there is no player state to restore
    */
-  async _startSession(save, isNew) {
+  async _startSession(save, isNew, options = {}) {
     this._setState('loading');
     el('loadingFill').style.width = '0%';
+
+    // Someone else's world (multiplayer) arrives as a save too, but is never
+    // written to this browser; opening one of your own ends any game with others.
+    const remote = options.remote === true;
+    if (!remote) this._endNet();
+    this.remoteWorld = remote;
+    this.guestRecords = {};
+    this._openEntity = null;
 
     // Tear down any previous session, including its worker, and the title
     // screen's world if that is what was loaded.
@@ -1680,6 +1737,12 @@ export class Game {
     this.captions.clear();
     this._netherInfo = null;
     this.world.onSmelted = (itemId) => this._notePlayerMilestone('smelted', itemId, null);
+    // Multiplayer hears about every change this game makes; see net/session.js.
+    this.world.onEdit = (dimension, x, y, z, id) => this.net?.localEdit(dimension, x, y, z, id);
+    this.world.onEntityChanged = (key, created) => this.net?.localEntity(key, created);
+    this.world.onEntityRemoved = (key) => {
+      if (this._openEntity?.key === key && this.state === 'container') this._closeContainer();
+    };
 
     // Per-world state that must not leak across sessions. The shrine oracle is
     // seeded, so a stale one would point at the previous world's shrines.
@@ -1709,7 +1772,7 @@ export class Game {
     // Whether this world may use creative at all, fixed when it was created.
     this.allowCreative = save.allowCreative === true;
 
-    this.saveMeta = {
+    this.saveMeta = remote ? null : {
       id: save.id,
       name: save.name,
       createdAt: save.createdAt,
@@ -1843,6 +1906,11 @@ export class Game {
 
   /** Persist the current session. Safe to call at any time. */
   async saveWorld(toast) {
+    // In someone else's world your things are kept by the host, under your name.
+    if (this.remoteWorld) {
+      this.net?.sendState();
+      return;
+    }
     if (!this.saveMeta || !this.world || this._saving || !SaveManager.available) return;
     this._saving = true;
     try {
@@ -2176,6 +2244,7 @@ export class Game {
   /** Save and return to the world list. */
   async exitToMenu() {
     await this.saveWorld();
+    this._endNet();
     this.hud.closeAllContainers();
     this.input.releaseLock();
     // The world stays loaded: the title screen circles the spot you left.
@@ -2224,6 +2293,47 @@ export class Game {
     } else {
       this._setState(back);
     }
+  }
+
+  /**
+   * Open a block entity's screen: a chest, a furnace, a sign. In multiplayer
+   * only one player at a time may have each open, so this asks first (see
+   * net/session.js), and a guest is sent the host's copy of what is inside,
+   * the only one that counts.
+   */
+  _openShared(x, y, z, factory, open) {
+    const key = this.world.blockEntityKey(x, y, z);
+    const show = () => {
+      const entity = this.world.getBlockEntity(x, y, z, factory);
+      this._openEntity = { key, x, y, z };
+      this._openContainer(() => open(entity));
+    };
+    const net = this.net;
+    if (!net) {
+      show();
+      return;
+    }
+    net.lock(key, this.world.blockEntities.get(key) ?? factory()).then((reply) => {
+      if (!reply.ok) {
+        this.hud.showToast(reply.holder ? `${reply.holder} is using that` : 'The host did not answer');
+        return;
+      }
+      // Something else happened while we asked; give it straight back.
+      if (this.net !== net || this.state !== 'playing' || !this.world) {
+        net.unlock(key);
+        return;
+      }
+      show();
+    });
+  }
+
+  /** Called by the HUD whenever its screens close: hand back an open block entity. */
+  _onContainersClosed() {
+    const open = this._openEntity;
+    if (!open) return;
+    this._openEntity = null;
+    this.world?.touchBlockEntity(open.x, open.y, open.z);
+    this.net?.unlock(open.key);
   }
 
   /** Open a container UI, releasing the pointer so the mouse can click slots. */
@@ -2433,6 +2543,7 @@ export class Game {
 
     if (left.length > 0) {
       entity.state.slots = left;
+      this.world.touchBlockEntity(x, y, z);
       this.hud.showToast('Your inventory is full; the rest is still in the grave');
     } else {
       if (this.particles) this.particles.blockBreak(x, y, z, GRAVESTONE.id, 16);
@@ -2454,6 +2565,194 @@ export class Game {
       this.world.setBlock(x, y, z, 0);
       this.entities.dropItem(x + 0.5, y + 0.5, z + 0.5, SUGAR_CANE.id, 1);
       y++;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Multiplayer
+  // -------------------------------------------------------------------------
+
+  /** Open this world to others (the pause menu's button). */
+  async _startHosting() {
+    if (this.net || this.remoteWorld || !this.world || this._panoramaWorld) return;
+    const name = cleanName(el('hostName').value) || 'Host';
+    rememberPlayerName(name);
+    el('mpError').textContent = '';
+    el('hostButton').disabled = true;
+    const session = new HostSession(this, name);
+    try {
+      await session.open();
+      this.net = session;
+      this.chat.setVisible(true);
+      this.chat.add('Your world is open. Friends join with the code in the pause menu; T to chat.', { kind: 'sys' });
+    } catch (error) {
+      session.close();
+      el('mpError').textContent = error.message;
+    } finally {
+      el('hostButton').disabled = false;
+      this._refreshNetUi();
+    }
+  }
+
+  /** Stop playing with others: close the world to them, or leave theirs. */
+  _endNet() {
+    const net = this.net;
+    if (!net) return;
+    this.net = null;
+    if (net.role === 'guest') net.leave();
+    else net.close();
+    this.chat.setVisible(false);
+    if (this.remoteWorld) {
+      // What is left on screen is theirs; nothing may save it here.
+      this.remoteWorld = false;
+      this.saveMeta = null;
+    }
+    this._refreshNetUi();
+  }
+
+  _showJoinForm(show) {
+    el('joinForm').style.display = show ? '' : 'none';
+    el('newWorldForm').style.display = 'none';
+    el('worldActions').style.display = show ? 'none' : '';
+    el('joinStatus').textContent = '';
+    el('worldError').textContent = '';
+    if (show) {
+      el('joinName').value ||= loadPlayerName();
+      (el('joinName').value ? el('joinCode') : el('joinName')).focus();
+    }
+  }
+
+  /** The join form's button: reach the host, then load their world. */
+  async _joinGame() {
+    if (this._joining) return;
+    const status = (text, error = false) => {
+      el('joinStatus').textContent = text;
+      el('joinStatus').classList.toggle('error', error);
+    };
+    const name = cleanName(el('joinName').value);
+    const code = normalizeCode(el('joinCode').value);
+    if (!name) { status('Pick a name to go by.', true); return; }
+    if (!isCode(code)) { status('A join code is six letters and numbers, like K7Q-Z4P.', true); return; }
+    rememberPlayerName(name);
+
+    this._joining = true;
+    el('joinConfirmButton').disabled = true;
+    const session = new GuestSession(this, name);
+    try {
+      const welcome = await session.connect(code, (text) => status(text));
+      status('Loading the world…');
+      this.net = session;
+      await this._startGuestWorld(welcome);
+      this._showJoinForm(false);
+    } catch (error) {
+      session.close();
+      if (this.net === session) this.net = null;
+      this.remoteWorld = false;
+      this.saveMeta = null;
+      if (this.state !== 'worlds') await this._showWorldScreen();
+      this._showJoinForm(true);
+      status(error.message, true);
+    } finally {
+      this._joining = false;
+      el('joinConfirmButton').disabled = false;
+    }
+  }
+
+  /** Load the world a host sent (see HostSession._welcome) and join the others in it. */
+  async _startGuestWorld(welcome) {
+    const save = { ...welcome.save, edits: decodeEdits(welcome.save.edits) };
+    await this._startSession(save, false, { remote: true });
+    if (welcome.fresh) {
+      // First time here: the kit every new player starts with.
+      const inventory = this.player.inventory;
+      inventory.clear();
+      inventory.armor.fill(null);
+      inventory.giveStarterItems();
+      inventory.selectSlot(0);
+      this.discovery.reset();
+      this._seedDiscovery();
+    }
+    // Out of anything built where you stood since you were last here.
+    this.player.teleportTo(this.player.position.clone());
+    // The host's weather; this game only eases between the states it is sent.
+    this.weather.timer = Infinity;
+    this.worldName = welcome.world ?? 'World';
+    el('startWorldName').textContent = this.worldName;
+    this.net.begin(welcome);
+    this.chat.setVisible(true);
+    this.chat.add(`You joined ${welcome.host}'s world. Press T to chat.`, { kind: 'sys' });
+    this._refreshNetUi();
+  }
+
+  /** The host went away, or sent us off. Back to the title screen, saying why. */
+  onNetClosed(reason) {
+    if (!this.net) return;
+    this.net = null;
+    this.chat.setVisible(false);
+    this.remoteWorld = false;
+    this.saveMeta = null;
+    this.hud.closeAllContainers();
+    this.input.releaseLock();
+    this.entities.clear();
+    audio.stopAmbience();
+    this._refreshNetUi();
+    this._showWorldScreen().then(() => { el('worldError').textContent = reason; });
+  }
+
+  onNetPlayersChanged() {
+    this._refreshNetUi();
+  }
+
+  /** The pause menu's multiplayer panel and the title screen's join button. */
+  _refreshNetUi() {
+    const caps = this._netCaps;
+    const available = !!caps && (!!caps.relay || caps.direct);
+    const net = this.net;
+    el('joinWorldButton').style.display = available ? '' : 'none';
+
+    el('mpPanel').style.display = available || net ? '' : 'none';
+    el('mpIdle').style.display = net ? 'none' : '';
+    el('mpLive').style.display = net ? '' : 'none';
+    el('quitButton').textContent = this.remoteWorld ? 'Leave' : 'Save & Quit';
+    if (!net) {
+      el('hostName').value ||= loadPlayerName();
+      el('mpNote').textContent = caps?.direct
+        ? 'Anyone with the code can join from the title screen, over the internet.'
+        : 'Anyone on your network can join from the title screen.';
+      return;
+    }
+
+    const hosting = net.role === 'host';
+    el('mpTitle').textContent = hosting ? 'Open to friends' : `In ${net.hostName}'s world`;
+    el('mpCodeBox').style.display = hosting ? '' : 'none';
+    el('stopHostButton').style.display = hosting ? '' : 'none';
+    const links = el('mpLinks');
+    links.innerHTML = '';
+    if (hosting && net.info) {
+      el('mpCode').textContent = formatCode(net.info.code);
+      const invite = (label, url) => {
+        const row = document.createElement('div');
+        row.className = 'mpLink';
+        const text = document.createElement('code');
+        text.textContent = url;
+        const copy = document.createElement('button');
+        copy.textContent = 'Copy';
+        copy.addEventListener('click', () => {
+          navigator.clipboard?.writeText(url).then(() => this.hud.showSaveToast('Link copied'), () => {});
+        });
+        row.append(Object.assign(document.createElement('span'), { textContent: label }), text, copy);
+        links.append(row);
+      };
+      const local = /^(localhost|127\.|\[::1\])/.test(location.hostname);
+      if (net.info.direct && !local) invite('Invite', `${location.origin}${location.pathname}?join=${net.info.code}`);
+      for (const address of net.info.relay?.lan ?? []) invite('Same Wi-Fi', `http://${address}/?join=${net.info.code}`);
+    }
+    const list = el('mpPlayers');
+    list.innerHTML = '';
+    for (const player of net.players()) {
+      const item = document.createElement('li');
+      item.textContent = player.you ? `${player.name} (you)` : player.name;
+      list.append(item);
     }
   }
 
@@ -2543,6 +2842,10 @@ export class Game {
 
     const playing = this.state === 'playing';
 
+    // Other players: their changes and figures in, this game's out.
+    this.net?.update(dt);
+    this.chat.update(dt);
+
     // --- Global hotkeys ----------------------------------------------------
     // Typing in the sign editor must not also fire hotkeys: every letter of it
     // is somebody's keybind. Escape still closes, because otherwise a text
@@ -2559,6 +2862,8 @@ export class Game {
       if (input.actionWasPressed('settings')) this._openSettings();
 
       if (playing && input.actionWasPressed('waypoint')) this._markWaypoint(input.isActionDown('sprint'));
+
+      if (playing && this.net && input.actionWasPressed('chat')) this._openContainer(() => this.chat.open());
 
       if (input.actionWasPressed('map')) {
         if (this.state === 'container' && this.worldMap.isOpen) this._closeContainer();
@@ -2624,8 +2929,10 @@ export class Game {
     }
 
     // The world keeps streaming even while paused, so resuming is seamless.
-    // Fluids and furnaces still tick while a container is open, as in Minecraft.
-    const simDt = playing || this.state === 'container' ? dt : 0;
+    // Fluids and furnaces still tick while a container is open, as in Minecraft,
+    // and a host's menus never stop the world for the players in it.
+    const shared = this.net?.keepsRunning === true && ['paused', 'dead', 'settings'].includes(this.state);
+    const simDt = playing || this.state === 'container' || shared ? dt : 0;
     this.world.update(this._loadFocus ?? this.player.position, simDt);
 
     // Weather runs before the sky, which reads its overcast and flash values.
@@ -2643,7 +2950,7 @@ export class Game {
 
     if (this.particles) this.particles.update(simDt);
     // Real time as well as clock time, so water and clouds keep moving behind menus.
-    this.sky.update(playing ? dt : 0, this.world, dt);
+    this.sky.update(playing || shared ? dt : 0, this.world, dt);
 
     // --- Presentation ------------------------------------------------------
     this.renderer.setSelection(playing ? this.player.targetBlock : null);
@@ -2722,6 +3029,25 @@ function saveAutoQuality(level) {
   }
 }
 
+/** The name you last played under with others, for the join and host forms. */
+const PLAYER_NAME_KEY = 'voxelcraft.playerName';
+
+function loadPlayerName() {
+  try {
+    return localStorage.getItem(PLAYER_NAME_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function rememberPlayerName(name) {
+  try {
+    localStorage.setItem(PLAYER_NAME_KEY, name);
+  } catch {
+    // Not remembered; the form just starts empty next time.
+  }
+}
+
 function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
@@ -2748,6 +3074,8 @@ window.addEventListener('beforeunload', () => {
   if (game.state === 'playing' || game.state === 'paused' || game.state === 'container') {
     game.saveWorld();
   }
+  // Say goodbye: a guest hands back its things, a host closes the door.
+  game._endNet();
 });
 
 // Handy for poking at the world from the browser console:

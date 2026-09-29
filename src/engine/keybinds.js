@@ -28,6 +28,7 @@ export const ACTIONS = [
   { id: 'progress',  label: 'Progress',     default: 'KeyL',        group: 'Actions',  desc: 'Achievements and statistics' },
   { id: 'waypoint',  label: 'Waypoint',     default: 'KeyN',        group: 'Actions',  desc: 'Mark this spot on the compass; hold Sprint to remove the nearest' },
   { id: 'map',       label: 'World map',    default: 'KeyM',        group: 'Actions',  desc: 'The map of everywhere you have explored' },
+  { id: 'chat',      label: 'Chat',         default: 'KeyT',        group: 'Actions',  desc: 'Talk to the other players (multiplayer)' },
 
   { id: 'creative',  label: 'Game mode',    default: 'KeyG',        group: 'Options',  desc: 'Switch between survival and creative' },
   { id: 'fly',       label: 'Fly',          default: 'KeyF',        group: 'Options',  desc: 'Toggle flight (creative only)' },

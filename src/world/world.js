@@ -22,7 +22,7 @@ import {
   isFurnaceBlock, FURNACE, FURNACE_LIT,
   isFarmland, FARMLAND_MOIST, WHEAT_STAGES, wheatStage,
   isSapling, isLeaf, LEAF_SUPPORTS, GRASS, DIRT, PODZOL, DRY_GRASS, SWAMP_GRASS, SAND,
-  SUGAR_CANE,
+  SUGAR_CANE, CHEST, SIGN, JUKEBOX, GRAVESTONE,
 } from './blocks.js';
 import { growTree } from './treeGrowth.js';
 import { caneCanStand, caneHeight, CANE_MAX_HEIGHT } from './sugarCane.js';
@@ -54,6 +54,19 @@ const RANDOM_TICK_RADIUS = 16;       // blocks, horizontally
 const RANDOM_TICK_HEIGHT = 8;        // blocks, above and below the player
 const GROWTH_CHANCE_DRY = 0.18;
 const GROWTH_CHANCE_MOIST = 0.40;
+
+/**
+ * Which blocks each kind of block entity lives in. A change that leaves an
+ * entity in a block that cannot hold it discards the entity; see
+ * applyRemoteEdits, which has no previous block to compare against.
+ */
+const ENTITY_HOLDS = {
+  chest: (id) => id === CHEST.id,
+  furnace: (id) => isFurnaceBlock(id),
+  sign: (id) => id === SIGN.id,
+  jukebox: (id) => id === JUKEBOX.id,
+  grave: (id) => id === GRAVESTONE.id,
+};
 
 /** Saplings take longer than wheat — a tree should feel like a wait. */
 const SAPLING_GROWTH_CHANCE = 0.10;
@@ -140,6 +153,22 @@ export class World {
      * terrain (farTerrain.js) knows when to redraw its mask of real chunks.
      */
     this.readyEpoch = 0;
+
+    /**
+     * Multiplayer (net/session.js). `onEdit(dimension, x, y, z, id)` hears
+     * every block this game changes itself, and `onEntityChanged(key, created)`
+     * every block entity it creates or reports with touchBlockEntity; other
+     * players' changes arrive through applyRemoteEdits and applyRemoteEntity,
+     * which report nothing. `onEntityRemoved(key)` hears an entity another
+     * player's edit took away.
+     */
+    this.onEdit = null;
+    this.onEntityChanged = null;
+    this.onEntityRemoved = null;
+    /** Set while a change is one every game works out for itself (a furnace lighting up). */
+    this._derivedEdit = false;
+    /** chunkKey -> other players' edits for a chunk whose voxels are still on their way. */
+    this._remotePending = new Map();
 
     // Block writes queued for the worker. Batching them means a spreading pool
     // costs one remesh per affected chunk instead of one per changed voxel.
@@ -255,6 +284,7 @@ export class World {
     }
     this.chunks.clear();
     this.readyEpoch++;
+    this._remotePending.clear();
     this.uploadQueue.length = 0;
     this.queue.length = 0;
     this.pendingRequests = 0;
@@ -276,6 +306,7 @@ export class World {
         if (!chunk) break;
         chunk.voxels = msg.voxels;
         chunk.light = msg.light ?? null;
+        this._applyRemotePending(chunk);
         chunk.top = columnTops(msg.voxels);
         this.uploadQueue.push(msg);
         // The world map records what it sees as chunks arrive.
@@ -581,6 +612,7 @@ export class World {
       }
       if (chunk.requested && !chunk.ready) this.pendingRequests = Math.max(0, this.pendingRequests - 1);
       if (chunk.ready) this.readyEpoch++;
+      this._remotePending.delete(key);
 
       this.chunks.delete(key);
       this.worker.postMessage({ type: 'unload', cx: chunk.cx, cz: chunk.cz });
@@ -643,7 +675,77 @@ export class World {
 
     // Any edit can unbalance neighbouring fluid, including a plain dig.
     this.fluids.onBlockChanged(wx, wy, wz);
+    if (this.onEdit && !this._derivedEdit && previous !== id) this.onEdit(this.dimension, wx, wy, wz, id);
     return true;
+  }
+
+  /**
+   * Block changes another player made (multiplayer; see net/session.js).
+   *
+   * Unlike setBlock these never wake the fluid simulation — whoever made the
+   * change runs that and sends the results — and are not reported back
+   * through onEdit. A change in a dimension this world is not showing goes
+   * straight into the worker's store for that dimension, so it is there when
+   * someone visits.
+   *
+   * @param {string} dimension
+   * @param {number[]} list flat [x, y, z, id, x, y, z, id, ...]
+   */
+  applyRemoteEdits(dimension, list) {
+    const changes = [];
+    for (let i = 0; i + 3 < list.length; i += 4) {
+      const x = Math.floor(list[i]), y = Math.floor(list[i + 1]), z = Math.floor(list[i + 2]);
+      if (y < 0 || y >= CHUNK_SY) continue;
+      changes.push({ x, y, z, id: list[i + 3] });
+    }
+    if (changes.length === 0) return;
+
+    for (const c of changes) this._dropUnfitEntity(this.blockEntityKey(c.x, c.y, c.z, dimension), c.id);
+    if (dimension !== this.dimension) {
+      this.worker.postMessage({ type: 'storeEdits', dimension, changes });
+      return;
+    }
+
+    for (const c of changes) {
+      const key = chunkKey(toChunkCoord(c.x), toChunkCoord(c.z));
+      const chunk = this.chunks.get(key);
+      if (!chunk) continue; // not loaded: the worker's store has it for later
+      if (!chunk.voxels) {
+        // Requested but not here yet: the copy on its way may predate this.
+        let pending = this._remotePending.get(key);
+        if (!pending) this._remotePending.set(key, (pending = []));
+        pending.push(c);
+        continue;
+      }
+      const lx = toLocalCoord(c.x), lz = toLocalCoord(c.z);
+      const index = voxelIndex(lx, c.y, lz);
+      if (chunk.voxels[index] === c.id) continue;
+      chunk.voxels[index] = c.id;
+      if (chunk.top) chunk.top[lx + lz * CHUNK_SX] = columnTop(chunk.voxels, lx, lz);
+      if (this.onColumnChanged) this.onColumnChanged(c.x, c.z, chunk, c.y);
+    }
+    this.worker.postMessage({ type: 'setBlocks', changes });
+  }
+
+  /** Other players' edits that raced a chunk's voxels here: lay them over it. */
+  _applyRemotePending(chunk) {
+    const key = chunkKey(chunk.cx, chunk.cz);
+    const pending = this._remotePending.get(key);
+    if (!pending) return;
+    this._remotePending.delete(key);
+    for (const c of pending) {
+      chunk.voxels[voxelIndex(toLocalCoord(c.x), c.y, toLocalCoord(c.z))] = c.id;
+    }
+  }
+
+  /** Discard a block entity whose block has become something that cannot hold it. */
+  _dropUnfitEntity(key, id) {
+    const entity = this.blockEntities.get(key);
+    if (!entity) return;
+    const holds = ENTITY_HOLDS[entity.type];
+    if (holds && holds(id)) return;
+    this.blockEntities.delete(key);
+    if (this.onEntityRemoved) this.onEntityRemoved(key);
   }
 
   // -------------------------------------------------------------------------
@@ -668,8 +770,21 @@ export class World {
     if (!entity && factory) {
       entity = factory();
       this.blockEntities.set(key, entity);
+      if (this.onEntityChanged) this.onEntityChanged(key, true);
     }
     return entity ?? null;
+  }
+
+  /** Report that a block entity's contents changed (multiplayer sends it on). */
+  touchBlockEntity(wx, wy, wz) {
+    const key = this.blockEntityKey(wx, wy, wz);
+    if (this.onEntityChanged && this.blockEntities.has(key)) this.onEntityChanged(key, false);
+  }
+
+  /** Set or clear a block entity from another player, reporting nothing back. */
+  applyRemoteEntity(key, entity) {
+    if (entity) this.blockEntities.set(key, entity);
+    else this.blockEntities.delete(key);
   }
 
   /** Advance every furnace, whether or not its UI is open. */
@@ -695,7 +810,10 @@ export class World {
       const current = this.getBlock(x, y, z);
       if (!isFurnaceBlock(current)) continue;
       const wanted = lit ? FURNACE_LIT.id : FURNACE.id;
+      // Every game ticks every furnace, so each works this out for itself.
+      this._derivedEdit = true;
       if (current !== wanted) this.setBlock(x, y, z, wanted);
+      this._derivedEdit = false;
     }
   }
 

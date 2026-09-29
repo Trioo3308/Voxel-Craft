@@ -20,8 +20,10 @@ loading are blocked on `file://`).
 npm run dev
 ```
 
-Then open <http://localhost:5173>. Any static server works — `python -m http.server 5173`
-is fine too.
+Then open <http://localhost:5173>. That runs `scripts/host.mjs`, which needs
+nothing but Node: it serves the files and carries multiplayer (see below). For
+playing alone any static server works, `python -m http.server 5173` included;
+the multiplayer buttons simply do not appear.
 
 Three.js loads from a CDN via the import map in `index.html`. To go offline,
 download `three.module.js` into `vendor/` and point the import map at it.
@@ -29,6 +31,15 @@ download `three.module.js` into `vendor/` and point the import map at it.
 ---
 
 ## Playing with other people
+
+Worlds can be shared: one player hosts, and friends join the host's world,
+build in it together and see each other. There are two ways in (Jev's pick was
+both), and the game uses whichever the page's server offers.
+
+**To host**, open a world, pause (`Esc`), put in the name you want over your
+head, and press **Open to Friends**. The pause menu then shows a six-character
+join code, links to send, and who is playing. **To join**, open the link you
+were sent, or press **Join a Friend** on the title screen and type the code.
 
 ### On your own network (easiest)
 
@@ -40,6 +51,10 @@ It prints the exact link to send, binds to every network interface, and refuses
 to start if the port is busy (rather than silently moving to a random port and
 invalidating the link you just shared). Use a different port with
 `npm run host -- 5174`.
+
+Everyone plays from that link, and the same server relays the game between you
+over a WebSocket, so it works on any home network: nobody has to reach anybody
+else directly.
 
 To re-check at any time, including whether the server is actually reachable from
 the network rather than only from your own machine:
@@ -82,21 +97,38 @@ server on **their** machine, which does not exist. Only the
 
 ### Over the internet
 
-The game is 100% static files — no server code, no database — so any static host
-works. Drop the folder on GitHub Pages, Netlify, Cloudflare Pages or Vercel and
-share the URL. Nothing in the project needs configuring first.
+On the live site, **Open to Friends** gives a join code and an invite link that
+work from anywhere. The browsers connect to each other directly (WebRTC), after
+exchanging a few lines through a tiny mailbox, `netlify/functions/signal.mts`,
+which is the project's only server code; nothing about the game passes through
+it. Most home networks connect in a few seconds. There is no relay server to
+fall back on, so the strictest networks (some offices, schools and mobile
+carriers) cannot connect: play on the same network with `npm run host` then.
 
-### What this is and is not
+The rest of the game is static files, so any static host works for playing
+alone: GitHub Pages, Cloudflare Pages, Vercel. Netlify also runs the mailbox
+from `netlify/functions` with no setup, installing its one dependency
+(`@netlify/blobs`) from `package.json`.
 
-Everyone gets **their own independent world**, saved in their own browser. This
-is shared *access*, not shared *play*: you will not see each other's characters
-or edits.
+### What is shared, and what is yours
 
-Real-time multiplayer is a much larger piece of work — it needs an authoritative
-server, per-player state and edit replication. The groundwork is there, though:
-terrain is a pure function of the seed, so a networked version only ever has to
-sync *edits*, never terrain. `world.setBlock()` is the single choke point where
-that broadcast would go.
+- **The world.** Every block anyone places or breaks, in every dimension, in the
+  order the host receives them. Terrain is a pure function of the seed, so a
+  guest is only ever sent the seed and the list of edits, as a save holds them,
+  and generates everything else itself.
+- **Chests, furnaces and signs**, one player at a time each, so two people can
+  never take the same diamonds. Everyone sees the contents change.
+- **Each other.** A figure with a name tag (it shows through walls) and whatever
+  is in hand, swinging when mining.
+- **Chat** (`T`), and the host's **time of day, weather and difficulty**. Only
+  the host can sleep the night away.
+- **Not shared:** creatures, dropped items and survival. Every game runs its own
+  mobs around its own player, and a guest's health, hunger, inventory and
+  achievements live in their game while playing, then in the host's save under
+  their name, so they come back to where they left off, with their things.
+
+The host's world keeps running while their pause menu is open, as long as
+anyone else is in it. A guest never saves the host's world in their own browser.
 
 ---
 
@@ -117,6 +149,7 @@ that broadcast would go.
 | `L` | Achievements and statistics |
 | `M` | World map |
 | `N` / `Sprint+N` | Drop a waypoint here / remove the nearest one |
+| `T` | Chat, when playing with others |
 | Middle click | Pick block: put the block you are looking at in your hand |
 | `K` | Mute sound |
 | `F1` | Settings — full control list, and rebind anything |
@@ -699,6 +732,98 @@ no gaps at all where it used to find a few per frame.
 The recorded sounds now start downloading when the page loads rather than on
 your first click, so the first footsteps are recordings, not stand-ins.
 
+### Part three: depth, distance and company
+
+Five larger reworks, Jev again choosing each (the Phase 3 table in
+[JEV_DECISIONS.md](JEV_DECISIONS.md)).
+
+**Experience and enchanting.** Mobs you kill, ores you mine, animals you breed
+and fish you catch drop experience orbs, which fly to you and fill a green bar
+over the hotbar; a furnace saves up experience for what it smelts and pays it
+out when you take the result. Levels buy enchantments at an **enchanting
+table**: three offers of rising cost, stronger with every bookshelf around it
+(up to fifteen), paid in levels and lapis, and fixed until you take one, so
+closing and reopening the table cannot re-roll them. An **anvil** puts
+enchanted books onto gear, merges two of the same tool, and repairs with the
+tool's own material, getting dearer each time. Fifteen enchantments, with
+Minecraft's rules and effects: Protection, Feather Falling, Respiration,
+Sharpness, Knockback, Looting, Efficiency, Silk Touch, Fortune, Unbreaking,
+Power, Punch, Infinity, Lure, and Mending, which the table never offers; it
+turns up in dungeon chests. Enchanted things shimmer, in your hand and in
+slots. Books need paper, and paper needs **sugar cane**, which now grows along
+water and can be farmed.
+
+**Advancements.** `L` opens a tree instead of a list: forty-four advancements
+across six tabs (Survival, Magic, Beyond, The Comb, Adventure, Skating), drawn
+as chains on a map you drag around. What comes after an advancement stays hidden
+until you have earned the one before it. **Recipes are found, not given:** the
+recipe book shows what you know, plus a count of what is left, and a recipe
+turns up the first time you hold its telling ingredient (paper teaches the book,
+not every sheet of planks teaching everything wooden). A world from before this
+update knows everything its inventories and chests already point to.
+
+**Content packs.** Blocks, items, recipes, smelting, fuels, loot tables, mining
+experience and advancements can now be written as data. The game's own recipes,
+smelting and loot moved into `content/core.json`, and `content/decor.json` adds
+polished stone, stone tiles, terracotta, a quartz lamp and a tart as the worked
+example. See [Content packs](#content-packs).
+
+**Distant terrain.** The Overworld carries on past your render distance as
+low-detail land out to 512 blocks, so a mountain range or a coastline shows long
+before you get there. Tiles are built off the main thread from the same terrain
+generator as the chunks, every four blocks near and every eight far: the real
+heights, biomes, beaches and water depths, and forests as a raised canopy the
+colour of their leaves. They stop at real chunks chunk by chunk, and fill in any
+chunk still loading, so the edge of the world never shows a hole into the sky.
+The haze moves out with them. On High, a second, coarser **shadow map** covers
+everything loaded, so a forest a hundred blocks off is shaded under its own
+trees at sunset rather than standing in full sun. Both are in Video settings;
+neither is drawn on Low.
+
+**Multiplayer.** See [Playing with other people](#playing-with-other-people).
+
+## Content packs
+
+A pack is one JSON file in `content/`, listed in `content/packs.json` and loaded
+in that order when the game starts. Everything in a pack refers to blocks and
+items by **name** (`stone`, `iron_ingot`, `glow_berry_tart`), the same names
+saves use, so a pack never needs an id: new blocks and items are given free ids
+and texture slots in pack order, and a save keeps working however they move.
+Anything that names something that does not exist is skipped with a console
+warning, and the game goes on.
+
+```json
+{
+  "name": "decor",
+  "blocks": [
+    {
+      "name": "polished_stone", "displayName": "Polished Stone",
+      "texture": { "base": "#8e9297", "noise": 5, "speckles": [["#81868b", 12]], "border": "#6f7378" },
+      "hardness": 1.5, "tool": "pickaxe", "harvestLevel": 0, "requiresTool": true
+    }
+  ],
+  "items": [ { "name": "glow_berry_tart", "texture": { "pixels": ["…16 rows…"], "palette": { "c": "#c98b4a" } }, "food": 7, "saturation": 5 } ],
+  "recipes": [ { "shaped": ["SS", "SS"], "key": { "S": "stone" }, "result": "polished_stone", "count": 4 } ],
+  "smelting": [ { "input": "clay", "output": "terracotta", "xp": 0.35 } ]
+}
+```
+
+| Section | Entries |
+| --- | --- |
+| `blocks` | `name` (lower case and `_`), `displayName`, `texture` or `textures: { top, side, bottom }`, `hardness`, `tool` (`pickaxe`/`axe`/`shovel`), `harvestLevel` (0 wood … 3 diamond), `requiresTool`, `light` (0–15), `glow` (drawn at full brightness, so it blooms), `seeThrough`, `sound` (`stone`, `wood`, `glass`, `metal`…), `drops` (a name, or `null`) and `dropCount` |
+| `items` | `name`, `displayName`, `texture`, `food`, `saturation`, `healing`, `maxStack` |
+| `recipes` | `shaped` rows with a `key`, or `shapeless` names; `result`, `count` |
+| `smelting` | `input`, `output`, `xp` |
+| `fuels` | `item`, `seconds` |
+| `miningXp` | `block`, `min`, `max` |
+| `loot` | tables by name (`dungeon`, `hive`, `throne`, `boss`): `rolls`, and `entries` of `item`, `min`, `max`, `weight`, `always`, and `enchant: [low, high]` to enchant it as the table would at a power in that range. A later pack's table replaces an earlier one's |
+| `advancementTabs`, `advancements` | `name`, `title`, `hint`, `icon`, `tab`, `parent`, `frame` (`goal`, `challenge`), and `when`: `crafted`, `smelted`, `mined`, `level`, `enchanted`, `discovered`, `event`, or `stat: [name, count]` |
+
+A **texture** is either painted from a small spec (`base` colour, `noise`,
+`speckles` as `[colour, count, size]`, a `grid` in `gridColor`, a `border`) or
+drawn as sixteen strings of sixteen characters with a `palette` mapping each
+character to a colour, `.` or any unmapped character being transparent.
+
 ## Underground
 
 The caves were rebuilt in terrain v5 after measurement showed how bad they were:
@@ -1044,7 +1169,16 @@ src/
 │  ├─ preferences.js       Per-browser options (video, audio, controls, interface)
 │  ├─ input.js             Keyboard/mouse state + edges, pointer lock
 │  ├─ audio.js             Recordings + synthesis, cave reverb, distance filtering
+│  ├─ farTerrain.js        Distant terrain tiles past the render distance
+│  ├─ farShadow.js         The second, coarser shadow map (High)
 │  └─ viewmodel.js         First-person hand + held item overlay pass
+├─ content/
+│  └─ packs.js             Loads the content packs in content/ (see Content packs)
+├─ net/
+│  ├─ session.js           Multiplayer: host and guest, what is shared and how
+│  ├─ transport.js         WebSocket relay + WebRTC with the join mailbox
+│  ├─ avatars.js           Other players' figures, name tags and held items
+│  └─ codec.js             Saves and block entities as messages
 ├─ world/
 │  ├─ blocks.js            Block + item registry  ← add content here
 │  ├─ textures.js          Procedurally painted texture atlas
@@ -1055,7 +1189,9 @@ src/
 │  ├─ light.js             Block light propagation (BFS flood fill)
 │  ├─ save.js              Persistence + version/palette migration
 │  ├─ mesher.js            Voxels → vertex buffers (culling + ambient occlusion)
-│  ├─ worker.js            Worker entry: owns generation and meshing
+│  ├─ worker.js            The world worker: owns generation and meshing
+│  ├─ farWorker.js         The distant-terrain worker: heightfield tiles
+│  ├─ workerEntry.js       Starts either worker once the content packs are in
 │  └─ world.js             Main-thread chunk streaming + block read/write
 ├─ player/
 │  ├─ physics.js           AABB vs. voxel collision (shared with mobs)
@@ -1063,20 +1199,29 @@ src/
 │  ├─ player.js            First-person controller + block interaction
 │  ├─ inventory.js         Hotbar, backpack, armour, durability
 │  ├─ crafting.js          Recipes, grid matching, furnace smelting
+│  ├─ experience.js        Levels and the experience curve
+│  ├─ enchanting.js        Enchantments, the table's offers, the anvil
+│  ├─ progress.js          Statistics and the advancement tree
+│  ├─ discovery.js         Which recipes you have found
 │  └─ survival.js          Health, hunger, armour mitigation, death
 ├─ entities/
 │  ├─ mob.js               Base mob: physics, health, animation, AI brain
 │  ├─ mobTypes.js          Mob registry  ← add creatures here
 │  ├─ itemEntity.js        Dropped items
 │  ├─ projectile.js        Arrows
+│  ├─ xpOrb.js             Experience orbs
 │  └─ entityManager.js     Spawning, separation, despawning, ray picking
 └─ ui/
    ├─ hud.js               DOM UI: slots, screens, tooltips, cards
    ├─ vitals.js            Pixel-art hearts (with ghost hearts), hunger, armour, air
    ├─ recipeBook.js        Searchable recipes that fill the crafting grid
    ├─ compassStrip.js      Bearings and markers along the top of the screen
+   ├─ chat.js              The chat box
    └─ settings.js          The settings screen: option pages + key rebinding
+content/                   Content packs: core.json (the game's own), decor.json
 assets/audio/              Public-domain recordings (see CREDITS.md)
+scripts/host.mjs           Server for local and network play: files, relay, mailbox
+netlify/functions/         signal.mts, the join mailbox on the live site
 ```
 
 ### How performance is achieved
@@ -1151,16 +1296,17 @@ generic. The `steerToward` / `wander` / `avoidCliffs` helpers are already there.
 
 ### Add a recipe
 
-One line in `player/crafting.js`:
+One entry in a content pack, `content/core.json` for the game's own:
 
-```js
-shaped(['DDD', ' S ', ' S '], { D: DIAMOND_BLOCK.id, S: ITEM_ID.STICK },
-       { id: someItemId, count: 1 });
+```json
+{ "shaped": ["DDD", " S ", " S "], "key": { "D": "diamond_block", "S": "stick" }, "result": "some_item" }
 ```
 
 Patterns are auto-trimmed, so they match anywhere in the grid, and a 3×3 recipe
-is automatically unavailable in the 2×2 inventory grid. `shapeless([...], result)`
-ignores arrangement. Smelting is two `Map` entries: `SMELTING` and `FUELS`.
+is automatically unavailable in the 2×2 inventory grid. `"shapeless": [...]`
+ignores arrangement. Smelting and fuels are entries in the same file; see
+[Content packs](#content-packs). Tools, armour, slabs and stairs are still made
+in `player/crafting.js`, from the material tables beside them.
 
 ### Add a biome
 
@@ -1172,12 +1318,15 @@ Note that raw fBm noise clusters near zero — the climate axes are amplified by
 ~2.2 before thresholding for exactly this reason. Without that, almost the whole
 map comes out as one biome.
 
-### Add multiplayer
+### Share something new in multiplayer
 
-The clean seam is `world.setBlock()`. It applies locally, then posts to the
-worker. Add a network broadcast at the same point and apply remote edits through
-the same function, and terrain stays consistent because generation is seed-pure —
-you only ever need to sync *edits*, never terrain.
+`world.setBlock()` reports every change a game makes through `World.onEdit`,
+and other players' arrive through `World.applyRemoteEdits`, which never wakes
+the fluid simulation (the player who made the change runs that and sends the
+results) and never echoes back. Block entities go the same way through
+`onEntityChanged` and `applyRemoteEntity`. Anything else is a message: add a
+`t` type to the host's and the guest's switch in `net/session.js`, and bump
+`PROTOCOL` so games on different versions turn each other away.
 
 ---
 
@@ -1190,13 +1339,14 @@ These are deliberate scope choices, not bugs:
   cheap option and roughly how early Minecraft behaved.
 - **Mob AI is steering-based**, not A\* — they walk toward you and jump at
   obstacles, so they can get stuck on complex terrain.
-- **No enchanting, potions or redstone circuitry.** Redstone and lapis generate
-  and can be mined, but currently have no use beyond decoration.
+- **No potions or redstone circuitry.** Redstone generates and can be mined,
+  but has no use beyond decoration; lapis pays for enchanting.
 - **Armour has no leather tier** — it starts at iron, so there is no early-game
   armour before your first smelt.
 - **Wheat is the only crop.** The farming loop is complete (till, plant, grow,
   harvest, bake) but it grows exactly one thing.
-- **Fishing catches only fish** — no junk, no treasure, no enchanted rods.
+- **Fishing catches only fish**: no junk and no treasure, though a Lure rod
+  bites faster and every catch pays a little experience.
 - **Ladders have no facing.** They render against one wall regardless of which
   side you placed them on.
 - **Crops do not need light.** Block light lives in the worker and the growth
@@ -1230,6 +1380,17 @@ These are deliberate scope choices, not bugs:
 - **Cave light is approximated by proximity to a light source**, not by an
   actual light level — the worker owns block light and does not send it back.
   A torch behind a wall still holds a space clear.
+- **In multiplayer, creatures are each player's own.** Every game spawns and
+  runs mobs around its own player, so two players standing together see
+  different zombies, and a Comb shrine's Warden is fought once per player.
+- **One player at a time in a chest or furnace.** Minecraft lets several share
+  one screen; here the second player is told who is using it.
+- **Only the host sleeps the night away**; a guest's bed sets their spawn.
+- **No relay for strict networks.** Joining over the internet is direct between
+  browsers, with no TURN server behind it, so the strictest NATs cannot connect.
+- **Distant terrain is the generated world.** It has no caves or structures, and
+  shows the land as it was generated: something built out there appears as you
+  come within your render distance.
 
 ---
 

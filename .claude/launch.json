@@ -3,8 +3,11 @@
   "configurations": [
     {
       "name": "voxel-craft",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["--yes", "serve", "-l", "5173", "."],
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "scripts/host.mjs",
+        "5173"
+      ],
       "port": 5173
     }
   ]

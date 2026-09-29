@@ -5,11 +5,17 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "npx --yes serve --no-port-switching -l 5173 .",
-    "start": "npx --yes serve --no-port-switching -l 5173 .",
+    "dev": "node scripts/host.mjs",
+    "start": "node scripts/host.mjs",
     "host": "node scripts/host.mjs",
     "whoami": "node scripts/whoami.mjs"
   },
   "keywords": ["voxel", "minecraft", "three.js", "webgl", "game"],
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "@netlify/blobs": "^11.1.1"
+  },
+  "devDependencies": {
+    "@netlify/functions": "^6.0.0"
+  }
 }

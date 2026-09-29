@@ -1,4 +1,7 @@
 # Voxel Craft is a static site with no build step: the files are served as-is.
+# The one piece of server code is netlify/functions/signal.mts, the join mailbox
+# for multiplayer over the internet (src/net/transport.js); Netlify bundles it
+# from netlify/functions, and installs @netlify/blobs for it from package.json.
 [build]
   publish = "."
   command = ""
