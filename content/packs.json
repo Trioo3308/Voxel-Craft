@@ -1,0 +1,4 @@
+{
+  "note": "Content packs, loaded in this order. Each is one JSON file in this folder; README > Content packs describes the format.",
+  "packs": ["core.json", "decor.json"]
+}

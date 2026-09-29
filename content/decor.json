@@ -1,0 +1,88 @@
+{
+  "name": "decor",
+  "description": "Decorative stone, terracotta, a quartz lamp and a tart, made entirely from data. It is also the worked example of the pack format: README > Content packs.",
+  "blocks": [
+    {
+      "name": "polished_stone",
+      "displayName": "Polished Stone",
+      "texture": { "base": "#8e9297", "noise": 5, "speckles": [["#81868b", 12]], "border": "#6f7378" },
+      "hardness": 1.5, "tool": "pickaxe", "harvestLevel": 0, "requiresTool": true
+    },
+    {
+      "name": "stone_tiles",
+      "displayName": "Stone Tiles",
+      "texture": { "base": "#999da2", "noise": 6, "grid": 8, "gridColor": "#6d7176" },
+      "hardness": 1.5, "tool": "pickaxe", "harvestLevel": 0, "requiresTool": true
+    },
+    {
+      "name": "terracotta",
+      "displayName": "Terracotta",
+      "texture": { "base": "#a45f43", "noise": 7, "speckles": [["#93543a", 20], ["#b16b4d", 10]] },
+      "hardness": 1.25, "tool": "pickaxe", "harvestLevel": 0, "requiresTool": true
+    },
+    {
+      "name": "quartz_lamp",
+      "displayName": "Quartz Lamp",
+      "note": "light makes it a light source for the lighting engine; glow draws it at full brightness so it blooms, like glowstone.",
+      "texture": {
+        "pixels": [
+          "################",
+          "#qqqqqqqqqqqqqq#",
+          "#qGGGGGGGGGGGGq#",
+          "#qGyyyyGGyyyyGq#",
+          "#qGyYYyGGyYYyGq#",
+          "#qGyYYyGGyYYyGq#",
+          "#qGyyyyGGyyyyGq#",
+          "#qGGGGGGGGGGGGq#",
+          "#qGGGGGGGGGGGGq#",
+          "#qGyyyyGGyyyyGq#",
+          "#qGyYYyGGyYYyGq#",
+          "#qGyYYyGGyYYyGq#",
+          "#qGyyyyGGyyyyGq#",
+          "#qGGGGGGGGGGGGq#",
+          "#qqqqqqqqqqqqqq#",
+          "################"
+        ],
+        "palette": { "#": "#c9c0b1", "q": "#ebe5da", "G": "#c99b52", "y": "#ffd98a", "Y": "#fff4c9" }
+      },
+      "hardness": 0.3, "light": 15, "glow": true, "sound": "glass"
+    }
+  ],
+  "items": [
+    {
+      "name": "glow_berry_tart",
+      "displayName": "Glow Berry Tart",
+      "texture": {
+        "pixels": [
+          "................",
+          "................",
+          "................",
+          "................",
+          "......rr..rr....",
+          ".....rRrrrRrr...",
+          "....rrrRrrrrRr..",
+          "...cccccccccccc.",
+          "..cCCCCCCCCCCCCc",
+          "..cCyCCCyCCCyCCc",
+          "..cccccccccccccc",
+          "...dddddddddddd.",
+          "................",
+          "................",
+          "................",
+          "................"
+        ],
+        "palette": { "r": "#ef9a2e", "R": "#ffd060", "c": "#c3834a", "C": "#e3aa6a", "y": "#f5c774", "d": "#855630" }
+      },
+      "food": 7, "saturation": 5
+    }
+  ],
+  "recipes": [
+    { "shaped": ["SS", "SS"], "key": { "S": "stone" }, "result": "polished_stone", "count": 4 },
+    { "shaped": ["PP", "PP"], "key": { "P": "polished_stone" }, "result": "stone_tiles", "count": 4 },
+    { "shaped": [".Q.", "QGQ", ".Q."], "key": { "Q": "nether_quartz", "G": "glowstone" }, "result": "quartz_lamp", "count": 2 },
+    { "shapeless": ["glow_berry", "glow_berry", "glow_berry", "wheat"], "result": "glow_berry_tart" }
+  ],
+  "smelting": [
+    { "input": "clay", "output": "terracotta", "xp": 0.35 }
+  ]
+}

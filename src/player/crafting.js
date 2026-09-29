@@ -7,23 +7,17 @@
  *   shapeless  — only the multiset of ingredients matters
  *
  * Tool and armour recipes are generated from templates rather than written out
- * 35 times, so adding a material is one line in `GEAR_TIERS`.
+ * 35 times, so adding a material is one line in `GEAR_TIERS`. Everything else —
+ * the hand-written recipes, smelting and fuels — is data, in content/core.json
+ * and any other content pack (see src/content/packs.js).
  */
 
 import {
-  PLANKS, LOG, ACACIA_LOG, SPRUCE_LOG, COBBLE, STONE, SAND, GLASS,
-  CRAFTING_TABLE, FURNACE, IRON_ORE, GOLD_ORE,
-  IRON_BLOCK, GOLD_BLOCK, DIAMOND_BLOCK, WOOL,
-  BUILDING_FAMILIES, DOOR_CLOSED, BED, TORCH, CHEST,
-  COMBIUM_ORE, COMBIUM_BLOCK, COMB_BRICK,
-  COMB_WAX, COMB_TILE, COMB_PILLAR, COMB_LANTERN, COMB_GLASS, LADDER,
-  RESIN_TORCH, HIVE_WALL,
-  RAIL, SIGN, JUKEBOX, PRESSURE_PLATE, MUSHROOM_RED, MUSHROOM_BROWN,
-  CAVE_LANTERN, DEEPSLATE, DEEPSLATE_COBBLE,
-  NETHERRACK, NETHER_BRICK, GLOWSTONE,
-  ITEM_ID, TOOL_KINDS, ARMOR_PIECES, ARMOR_MATERIAL_NAMES,
-  toolItemId, armorItemId, getDisplayName, getThing,
+  PLANKS, COBBLE, BUILDING_FAMILIES, ITEM_ID, TOOL_KINDS, ARMOR_PIECES,
+  ARMOR_MATERIAL_NAMES, toolItemId, armorItemId, getDisplayName, getThing,
+  idByName,
 } from '../world/blocks.js';
+import { packEntries } from '../content/packs.js';
 
 // ---------------------------------------------------------------------------
 // Recipe construction
@@ -81,28 +75,51 @@ function shapeless(ingredients, result) {
   RECIPES.push({ type: 'shapeless', ingredients, result });
 }
 
-// --- Basics -----------------------------------------------------------------
+// --- Recipes from content packs -----------------------------------------------
+// Written by name in content/core.json (and any other pack). A recipe naming
+// something that does not exist is skipped with a warning, so a pack for a
+// newer build cannot break an older one.
 
-// Every log type yields the same generic planks.
-for (const log of [LOG, ACACIA_LOG, SPRUCE_LOG]) {
-  shapeless([log.id], { id: PLANKS.id, count: 4 });
+function resolveName(name, where) {
+  const id = idByName(name);
+  if (id === null) console.warn(`[packs] ${where}: nothing is called "${name}"`);
+  return id;
 }
 
-shaped(['P', 'P'], { P: PLANKS.id }, { id: ITEM_ID.STICK, count: 4 });
-shaped(['PP', 'PP'], { P: PLANKS.id }, { id: CRAFTING_TABLE.id, count: 1 });
-shaped(['CCC', 'C.C', 'CCC'], { C: COBBLE.id }, { id: FURNACE.id, count: 1 });
+function addPackRecipe(entry) {
+  const where = `${entry.pack} recipe for ${entry.result}`;
+  const result = resolveName(entry.result, where);
+  if (result === null) return;
+  const count = Number.isInteger(entry.count) && entry.count > 0 ? entry.count : 1;
 
-// --- Storage blocks (and back again) ----------------------------------------
-
-const STORAGE = [
-  [ITEM_ID.IRON_INGOT, IRON_BLOCK.id],
-  [ITEM_ID.GOLD_INGOT, GOLD_BLOCK.id],
-  [ITEM_ID.DIAMOND, DIAMOND_BLOCK.id],
-];
-for (const [ingot, block] of STORAGE) {
-  shaped(['III', 'III', 'III'], { I: ingot }, { id: block, count: 1 });
-  shapeless([block], { id: ingot, count: 9 });
+  if (Array.isArray(entry.shaped)) {
+    const rows = entry.shaped.map(String);
+    if (rows.length === 0 || rows.length > 3 || rows.some((row) => row.length > 3)) {
+      console.warn(`[packs] ${where}: a shaped pattern is 1-3 rows of 1-3 cells`);
+      return;
+    }
+    const key = {};
+    for (const [symbol, name] of Object.entries(entry.key ?? {})) {
+      const id = resolveName(name, where);
+      if (id === null) return;
+      key[symbol] = id;
+    }
+    const unknown = rows.join('').split('').find((c) => !isEmptyCell(c) && !(c in key));
+    if (unknown) {
+      console.warn(`[packs] ${where}: "${unknown}" in the pattern has no key`);
+      return;
+    }
+    shaped(rows, key, { id: result, count });
+  } else if (Array.isArray(entry.shapeless)) {
+    const ids = entry.shapeless.map((name) => resolveName(name, where));
+    if (ids.includes(null) || ids.length === 0 || ids.length > 9) return;
+    shapeless(ids, { id: result, count });
+  } else {
+    console.warn(`[packs] ${where}: needs a "shaped" pattern or a "shapeless" list`);
+  }
 }
+
+for (const entry of packEntries('recipes')) addPackRecipe(entry);
 
 // --- Building blocks --------------------------------------------------------
 // Slabs, stairs and fences for every family, generated from the same table the
@@ -114,131 +131,6 @@ for (const set of BUILDING_FAMILIES) {
     shaped(['BSB', 'BSB'], { B: set.base, S: ITEM_ID.STICK }, { id: set.fence, count: 3 });
   }
 }
-
-// --- Doors, beds, torches, chests ------------------------------------------
-
-shaped(['PP', 'PP', 'PP'], { P: PLANKS.id }, { id: DOOR_CLOSED.id, count: 1 });
-shaped(['WWW', 'PPP'], { W: WOOL.id, P: PLANKS.id }, { id: BED.id, count: 1 });
-shaped(['C', 'S'], { C: ITEM_ID.COAL, S: ITEM_ID.STICK }, { id: TORCH.id, count: 4 });
-shaped(['PPP', 'P.P', 'PPP'], { P: PLANKS.id }, { id: CHEST.id, count: 1 });
-
-// --- Combium & buckets ------------------------------------------------------
-
-shaped(['I.I', '.I.'], { I: ITEM_ID.IRON_INGOT }, { id: ITEM_ID.BUCKET, count: 1 });
-// Four ingots, not nine: this is portal masonry, not a storage block, and a
-// ten-block frame at nine ingots each would cost 90 ingots.
-shaped(['CC', 'CC'], { C: ITEM_ID.COMBIUM_INGOT }, { id: COMBIUM_BLOCK.id, count: 1 });
-shapeless([COMBIUM_BLOCK.id], { id: ITEM_ID.COMBIUM_INGOT, count: 4 });
-shaped(['SS', 'SS'], { S: ITEM_ID.COMB_SHARD }, { id: COMB_BRICK.id, count: 4 });
-
-// Resin is the Comb's workable material: wax to build with, glass to see
-// through, and a lantern that outshines a torch.
-shaped(['RR', 'RR'], { R: ITEM_ID.COMB_RESIN }, { id: COMB_WAX.id, count: 4 });
-shaped(['BB', 'BB'], { B: COMB_BRICK.id }, { id: COMB_TILE.id, count: 4 });
-shaped(['B', 'B'], { B: COMB_BRICK.id }, { id: COMB_PILLAR.id, count: 2 });
-shaped(['.R.', 'RSR', '.R.'], { R: ITEM_ID.COMB_RESIN, S: ITEM_ID.COMB_SHARD },
-       { id: COMB_LANTERN.id, count: 2 });
-shaped(['RRR', 'RSR', 'RRR'], { R: ITEM_ID.COMB_RESIN, S: ITEM_ID.COMBIUM_INGOT },
-       { id: COMB_GLASS.id, count: 4 });
-
-// Amber is the Comb's navigational material. The compass needs a shard for the
-// needle and combium for the case, so it is a Comb craft made from Comb finds.
-shaped(['.A.', 'ACA', '.S.'],
-       { A: ITEM_ID.AMBER, C: ITEM_ID.COMBIUM_INGOT, S: ITEM_ID.COMB_SHARD },
-       { id: ITEM_ID.SHRINE_COMPASS, count: 1 });
-
-// Resin torches: light without needing coal, which the Comb has none of.
-shaped(['R', 'S'], { R: ITEM_ID.COMB_RESIN, S: ITEM_ID.STICK },
-       { id: RESIN_TORCH.id, count: 4 });
-shaped(['RR', 'RR'], { R: ITEM_ID.AMBER }, { id: HIVE_WALL.id, count: 4 });
-
-// --- Rockets and the board ---------------------------------------------------
-// Sustingus jelly turns out to burn extremely well. Nobody is quite sure why.
-shaped(['J', 'G', 'S'],
-       { J: ITEM_ID.SUSTINGUS_JELLY, G: ITEM_ID.GUNPOWDER, S: ITEM_ID.STICK },
-       { id: ITEM_ID.ROCKET, count: 3 });
-
-// A deck, two trucks, four wheels.
-shaped(['PPP', 'I.I'], { P: PLANKS.id, I: ITEM_ID.IRON_INGOT },
-       { id: ITEM_ID.SKATEBOARD, count: 1 });
-
-// Rails, so you can build somewhere to skate rather than only finding one.
-shaped(['I.I', 'ISI', 'I.I'], { I: ITEM_ID.IRON_INGOT, S: ITEM_ID.STICK },
-       { id: RAIL.id, count: 8 });
-
-// --- Boats, signs, jukeboxes and plates --------------------------------------
-
-shaped(['P.P', 'PPP'], { P: PLANKS.id }, { id: ITEM_ID.BOAT, count: 1 });
-shaped(['PPP', 'PPP', '.S.'], { P: PLANKS.id, S: ITEM_ID.STICK },
-       { id: SIGN.id, count: 3 });
-shaped(['PP'], { P: PLANKS.id }, { id: PRESSURE_PLATE.id, count: 1 });
-
-// A jukebox needs a diamond for the stylus, so it sits just past the point
-// where you have spare diamonds — a treat, not a stepping stone.
-shaped(['PPP', 'PDP', 'PPP'], { P: PLANKS.id, D: ITEM_ID.DIAMOND },
-       { id: JUKEBOX.id, count: 1 });
-
-// --- Fire, and the other dimensions ----------------------------------------------
-
-// The Nether's key. Wears out rather than being consumed, so one lasts a while.
-shapeless([ITEM_ID.FLINT, ITEM_ID.IRON_INGOT], { id: ITEM_ID.FLINT_AND_STEEL, count: 1 });
-
-// Nether brick, from what the Nether is made of.
-shaped(['NN', 'NN'], { N: NETHERRACK.id }, { id: NETHER_BRICK.id, count: 4 });
-
-// Glowstone is Nether loot, but four quartz will also do it — so an Aether
-// portal is reachable even if the ceilings near your portal were bare.
-shaped(['QQ', 'QQ'], { Q: ITEM_ID.NETHER_QUARTZ }, { id: GLOWSTONE.id, count: 1 });
-
-// --- The caves ------------------------------------------------------------------
-
-// A caged crystal. Brighter than a torch and it needs no coal, which is the
-// point: by the time you are deep enough to find a geode, coal is a trek away.
-shaped(['III', 'ICI', 'III'], { I: ITEM_ID.IRON_INGOT, C: ITEM_ID.CAVE_CRYSTAL },
-       { id: CAVE_LANTERN.id, count: 2 });
-
-// Deepslate is a building material once you are down there.
-shaped(['DD', 'DD'], { D: DEEPSLATE_COBBLE.id }, { id: DEEPSLATE.id, count: 4 });
-
-// --- Food ---------------------------------------------------------------------
-
-shaped(['P.P', '.P.'], { P: PLANKS.id }, { id: ITEM_ID.BOWL, count: 4 });
-// Either mushroom will do, and so will one of each.
-for (const [a, b] of [[MUSHROOM_RED.id, MUSHROOM_BROWN.id],
-                      [MUSHROOM_RED.id, MUSHROOM_RED.id],
-                      [MUSHROOM_BROWN.id, MUSHROOM_BROWN.id]]) {
-  shapeless([a, b, ITEM_ID.BOWL], { id: ITEM_ID.MUSHROOM_STEW, count: 1 });
-}
-
-// Eight gold around an apple. Deliberately steep: this is the only food that
-// heals, and cheap healing would flatten every fight in the game.
-shaped(['GGG', 'GAG', 'GGG'], { G: ITEM_ID.GOLD_INGOT, A: ITEM_ID.APPLE },
-       { id: ITEM_ID.GOLDEN_APPLE, count: 1 });
-
-// --- Farming ----------------------------------------------------------------
-// Three wheat in a row. The first food you can make instead of hunt.
-shaped(['WWW'], { W: ITEM_ID.WHEAT }, { id: ITEM_ID.BREAD, count: 1 });
-
-// --- Ladders, shears, rod ----------------------------------------------------
-shaped(['S.S', 'SSS', 'S.S'], { S: ITEM_ID.STICK }, { id: LADDER.id, count: 3 });
-shaped(['.I', 'I.'], { I: ITEM_ID.IRON_INGOT }, { id: ITEM_ID.SHEARS, count: 1 });
-shaped(['..S', '.SR', 'S.R'], { S: ITEM_ID.STICK, R: ITEM_ID.STRING },
-       { id: ITEM_ID.FISHING_ROD, count: 1 });
-
-// --- Bow --------------------------------------------------------------------
-shaped(['.SG', 'S.G', '.SG'], { S: ITEM_ID.STICK, G: ITEM_ID.STRING }, { id: ITEM_ID.BOW, count: 1 });
-
-// --- Mob-drop recipes -------------------------------------------------------
-
-// Arrows: flint would be more faithful, but cobblestone stands in for the head.
-shaped(['C', 'S', 'F'], { C: COBBLE.id, S: ITEM_ID.STICK, F: ITEM_ID.FEATHER },
-       { id: ITEM_ID.ARROW, count: 4 });
-
-// Bone meal is not implemented, but bones make useful sticks.
-shapeless([ITEM_ID.BONE], { id: ITEM_ID.STICK, count: 2 });
-
-// String into wool, as in Minecraft.
-shaped(['SS', 'SS'], { S: ITEM_ID.STRING }, { id: WOOL.id, count: 1 });
 
 // --- Tools & armour ---------------------------------------------------------
 
@@ -416,30 +308,29 @@ export function recipesFor(id) {
 // Smelting
 // ---------------------------------------------------------------------------
 
-/** input id -> {id, count} produced. */
-export const SMELTING = new Map([
-  [IRON_ORE.id, { id: ITEM_ID.IRON_INGOT, count: 1 }],
-  [GOLD_ORE.id, { id: ITEM_ID.GOLD_INGOT, count: 1 }],
-  [SAND.id, { id: GLASS.id, count: 1 }],
-  [COBBLE.id, { id: STONE.id, count: 1 }],
-  [ITEM_ID.PORKCHOP, { id: ITEM_ID.COOKED_PORKCHOP, count: 1 }],
-  [ITEM_ID.BEEF, { id: ITEM_ID.COOKED_BEEF, count: 1 }],
-  [ITEM_ID.MUTTON, { id: ITEM_ID.COOKED_MUTTON, count: 1 }],
-  [ITEM_ID.CHICKEN_RAW, { id: ITEM_ID.CHICKEN_COOKED, count: 1 }],
-  [COMBIUM_ORE.id, { id: ITEM_ID.COMBIUM_INGOT, count: 1 }],
-  [ITEM_ID.FISH, { id: ITEM_ID.COOKED_FISH, count: 1 }],
-]);
+/**
+ * input id -> {id, count, xp} produced, from the packs' `smelting` lists.
+ * `xp` is the experience one smelt is worth.
+ */
+export const SMELTING = new Map();
+for (const entry of packEntries('smelting')) {
+  const where = `${entry.pack} smelting of ${entry.input}`;
+  const input = resolveName(entry.input, where);
+  const output = resolveName(entry.output, where);
+  if (input === null || output === null) continue;
+  SMELTING.set(input, {
+    id: output,
+    count: Number.isInteger(entry.count) && entry.count > 0 ? entry.count : 1,
+    xp: Math.max(0, Number(entry.xp) || 0),
+  });
+}
 
-/** Seconds of burn time each fuel provides. One smelt takes SMELT_SECONDS. */
-export const FUELS = new Map([
-  [ITEM_ID.COAL, 80],
-  [LOG.id, 15],
-  [ACACIA_LOG.id, 15],
-  [SPRUCE_LOG.id, 15],
-  [PLANKS.id, 15],
-  [CRAFTING_TABLE.id, 15],
-  [ITEM_ID.STICK, 5],
-]);
+/** Seconds of burn time each fuel provides, from the packs' `fuels` lists. */
+export const FUELS = new Map();
+for (const entry of packEntries('fuels')) {
+  const id = resolveName(entry.item, `${entry.pack} fuel`);
+  if (id !== null && Number(entry.seconds) > 0) FUELS.set(id, Number(entry.seconds));
+}
 
 export const SMELT_SECONDS = 10;
 
@@ -508,6 +399,9 @@ export function tickFurnace(state, dt, onSmelted = null) {
       if (state.input.count <= 0) state.input = null;
       if (state.output) state.output.count += recipe.count;
       else state.output = { id: recipe.id, count: recipe.count };
+      // Experience banks in the furnace until the output is taken, as in
+      // Minecraft; the HUD pays it out, and breaking the furnace spills it.
+      state.xp = (state.xp ?? 0) + (recipe.xp ?? 0) * recipe.count;
       // Reported rather than acted on: this module has no idea what an
       // achievement is, and should not learn.
       if (onSmelted) onSmelted(recipe.id);

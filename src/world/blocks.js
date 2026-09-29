@@ -7,8 +7,13 @@
  *  2. Add an entry to the `defineBlock` list below with a fresh id.
  *  3. That's it — terrain, mesher, inventory, HUD and drops all read from here.
  *
+ * Or, for a block that needs no behaviour of its own, add it to a content pack
+ * in /content instead: no code at all (see "Content packs" at the end).
+ *
  * This module is imported by the worker, so it must not touch Three.js or DOM.
  */
+
+import { packEntries } from '../content/packs.js';
 
 // ---------------------------------------------------------------------------
 // Texture atlas tile indices (row-major in a 16x16 grid of 16px tiles).
@@ -243,6 +248,18 @@ export const TILE = {
   CROWN: 184,
   COMB_WAX: 185,
 
+  // --- Enchanting -----------------------------------------------------------
+  // The last eight free cells of the first half, then the second half.
+  SUGAR_CANE: 120,
+  BOOKSHELF: 121,
+  ENCHANTING_TOP: 122,
+  ENCHANTING_SIDE: 123,
+  ANVIL_TOP: 124,
+  ANVIL_SIDE: 125,
+  PAPER: 126,
+  BOOK: 127,
+  ENCHANTED_BOOK: 260,
+
   /**
    * Tool and armour icons are generated parametrically (shape x material), so
    * they occupy reserved runs rather than individual named entries.
@@ -381,6 +398,15 @@ export const SHAPES = {
   SIGN: [[0.0625, 0.5, 0.4375, 0.9375, 1, 0.5625], [0.4375, 0, 0.4375, 0.5625, 0.5, 0.5625]],
   // A headstone on a low plinth.
   GRAVESTONE: [[0.125, 0, 0.3125, 0.875, 0.125, 0.6875], [0.1875, 0.125, 0.375, 0.8125, 0.8125, 0.625]],
+  // Three-quarters of a block, so the book on top sits at a reading height.
+  ENCHANTING_TABLE: [[0, 0, 0, 1, 0.75, 1]],
+  // Foot, waist, neck and face, the long way along X.
+  ANVIL: [
+    [0.125, 0, 0.125, 0.875, 0.25, 0.875],
+    [0.25, 0.25, 0.1875, 0.75, 0.3125, 0.8125],
+    [0.3125, 0.3125, 0.3125, 0.6875, 0.625, 0.6875],
+    [0, 0.625, 0.1875, 1, 1, 0.8125],
+  ],
 };
 
 /** Height of a shape's tallest box, used for step-up and headroom checks. */
@@ -644,6 +670,9 @@ const NAMED_ITEMS = [
 
   // --- The Nether and the Aether --------------------------------------------
   'FLINT', 'FLINT_AND_STEEL', 'NETHER_QUARTZ', 'AMBROSIUM_SHARD',
+
+  // --- Enchanting -----------------------------------------------------------
+  'PAPER', 'BOOK', 'ENCHANTED_BOOK',
 ];
 
 export const ITEM_ID = {};
@@ -1648,6 +1677,44 @@ export const TREE_WOODS = {
 };
 
 // ---------------------------------------------------------------------------
+// Enchanting
+// ---------------------------------------------------------------------------
+
+/**
+ * Grows three tall on sand, grass or dirt with water beside it, and three of
+ * it make paper — the start of every book. Breaking one brings down the cane
+ * above it, as in Minecraft.
+ */
+export const SUGAR_CANE = defineBlock(151, 'sugar_cane', {
+  displayName: 'Sugar Cane', tiles: TILE.SUGAR_CANE, hardness: 0,
+  solid: false, opaque: false, cross: true,
+});
+
+/** Feeds an enchanting table two blocks away. Breaks back into its books. */
+export const BOOKSHELF = defineBlock(152, 'bookshelf', {
+  displayName: 'Bookshelf',
+  tiles: { top: TILE.PLANKS, bottom: TILE.PLANKS, side: TILE.BOOKSHELF },
+  hardness: 1.5, toolType: 'axe',
+  drops: ITEM_ID.BOOK, dropCount: [3, 3],
+});
+
+/** Gives off a little light, like Minecraft's, so a library glows faintly. */
+export const ENCHANTING_TABLE = defineBlock(153, 'enchanting_table', {
+  displayName: 'Enchanting Table',
+  tiles: { top: TILE.ENCHANTING_TOP, side: TILE.ENCHANTING_SIDE, bottom: TILE.OBSIDIAN },
+  shape: SHAPES.ENCHANTING_TABLE,
+  hardness: 5, toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
+  lightEmission: 7,
+});
+
+export const ANVIL = defineBlock(154, 'anvil', {
+  displayName: 'Anvil',
+  tiles: { top: TILE.ANVIL_TOP, bottom: TILE.ANVIL_SIDE, side: TILE.ANVIL_SIDE },
+  shape: SHAPES.ANVIL,
+  hardness: 5, toolType: 'pickaxe', harvestLevel: 0, requiresTool: true,
+});
+
+// ---------------------------------------------------------------------------
 // Items — ids at or above ITEM_ID_BASE, so one comparison tells a placeable
 // block from an item. See the note on ITEM_ID_BASE for why the line moved.
 // ---------------------------------------------------------------------------
@@ -2019,6 +2086,14 @@ export const TOOL_MATERIALS = {
   combium: { label: 'Combium', tier: 4, speed: 11, durability: 2400, swordDamage: 9, color: 0xf2f0ea },
 };
 
+// --- Enchanting ---------------------------------------------------------------
+export const PAPER = defineItem(ITEM_ID.PAPER, 'paper', { displayName: 'Paper', tile: TILE.PAPER });
+export const BOOK = defineItem(ITEM_ID.BOOK, 'book', { displayName: 'Book', tile: TILE.BOOK });
+/** Carries its enchantments on the stack (`ench`), so it never stacks. */
+export const ENCHANTED_BOOK = defineItem(ITEM_ID.ENCHANTED_BOOK, 'enchanted_book', {
+  displayName: 'Enchanted Book', tile: TILE.ENCHANTED_BOOK, maxStack: 1,
+});
+
 const TOOL_LABELS = { pickaxe: 'Pickaxe', axe: 'Axe', shovel: 'Shovel', sword: 'Sword', hoe: 'Hoe' };
 
 /** id = TOOL_BASE + kindIndex * GEAR_STRIDE + materialIndex, matching the tiles. */
@@ -2162,6 +2237,134 @@ export function isFluidFamily(id, family) {
 }
 
 // ---------------------------------------------------------------------------
+// Names
+// ---------------------------------------------------------------------------
+/**
+ * Every block and item by its stable name — the names saves are keyed to, and
+ * what content packs use to refer to anything. Blocks and items share one
+ * namespace, which the palette already relies on.
+ */
+const BY_NAME = new Map();
+for (const block of BLOCKS) if (block) BY_NAME.set(block.name, block.id);
+for (const item of ITEMS) if (item) BY_NAME.set(item.name, item.id);
+
+/** Id of the block or item with this name, or null. */
+export function idByName(name) {
+  return BY_NAME.get(name) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Content packs
+// ---------------------------------------------------------------------------
+/**
+ * Blocks and items from content packs (src/content/packs.js), defined after
+ * everything built in. They take free ids and atlas tiles in pack order, so
+ * the page and the world worker, reading the same packs, agree on every
+ * number — and since saves store names, the numbers never need to hold still
+ * between versions. Both are handed out from the top down, leaving the low end
+ * of each range to built-in content.
+ */
+
+/** Atlas tiles painted from a pack's texture spec, tile -> spec. See textures.js. */
+export const PACK_PAINTS = new Map();
+
+const TILES_IN_USE = new Set(Object.values(TILE).filter((t) => typeof t === 'number'));
+for (const t of [...VARIANT_TILES, ...LEAF_TILES]) TILES_IN_USE.add(t + ALT_TILE_OFFSET);
+for (const block of BLOCKS) if (block) for (const t of block.tiles) TILES_IN_USE.add(t);
+for (const item of ITEMS) if (item) TILES_IN_USE.add(item.tile);
+let nextPackTile = ATLAS_COLS * ATLAS_ROWS - 1;
+
+/** A fresh atlas tile for one texture spec; tile 0 once the atlas is full. */
+function packTile(spec) {
+  while (nextPackTile >= ALT_TILE_OFFSET && TILES_IN_USE.has(nextPackTile)) nextPackTile--;
+  if (nextPackTile < ALT_TILE_OFFSET) {
+    console.warn('[packs] the texture atlas is full; a pack texture was skipped');
+    return 0;
+  }
+  const tile = nextPackTile--;
+  TILES_IN_USE.add(tile);
+  PACK_PAINTS.set(tile, spec && typeof spec === 'object' ? spec : {});
+  return tile;
+}
+
+let nextPackBlock = ITEM_ID_BASE - 1;
+function freeBlockId() {
+  while (nextPackBlock > 0 && BLOCKS[nextPackBlock]) nextPackBlock--;
+  return nextPackBlock > 0 ? nextPackBlock-- : null;
+}
+
+const packName = (name) => typeof name === 'string' && /^[a-z0-9_]+$/.test(name);
+const titleCase = (name) => name.split('_').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
+/** Sounds a pack block asked for, applied with everything else's below. */
+const PACK_SOUNDS = {};
+/** Drops are names, resolved once every pack block and item exists. */
+const packDrops = [];
+
+for (const spec of packEntries('blocks')) {
+  if (!packName(spec.name) || BY_NAME.has(spec.name)) {
+    console.warn(`[packs] ${spec.pack}: block name "${spec.name}" is missing, malformed or taken`);
+    continue;
+  }
+  const id = freeBlockId();
+  if (id === null) {
+    console.warn(`[packs] ${spec.pack}: no block ids left for "${spec.name}"`);
+    continue;
+  }
+  const faces = spec.textures;
+  const tiles = faces && typeof faces === 'object'
+    ? (() => {
+        const side = packTile(faces.side ?? faces.top);
+        const top = faces.top ? packTile(faces.top) : side;
+        const bottom = faces.bottom ? packTile(faces.bottom) : top;
+        return { side, top, bottom };
+      })()
+    : packTile(spec.texture);
+  const block = defineBlock(id, spec.name, {
+    displayName: typeof spec.displayName === 'string' ? spec.displayName : titleCase(spec.name),
+    tiles,
+    hardness: Number.isFinite(spec.hardness) ? spec.hardness : 1,
+    toolType: ['pickaxe', 'axe', 'shovel'].includes(spec.tool) ? spec.tool : null,
+    harvestLevel: Number.isInteger(spec.harvestLevel) ? spec.harvestLevel : -1,
+    requiresTool: spec.requiresTool === true,
+    lightEmission: Math.max(0, Math.min(15, spec.light | 0)),
+    emissive: spec.glow === true,
+    // A see-through block is a cutout in the opaque pass, like glass.
+    opaque: spec.seeThrough !== true,
+  });
+  if (spec.sound) PACK_SOUNDS[spec.name] = String(spec.sound);
+  if (spec.drops !== undefined) packDrops.push([block, spec]);
+  BY_NAME.set(spec.name, id);
+}
+
+let nextPackItem = ITEM_ID_BASE + ITEMS.length;
+for (const spec of packEntries('items')) {
+  if (!packName(spec.name) || BY_NAME.has(spec.name)) {
+    console.warn(`[packs] ${spec.pack}: item name "${spec.name}" is missing, malformed or taken`);
+    continue;
+  }
+  const id = nextPackItem++;
+  defineItem(id, spec.name, {
+    displayName: typeof spec.displayName === 'string' ? spec.displayName : titleCase(spec.name),
+    tile: packTile(spec.texture),
+    food: Math.max(0, spec.food | 0),
+    saturation: Math.max(0, Number(spec.saturation) || 0),
+    healing: Math.max(0, spec.healing | 0),
+    maxStack: Math.max(1, Math.min(64, spec.maxStack ?? 64)),
+  });
+  BY_NAME.set(spec.name, id);
+}
+
+for (const [block, spec] of packDrops) {
+  const drop = spec.drops === null ? 0 : BY_NAME.get(spec.drops);
+  if (drop === undefined) {
+    console.warn(`[packs] ${spec.pack}: "${spec.name}" drops "${spec.drops}", which does not exist`);
+    continue;
+  }
+  block.drops = drop;
+  if (Array.isArray(spec.dropCount)) block.dropCount = [spec.dropCount[0] | 0, spec.dropCount[1] | 0];
+}
+
+// ---------------------------------------------------------------------------
 // Sound materials
 // ---------------------------------------------------------------------------
 /**
@@ -2179,6 +2382,8 @@ const SOUND_BY_NAME = {
   glass: 'glass', snow: 'wool', wool: 'wool',
   iron_block: 'metal', gold_block: 'metal', diamond_block: 'metal',
   furnace: 'metal', furnace_lit: 'metal',
+  sugar_cane: 'grass', bookshelf: 'wood', anvil: 'metal',
+  ...PACK_SOUNDS,
 };
 
 for (const block of BLOCKS) {

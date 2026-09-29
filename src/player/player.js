@@ -13,13 +13,17 @@ import { moveWithCollision, isInLiquid, collidesWithWorld, isSupported } from '.
 import { raycastVoxels } from './raycast.js';
 import { Inventory, HOTBAR_SIZE } from './inventory.js';
 import { Survival, EXHAUSTION } from './survival.js';
+import { Experience } from './experience.js';
+import { enchantLevel, enchantProtection } from './enchanting.js';
+import { caneCanStand } from '../world/sugarCane.js';
 import { Skateboard, BAIL_FALL_DISTANCE } from './skateboard.js';
 import {
   AIR, getBlock, getItem, isLiquid, getSoundMaterial, getRanged, getBucket, getFluid,
   ITEM_ID, WATER, LAVA,
   GRASS, DIRT, DRY_GRASS, PODZOL, SWAMP_GRASS,
   FARMLAND, FARMLAND_MOIST, isFarmland, WHEAT_STAGES, wheatStage,
-  RAIL, isDoor, isBed, doorBlock, bedBlock, FACINGS, facingFromLook, getMaxStack,
+  RAIL, isDoor, isBed, doorBlock, bedBlock, FACINGS, facingFromLook, getMaxStack, isBlockId, getDurability,
+  SUGAR_CANE,
 } from '../world/blocks.js';
 import { PORTAL_SURFACES, igniterOf } from '../world/portal.js';
 import { audio } from '../engine/audio.js';
@@ -139,6 +143,16 @@ export class Player {
     this._seenTrickSeq = 0;
     // Taking a hit wears down every worn piece, as in Minecraft.
     this.survival.onArmorHit = () => this.inventory.damageArmor(1);
+    // Protection and Feather Falling, read off whatever is worn at the time.
+    this.survival.enchantProtection = (cause) => enchantProtection(this.inventory.armor, cause);
+
+    /** Experience points and levels; see experience.js. */
+    this.experience = new Experience();
+    /**
+     * Fixes the enchanting table's offers until you next enchant, so opening
+     * and closing the table cannot re-roll them (enchanting.js).
+     */
+    this.enchantSeed = (Math.random() * 0x7fffffff) | 0;
     this.survival.onDamage(() => audio.playerHurt());
 
     /** Distance walked since the last footstep sound. */
@@ -680,7 +694,9 @@ export class Player {
       this.air = Math.min(MAX_AIR, this.air + dt * AIR_REFILL_RATE);
       this._drownTimer = 0;
     } else {
-      this.air = Math.max(0, this.air - dt);
+      // Respiration stretches a breath: level n makes it last n + 1 times as long.
+      const respiration = enchantLevel(this.inventory.armor[0], 'respiration');
+      this.air = Math.max(0, this.air - dt / (1 + respiration));
       if (this.air <= 0) {
         this._drownTimer += dt;
         if (this._drownTimer >= 1) {
@@ -905,14 +921,16 @@ export class Player {
     const count = whole ? slot.count : 1;
     const id = slot.id;
     const durability = slot.durability;
+    const extra = slot.ench || slot.work ? { ench: slot.ench, work: slot.work } : null;
 
     this.inventory.consumeSelected(count);
-    this.throwItem(id, count, ctx.entities, durability);
+    this.throwItem(id, count, ctx.entities, durability, extra);
     return true;
   }
 
   /** Spawn an item entity in front of the player's face, moving away. */
-  throwItem(id, count, entities, durability) {
+  /** @param extra a stack whose enchantments and anvil work go with it */
+  throwItem(id, count, entities, durability, extra = null) {
     const eye = this.eyePosition;
     const dir = this.getLookDirection();
 
@@ -922,7 +940,8 @@ export class Player {
       eye.z + dir.z * 0.4,
       id,
       count,
-      durability
+      durability,
+      extra
     );
 
     // Toss it along the view direction rather than letting it drop straight down.
@@ -943,13 +962,17 @@ export class Player {
     if (this.drawProgress < 0.15) return;
     if (!ctx.entities) return;
 
+    const held = this.inventory.getSelected();
     const hasArrow = this.creative || this.inventory.countOf(ITEM_ID.ARROW) > 0;
     if (!hasArrow) return;
-    if (!this.creative) this.inventory.removeFirst(ITEM_ID.ARROW, 1);
+    // Infinity still needs one arrow to nock, but never spends it.
+    if (!this.creative && !enchantLevel(held, 'infinity')) this.inventory.removeFirst(ITEM_ID.ARROW, 1);
 
     const charge = this.drawProgress;
     const speed = bow.speed * (0.4 + charge * 0.6);
-    const damage = bow.minDamage + (bow.maxDamage - bow.minDamage) * charge * charge;
+    let damage = bow.minDamage + (bow.maxDamage - bow.minDamage) * charge * charge;
+    const power = enchantLevel(held, 'power');
+    if (power > 0) damage *= 1 + 0.25 * (power + 1);
 
     const eye = this.eyePosition;
     const dir = this.getLookDirection();
@@ -963,7 +986,8 @@ export class Player {
       { x: eye.x + dir.x * 0.5, y: eye.y + dir.y * 0.5, z: eye.z + dir.z * 0.5 },
       velocity,
       this,
-      damage
+      damage,
+      enchantLevel(held, 'punch')
     );
 
     audio.bow();
@@ -1243,7 +1267,7 @@ export class Player {
 
     this.fishingSpot = { x: hit.x + 0.5, y: hit.y + 1, z: hit.z + 0.5 };
     // A long, variable wait, so it is something you settle into rather than spam.
-    this.fishTimer = FISH_WAIT_MIN + Math.random() * (FISH_WAIT_MAX - FISH_WAIT_MIN);
+    this.fishTimer = this._fishWait();
     this.fishBiteTimer = 0;
     audio.splash();
     this.didSwing = true;
@@ -1266,7 +1290,7 @@ export class Player {
       this.fishBiteTimer -= dt;
       // Missed the window: the fish is gone, wait again.
       if (this.fishBiteTimer <= 0) {
-        this.fishTimer = FISH_WAIT_MIN + Math.random() * (FISH_WAIT_MAX - FISH_WAIT_MIN);
+        this.fishTimer = this._fishWait();
       }
       return;
     }
@@ -1558,7 +1582,10 @@ export class Player {
     // The right tool class multiplies mining speed; the wrong one is no better
     // than bare hands.
     const tool = this.inventory.getHeldTool();
-    const speed = tool && tool.kind === def.toolType ? tool.speed : 1;
+    let speed = tool && tool.kind === def.toolType ? tool.speed : 1;
+    // Efficiency adds level squared plus one, on the blocks the tool is for.
+    const efficiency = enchantLevel(this.inventory.getSelected(), 'efficiency');
+    if (efficiency > 0 && speed > 1) speed += efficiency * efficiency + 1;
 
     audio.dig(getSoundMaterial(target.block));
 
@@ -1585,17 +1612,35 @@ export class Player {
     audio.blockBreak(getSoundMaterial(def.id));
     this.breakProgress = 0;
     this._breakKey = null;
+    // What the break yielded, for experience: nothing for a creative break or
+    // a tier you cannot harvest, and nothing for an ore taken whole.
+    let harvested = false;
+    let silked = false;
 
     if (!this.creative) {
       // Mining a diamond with a stone pickaxe destroys the block and yields
       // nothing — this gate is what drives the tool progression.
-      if (this.canHarvest(def)) {
+      const held = this.inventory.getSelected();
+      // Silk Touch takes the block itself, for anything that normally breaks
+      // into something else (ores, stone, glass, grass).
+      const silk = enchantLevel(held, 'silk_touch') > 0 && def.obtainable !== false && def.drops !== def.id;
+      harvested = this.canHarvest(def);
+      if (harvested && silk) {
+        this.inventory.add(def.id, 1);
+        silked = true;
+      } else if (harvested) {
         // `drops` is checked against AIR rather than for truthiness: leaves
         // deliberately have no primary drop, and `0` is falsy — which silently
         // skipped their sapling and stick rolls too.
         if (def.drops !== AIR) {
           const [min, max] = def.dropCount;
-          const count = min + Math.floor(Math.random() * (max - min + 1));
+          let count = min + Math.floor(Math.random() * (max - min + 1));
+          // Fortune multiplies what an ore gives up: anything that drops an
+          // item rather than a block (coal, diamonds, lapis, quartz).
+          const fortune = enchantLevel(held, 'fortune');
+          if (fortune > 0 && !isBlockId(def.drops)) {
+            count *= 1 + Math.max(0, Math.floor(Math.random() * (fortune + 2)) - 1);
+          }
           if (count > 0) this.inventory.add(def.drops, count);
         }
 
@@ -1626,7 +1671,7 @@ export class Player {
       this.survival.addExhaustion(EXHAUSTION.mineBlock);
     }
 
-    if (this.onBlockBroken) this.onBlockBroken(def.id, target, entity);
+    if (this.onBlockBroken) this.onBlockBroken(def.id, target, entity, { harvested, silked });
   }
 
   _tryPlace(ctx) {
@@ -1649,6 +1694,10 @@ export class Player {
     if (getBlock(held).solid && this._intersectsBlock(x, y, z)) return false;
     // …or a mob.
     if (ctx.entities && ctx.entities.anyMobIntersectsBlock(x, y, z)) return false;
+    // Sugar cane only goes by water, or on more cane (see sugarCane.js).
+    if (held === SUGAR_CANE.id && !caneCanStand((bx, by, bz) => this.world.getBlock(bx, by, bz), x, y, z)) {
+      return false;
+    }
 
     const def = getBlock(held);
     const free = (bx, by, bz) => {
@@ -1732,8 +1781,14 @@ export class Player {
 
     // Swords hit hardest; other tools are middling weapons; fists are weakest.
     const tool = this.inventory.getHeldTool();
-    const damage = tool ? tool.damage : 2;
-    hit.mob.takeDamage(damage, { x: direction.x, y: 0.45, z: direction.z });
+    const held = this.inventory.getSelected();
+    const sharpness = enchantLevel(held, 'sharpness');
+    const damage = (tool ? tool.damage : 2) + (sharpness > 0 ? sharpness * 0.5 + 0.5 : 0);
+    hit.mob.takeDamage(damage, { x: direction.x, y: 0.45, z: direction.z }, {
+      player: true,
+      looting: enchantLevel(held, 'looting'),
+      knockback: 1 + enchantLevel(held, 'knockback') * 0.9,
+    });
 
     if (!this.creative) {
       if (tool) this.inventory.damageHeldTool(1);
@@ -1743,6 +1798,36 @@ export class Player {
   }
 
   /** Would a block at these coordinates overlap the player's box? */
+  /** Seconds until a bite; Lure takes five off per level, as in Minecraft. */
+  _fishWait() {
+    const lure = enchantLevel(this.inventory.getSelected(), 'lure');
+    const wait = FISH_WAIT_MIN + Math.random() * (FISH_WAIT_MAX - FISH_WAIT_MIN);
+    return Math.max(1.5, wait - lure * 5);
+  }
+
+  /**
+   * Absorb experience. Mending comes first, as in Minecraft: each point
+   * repairs two durability on a worn Mending item you are holding or wearing,
+   * and only what is left over reaches the bar.
+   */
+  gainXp(points) {
+    const inv = this.inventory;
+    const menders = [inv.getSelected(), ...inv.armor].filter((s) =>
+      s && s.durability !== undefined && enchantLevel(s, 'mending') > 0 && s.durability < getDurability(s.id)
+    );
+    while (points > 0 && menders.length > 0) {
+      const index = Math.floor(Math.random() * menders.length);
+      const stack = menders[index];
+      const missing = getDurability(stack.id) - stack.durability;
+      const repair = Math.min(missing, points * 2);
+      stack.durability += repair;
+      points -= Math.ceil(repair / 2);
+      if (stack.durability >= getDurability(stack.id)) menders.splice(index, 1);
+      inv.touch();
+    }
+    if (points > 0) this.experience.add(points);
+  }
+
   _intersectsBlock(x, y, z) {
     const hw = P.width / 2;
     return (

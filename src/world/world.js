@@ -22,8 +22,10 @@ import {
   isFurnaceBlock, FURNACE, FURNACE_LIT,
   isFarmland, FARMLAND_MOIST, WHEAT_STAGES, wheatStage,
   isSapling, isLeaf, LEAF_SUPPORTS, GRASS, DIRT, PODZOL, DRY_GRASS, SWAMP_GRASS, SAND,
+  SUGAR_CANE,
 } from './blocks.js';
 import { growTree } from './treeGrowth.js';
+import { caneCanStand, caneHeight, CANE_MAX_HEIGHT } from './sugarCane.js';
 import { getAtlasTexture } from './textures.js';
 import { FluidSimulator } from './fluids.js';
 import { TERRAIN_VERSION } from './terrain.js';
@@ -54,6 +56,8 @@ const GROWTH_CHANCE_MOIST = 0.40;
 
 /** Saplings take longer than wheat — a tree should feel like a wait. */
 const SAPLING_GROWTH_CHANCE = 0.10;
+/** Chance a random tick that lands on the top of a cane grows it. */
+const CANE_GROWTH_CHANCE = 0.3;
 /** What a sapling will root in. */
 const SAPLING_SOIL = new Set([GRASS.id, DIRT.id, PODZOL.id, DRY_GRASS.id, SWAMP_GRASS.id, SAND.id]);
 
@@ -179,7 +183,8 @@ export class World {
   }
 
   _initWorker() {
-    this.worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+    // Through workerEntry.js, which holds messages until the worker has loaded.
+    this.worker = new Worker(new URL('./workerEntry.js', import.meta.url), { type: 'module' });
     this.worker.onmessage = (e) => this._onWorkerMessage(e.data);
     this.worker.postMessage({
       type: 'init',
@@ -354,9 +359,23 @@ export class World {
 
       const id = this.getBlock(x, y, z);
       if (wheatStage(id) >= 0) this._tickCrop(x, y, z);
+      else if (id === SUGAR_CANE.id) this._tickCane(x, y, z);
       else if (isSapling(id)) this._tickSapling(x, y, z, id);
       else if (isLeaf(id)) this._tickLeaf(x, y, z, id);
     }
+  }
+
+  /** Sugar cane with room above, still standing by water, grows a block. */
+  _tickCane(x, y, z) {
+    if (Math.random() > CANE_GROWTH_CHANCE) return;
+    if (this.getBlock(x, y + 1, z) !== AIR) return;
+    const getBlock = (bx, by, bz) => this.getBlock(bx, by, bz);
+    if (caneHeight(getBlock, x, y, z) >= CANE_MAX_HEIGHT) return;
+    // The whole column needs its footing by the water, not just this block.
+    let base = y;
+    while (this.getBlock(x, base - 1, z) === SUGAR_CANE.id) base--;
+    if (!caneCanStand(getBlock, x, base, z)) return;
+    this.setBlock(x, y + 1, z, SUGAR_CANE.id);
   }
 
   /** A sapling with room and daylight becomes a tree. */

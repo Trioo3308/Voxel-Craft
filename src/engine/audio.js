@@ -159,6 +159,9 @@ const SAMPLE_SETS = {
   uiError: ['ui/error_001', 'ui/error_002'],
   uiConfirm: ['ui/confirmation_001', 'ui/confirmation_002'],
   uiDrop: range('ui/drop_', 4, 1),
+  // The enchanting table's book, and the anvil's hammer.
+  enchant: ['rpg/bookClose'],
+  anvil: range('impact/impactMetal_heavy_', 5),
 };
 
 /** Block sound materials folded onto the recordings that exist for them. */
@@ -1166,6 +1169,52 @@ export class AudioEngine {
   }
 
   /** An achievement: a short rising arpeggio, distinct from anything else. */
+  /**
+   * An experience orb absorbed: a short bright chime, pitched at random so a
+   * stream of orbs twinkles instead of droning.
+   */
+  xpOrb() {
+    if (!this.ready || !this._throttle('xpOrb', 0.035)) return;
+    const freq = 1320 * Math.pow(2, (Math.random() * 7 - 2) / 12);
+    this.tone({ freq, duration: 0.09, gain: 0.05, type: 'sine', lowpass: 6000, ui: true });
+    this.tone({ freq: freq * 2, duration: 0.05, gain: 0.018, type: 'sine', lowpass: 8000, ui: true });
+  }
+
+  /** A level gained: a rising run; every fifth level rings out a little fuller. */
+  levelUp(level) {
+    if (!this.ready) return;
+    this.caption('Level up');
+    const big = level % 5 === 0;
+    const steps = big ? [0, 4, 7, 12, 16] : [0, 7, 12];
+    steps.forEach((semi, i) => {
+      this.tone({
+        freq: 660 * Math.pow(2, semi / 12), duration: big ? 0.3 : 0.2, gain: big ? 0.09 : 0.07,
+        type: 'triangle', delay: i * 0.06, lowpass: 5000, ui: true,
+      });
+    });
+  }
+
+  /** The enchanting table at work: the book, and a shimmer rising over it. */
+  enchant() {
+    if (!this.ready) return;
+    this.caption('Enchanting table used');
+    this.play('enchant', { gain: 0.5, rate: 1.1, ui: true });
+    [0, 3, 7, 10, 14, 19].forEach((semi, i) => {
+      this.tone({
+        freq: 880 * Math.pow(2, semi / 12), duration: 0.35, gain: 0.035,
+        type: 'sine', delay: 0.05 + i * 0.045, lowpass: 7000, ui: true,
+      });
+    });
+  }
+
+  /** The anvil, struck. */
+  anvil() {
+    if (!this.ready) return;
+    this.caption('Anvil used');
+    if (this.play('anvil', { gain: 0.55, rate: 1.25, ui: true })) return;
+    this.tone({ freq: 1800, endFreq: 1600, duration: 0.5, gain: 0.08, type: 'triangle', lowpass: 6000, ui: true });
+  }
+
   achievement() {
     if (!this.ready) return;
     const base = 523;

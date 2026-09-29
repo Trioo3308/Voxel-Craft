@@ -10,6 +10,7 @@
  */
 
 import { getThing, isBlockId, getMaxStack, getArmor, getTool, getDurability, ARMOR_PIECES } from '../world/blocks.js';
+import { wearsOut } from './enchanting.js';
 
 export const HOTBAR_SIZE = 9;
 export const STORAGE_SIZE = 27;
@@ -17,7 +18,12 @@ export const TOTAL_SLOTS = HOTBAR_SIZE + STORAGE_SIZE;
 export const ARMOR_SLOTS = 4;
 export const MAX_STACK = 64;
 
-/** A stack is `{ id, count, durability? }`. Durability is only set on gear. */
+/**
+ * A stack is `{ id, count, durability?, ench?, work? }`. Durability is only set
+ * on gear; `ench` holds enchantments by name and `work` counts anvil uses (see
+ * enchanting.js). Gear and enchanted books never stack, so each is its own
+ * object and keeps all of that as it moves around.
+ */
 export class Inventory {
   constructor() {
     /** @type {Array<{id:number,count:number,durability?:number}|null>} */
@@ -117,7 +123,9 @@ export class Inventory {
    */
   addExisting(stack) {
     if (!stack) return 0;
-    if (stack.durability === undefined) return this.add(stack.id, stack.count);
+    // Only plain stacks may be merged or re-minted; anything carrying wear or
+    // enchantments is placed as the object it is.
+    if (stack.durability === undefined && !stack.ench) return this.add(stack.id, stack.count);
 
     for (let i = 0; i < TOTAL_SLOTS; i++) {
       if (this.slots[i] === null) {
@@ -208,6 +216,8 @@ export class Inventory {
   damageHeldTool(amount = 1) {
     const slot = this.getSelected();
     if (!slot || slot.durability === undefined) return false;
+    // Unbreaking: most uses of a well-enchanted tool cost nothing.
+    if (!wearsOut(slot)) return false;
 
     slot.durability -= amount;
     if (slot.durability <= 0) {
@@ -238,7 +248,7 @@ export class Inventory {
     let broken = 0;
     for (let i = 0; i < this.armor.length; i++) {
       const slot = this.armor[i];
-      if (!slot || slot.durability === undefined) continue;
+      if (!slot || slot.durability === undefined || !wearsOut(slot)) continue;
       slot.durability -= amount;
       if (slot.durability <= 0) {
         this.armor[i] = null;

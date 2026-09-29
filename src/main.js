@@ -45,7 +45,11 @@ import {
   PORTAL, COMBIUM_BLOCK, THRONE, THRONE_AWAKENED, ITEM_ID,
   LOG, ACACIA_LOG, SPRUCE_LOG, DIAMOND_ORE, FURNACE, getItem, getDisplayName,
   OBSIDIAN, GLOWSTONE, GRAVESTONE, isFluidFamily,
+  SUGAR_CANE, ENCHANTING_TABLE, ANVIL, BOOKSHELF,
 } from './world/blocks.js';
+import { MINING_XP, xpBetween, roundXp } from './player/experience.js';
+import { countBookshelves } from './player/enchanting.js';
+import { caneCanStand } from './world/sugarCane.js';
 import { audio } from './engine/audio.js';
 import { DIMENSIONS, dimensionInfo } from './world/dimensions.js';
 import {
@@ -287,7 +291,7 @@ export class Game {
         if (!this.hud.cursorStack) return;
         const stack = this.hud.cursorStack;
         this.hud.cursorStack = null;
-        this.player.throwItem(stack.id, stack.count, this.entities, stack.durability);
+        this.player.throwItem(stack.id, stack.count, this.entities, stack.durability, stack);
         this.hud.refreshAll();
       });
     }
@@ -397,6 +401,9 @@ export class Game {
     this.player.onBlockPlaced = () => this.stats.record('blocksPlaced');
 
     this.player.onFishCaught = (spot) => {
+      // A catch pays a little experience, as in Minecraft.
+      const eye = this.player.eyePosition;
+      this.entities.spawnXp(eye.x, eye.y - 0.5, eye.z, xpBetween(1, 6));
       this.stats.record('fishCaught');
       this.achievements.unlock('angler');
       if (this.particles && spot) this.particles.splash(spot.x, spot.y, spot.z);
@@ -434,10 +441,28 @@ export class Game {
       if (mob.type.boss && mob.memory.shrineKey) this._shrinesDone.delete(mob.memory.shrineKey);
     };
 
+    // Experience: orbs the player absorbs, and what levelling up sounds like.
+    this.entities.onXpCollected = (points) => {
+      this.player.gainXp(points);
+      audio.xpOrb();
+    };
+    this.player.experience.onLevelUp = (level) => audio.levelUp(level);
+
     // Right-clicking a station opens its interface instead of placing a block.
     this.player.onUseStation = (blockId, x, y, z) => {
       if (blockId === CRAFTING_TABLE.id) {
         this._openContainer(() => this.hud.openCraftingTable());
+        return true;
+      }
+
+      // --- Enchanting table and anvil ------------------------------------------
+      if (blockId === ENCHANTING_TABLE.id) {
+        const shelves = countBookshelves((bx, by, bz) => this.world.getBlock(bx, by, bz), x, y, z, BOOKSHELF.id);
+        this._openContainer(() => this.hud.openEnchanting(shelves));
+        return true;
+      }
+      if (blockId === ANVIL.id) {
+        this._openContainer(() => this.hud.openAnvil());
         return true;
       }
 
@@ -503,9 +528,24 @@ export class Game {
     // Breaking a container spills its contents rather than deleting them. The
     // entity is handed in by the break itself — clearing the block drops it, so
     // it can no longer be looked up by position at this point.
-    this.player.onBlockBroken = (blockId, target, entity) => {
+    this.player.onBlockBroken = (blockId, target, entity, yielded = null) => {
       if (!target) return;
       if (this.particles) this.particles.blockBreak(target.x, target.y, target.z, blockId);
+
+      // Ores that give up an item pay experience, unless taken whole.
+      if (yielded?.harvested && !yielded.silked) {
+        const range = MINING_XP.get(blockId);
+        if (range) {
+          this.entities.spawnXp(target.x + 0.5, target.y + 0.5, target.z + 0.5, xpBetween(range[0], range[1]));
+        }
+      }
+      // A furnace spills the experience it was holding for you.
+      if (entity && isFurnaceBlock(blockId) && entity.state.xp > 0) {
+        this.entities.spawnXp(target.x + 0.5, target.y + 0.5, target.z + 0.5, roundXp(entity.state.xp));
+      }
+      // Cane comes down with whatever was holding it up, the broken block
+      // included when that was cane.
+      this._dropUnsupportedCane(target.x, target.y + 1, target.z);
 
       this.stats.record('blocksMined');
       this._notePlayerMilestone('mined', blockId, target);
@@ -519,7 +559,7 @@ export class Game {
         if (leftover > 0) {
           this.entities.dropItem(
             target.x + 0.5, target.y + 0.5, target.z + 0.5,
-            stack.id, leftover, stack.durability
+            stack.id, leftover, stack.durability, stack
           );
         }
       };
@@ -530,6 +570,9 @@ export class Game {
         for (const stack of entity.state.slots) recover(stack);
       } else if (entity && blockId === GRAVESTONE.id) {
         for (const stack of entity.state.slots) recover(stack);
+        if (entity.state.xp > 0) {
+          this.entities.spawnXp(target.x + 0.5, target.y + 0.5, target.z + 0.5, entity.state.xp);
+        }
         this._forgetGrave(target.x, target.y, target.z);
       } else if (entity && blockId === JUKEBOX.id && entity.state.disc) {
         // Breaking a loaded jukebox gives the record back and stops the music.
@@ -1665,6 +1708,8 @@ export class Game {
       this.player.survival.respawn();
       this.player.inventory.clear();
       this.player.inventory.armor.fill(null);
+      this.player.experience.setTotal(0);
+      this.player.enchantSeed = (Math.random() * 0x7fffffff) | 0;
       // Creative worlds start in creative; survival worlds can never leave it.
       this.player.creative = this.allowCreative;
       this.sky.setTime(save.time ?? 0.08);
@@ -2257,7 +2302,9 @@ export class Game {
     for (let i = 0; i < inv.armor.length; i++) {
       if (inv.armor[i]) stacks.push(inv.armor[i]);
     }
-    if (stacks.length === 0) return null;
+    // Experience goes in the grave too: the cost of dying is the walk back.
+    const xp = player.experience.total;
+    if (stacks.length === 0 && xp === 0) return null;
 
     const spot = this._graveSpot(cause);
     if (!spot) {
@@ -2277,6 +2324,8 @@ export class Game {
     }));
     // Dying twice on the same spot adds to the same grave.
     entity.state.slots.push(...stacks);
+    entity.state.xp = (entity.state.xp ?? 0) + xp;
+    player.experience.setTotal(0);
 
     player.lastDeath = { dimension: this.world.dimension, x: spot.x, y: spot.y, z: spot.z };
     if (this.particles) this.particles.blockBreak(spot.x, spot.y, spot.z, GRAVESTONE.id, 10);
@@ -2341,6 +2390,11 @@ export class Game {
     }
     inv.touch();
     audio.chest(true);
+    // Experience comes back whole, and first, so Mending does not eat it.
+    if (entity?.state.xp > 0) {
+      this.player.experience.add(entity.state.xp);
+      entity.state.xp = 0;
+    }
 
     if (left.length > 0) {
       entity.state.slots = left;
@@ -2353,6 +2407,19 @@ export class Game {
     }
     this.hud.refreshAll();
     return true;
+  }
+
+  /**
+   * Bring down any sugar cane at (x, y, z) and above that can no longer stand
+   * (see sugarCane.js), as items, the way Minecraft's cane falls apart.
+   */
+  _dropUnsupportedCane(x, y, z) {
+    const getBlock = (bx, by, bz) => this.world.getBlock(bx, by, bz);
+    while (this.world.getBlock(x, y, z) === SUGAR_CANE.id && !caneCanStand(getBlock, x, y, z)) {
+      this.world.setBlock(x, y, z, 0);
+      this.entities.dropItem(x + 0.5, y + 0.5, z + 0.5, SUGAR_CANE.id, 1);
+      y++;
+    }
   }
 
   /** Stop the compass pointing at a grave that has been emptied or broken. */

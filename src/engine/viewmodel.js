@@ -13,6 +13,7 @@
 import { prefs } from './preferences.js';
 import * as THREE from 'three';
 import { getAtlasTexture, getGripPoint } from '../world/textures.js';
+import { isEnchanted } from '../player/enchanting.js';
 import { getIconTile, isBlockId, getThing, ATLAS_COLS, ATLAS_ROWS, FACE_PY, BLOCKS } from '../world/blocks.js';
 
 const SKIN = 0xc98b62;
@@ -125,6 +126,44 @@ export class ViewModel {
     return geometry;
   }
 
+  /** The glint over an enchanted sprite; one per icon texture, cached. */
+  _glintMaterial(map) {
+    this._glintCache ??= new Map();
+    const cached = this._glintCache.get(map);
+    if (cached) return cached;
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        map: { value: map },
+        repeat: { value: map.repeat.clone() },
+        offset: { value: map.offset.clone() },
+        time: { value: 0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        uniform sampler2D map;
+        uniform vec2 repeat;
+        uniform vec2 offset;
+        uniform float time;
+        varying vec2 vUv;
+        void main() {
+          if (texture2D(map, vUv * repeat + offset).a < 0.5) discard;
+          float band = pow(0.5 + 0.5 * sin((vUv.x + vUv.y) * 5.0 - time * 2.2), 5.0);
+          gl_FragColor = vec4(vec3(0.5, 0.26, 0.85) * (0.18 + band * 0.85), 1.0);
+        }`,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this._glintCache.set(map, material);
+    return material;
+  }
+
   /** Flat sprite material for a tool or item icon. */
   _spriteMaterial(id) {
     const tile = getIconTile(id);
@@ -150,10 +189,15 @@ export class ViewModel {
     return material;
   }
 
-  /** Show (or clear) what the player is holding. */
-  setHeld(id) {
-    if (id === this._heldId) return;
-    this._heldId = id;
+  /**
+   * Show (or clear) what the player is holding.
+   * @param enchanted whether to give it the enchantment glint
+   */
+  setHeld(id, enchanted = false) {
+    const key = id ? `${id}${enchanted ? '*' : ''}` : null;
+    if (key === this._heldId) return;
+    this._heldId = key;
+    this._glint = null;
     // A new item comes up from below rather than popping into the hand.
     this._raise = 0;
 
@@ -204,6 +248,16 @@ export class ViewModel {
       }
 
       holder.add(mesh);
+      if (enchanted) {
+        // A twin of the sprite that only adds a moving purple sheen, masked
+        // to the icon's own pixels: Minecraft's glint.
+        const glint = new THREE.Mesh(mesh.geometry, this._glintMaterial(mesh.material.map));
+        glint.position.copy(mesh.position);
+        glint.scale.copy(mesh.scale);
+        glint.renderOrder = 1;
+        holder.add(glint);
+        this._glint = glint.material;
+      }
       this.heldObject = holder;
     }
 
@@ -236,7 +290,8 @@ export class ViewModel {
    */
   update(dt, player) {
     const held = player.inventory.getSelected();
-    this.setHeld(held ? held.id : null);
+    this.setHeld(held ? held.id : null, isEnchanted(held));
+    if (this._glint) this._glint.uniforms.time.value += dt;
     if (player.didSwing) this.triggerSwing();
 
     // --- Swing ------------------------------------------------------------

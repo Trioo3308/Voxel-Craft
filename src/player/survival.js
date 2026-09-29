@@ -109,6 +109,9 @@ export class Survival {
    * @param source optional attacker (a mob type), recorded so the death screen
    *   can name what actually killed you rather than guessing.
    */
+  /** Set by the player: extra damage reduction from armour enchantments, 0..0.8. */
+  enchantProtection = null;
+
   damage(amount, cause = 'generic', source = null) {
     if (this.dead || amount <= 0 || this.invulnerable) return false;
     // Ignore repeat hits during i-frames, except for continuous sources.
@@ -118,10 +121,15 @@ export class Survival {
     let applied = amount;
     if (this.armorPoints > 0 && !ARMOR_IGNORES.has(cause)) {
       applied = amount * (1 - Math.min(0.8, this.armorPoints * 0.04));
-      // Never fully negate a hit, and never round a real hit down to nothing.
-      applied = Math.max(0.5, applied);
       if (this.onArmorHit) this.onArmorHit(amount, cause);
     }
+    // Protection enchantments cut what the armour let through (see
+    // enchanting.js), including falls through Feather Falling.
+    if (this.enchantProtection && !ARMOR_IGNORES.has(cause)) {
+      applied *= 1 - this.enchantProtection(cause);
+    }
+    // Never fully negate a hit, and never round a real hit down to nothing.
+    if (applied < amount) applied = Math.max(0.5, applied);
 
     this.health = Math.max(0, this.health - applied);
     this.lastDamageCause = cause;

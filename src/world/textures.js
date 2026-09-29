@@ -10,7 +10,7 @@
 
 import * as THREE from 'three';
 import {
-  TILE, ATLAS_COLS, ATLAS_ROWS, ATLAS_TILE_PX, ALT_TILE_OFFSET, VARIANT_TILES, LEAF_TILES,
+  TILE, ATLAS_COLS, ATLAS_ROWS, ATLAS_TILE_PX, ALT_TILE_OFFSET, VARIANT_TILES, LEAF_TILES, PACK_PAINTS,
   TOOL_KINDS, ARMOR_PIECES, GEAR_MATERIALS, ARMOR_MATERIAL_NAMES,
   TOOL_MATERIALS, toolTile, armorTile,
 } from './blocks.js';
@@ -70,6 +70,25 @@ function speckle(set, rnd, [r, g, bl], count, size = 1) {
     for (let dy = 0; dy < size; dy++) {
       for (let dx = 0; dx < size; dx++) set(x + dx, y + dy, r, g, bl);
     }
+  }
+}
+
+/**
+ * A closed book seen from the front: cover, the page edges along the side, and
+ * an emblem. The enchanted book is the same shape in purple with a gold mark.
+ */
+function bookPainter(set, rnd, [r, g, b], [er, eg, eb]) {
+  for (let y = 2; y < 14; y++) {
+    for (let x = 3; x < 13; x++) {
+      const d = (rnd() - 0.5) * 12;
+      const spine = x === 3;
+      const pages = x >= 11 && y > 2 && y < 13;
+      if (pages) set(x, y, 232 + d, 226 + d, 204 + d);
+      else set(x, y, r + d - (spine ? 26 : 0), g + d - (spine ? 26 : 0), b + d - (spine ? 26 : 0));
+    }
+  }
+  for (let y = 5; y < 9; y++) for (let x = 6; x < 9; x++) {
+    if ((x + y) % 2 === 0 || (x === 7 && y === 6)) set(x, y, er, eg, eb);
   }
 }
 
@@ -1913,6 +1932,128 @@ export const PAINTERS = {
     }
   },
 
+  // --- Enchanting -----------------------------------------------------------
+
+  [TILE.SUGAR_CANE]: (set, rnd) => {
+    // Three segmented stalks with pale joints, and a few leaves peeling off.
+    for (const [cx, shade] of [[3, 0], [8, 10], [12, -8]]) {
+      for (let y = 0; y < T; y++) {
+        const joint = (y + cx) % 5 === 0;
+        const d = shade + (rnd() - 0.5) * 12 + (joint ? 26 : 0);
+        set(cx, y, 128 + d, 184 + d, 88 + d);
+        set(cx + 1, y, 104 + d, 160 + d, 70 + d);
+      }
+    }
+    for (const [x, y] of [[5, 3], [6, 2], [10, 9], [11, 8], [2, 11], [1, 10]]) {
+      set(x, y, 110, 168, 74);
+    }
+  },
+
+  [TILE.BOOKSHELF]: (set, rnd) => {
+    // A planked frame: a board along the top, the bottom and the middle.
+    for (let y = 0; y < T; y++) {
+      for (let x = 0; x < T; x++) {
+        const d = (rnd() - 0.5) * 14;
+        set(x, y, 150 + d, 118 + d, 70 + d);
+      }
+    }
+    // Two rows of spines in assorted colours, leaning a little.
+    const colours = [[138, 38, 36], [44, 70, 132], [58, 110, 50], [120, 84, 40], [96, 44, 110], [150, 120, 58]];
+    for (const [top, bottom] of [[2, 6], [9, 13]]) {
+      let x = 1;
+      while (x < T - 1) {
+        const w = 1 + (rnd() < 0.3 ? 1 : 0);
+        const [r, g, b] = colours[Math.floor(rnd() * colours.length)];
+        const short = rnd() < 0.3 ? 1 : 0;
+        for (let bx = x; bx < Math.min(T - 1, x + w); bx++) {
+          for (let y = top + short; y <= bottom; y++) {
+            const d = (rnd() - 0.5) * 16 + (y === top + short + 1 ? 30 : 0);
+            set(bx, y, r + d, g + d, b + d);
+          }
+        }
+        x += w + (rnd() < 0.15 ? 1 : 0);
+      }
+    }
+  },
+
+  [TILE.ENCHANTING_TOP]: (set, rnd) => {
+    // Red cloth over obsidian, diamond at the corners.
+    for (let y = 0; y < T; y++) {
+      for (let x = 0; x < T; x++) {
+        const edge = x === 0 || y === 0 || x === T - 1 || y === T - 1;
+        const d = (rnd() - 0.5) * 16;
+        if (edge) set(x, y, 30 + d, 22 + d, 44 + d);
+        else set(x, y, 150 + d, 28 + d, 36 + d);
+      }
+    }
+    for (const [x, y] of [[1, 1], [T - 2, 1], [1, T - 2], [T - 2, T - 2]]) {
+      set(x, y, 110, 232, 226);
+    }
+    // An open book in the middle.
+    for (let y = 5; y < 11; y++) {
+      for (let x = 4; x < 12; x++) {
+        const spine = x === 7 || x === 8;
+        const d = (rnd() - 0.5) * 10;
+        if (spine) set(x, y, 150 + d, 116 + d, 70 + d);
+        else set(x, y, 232 + d, 222 + d, 196 + d);
+      }
+    }
+    for (let x = 4; x < 12; x++) if (x !== 7 && x !== 8) set(x, 7, 120, 112, 150);
+  },
+
+  [TILE.ENCHANTING_SIDE]: (set, rnd) => {
+    // Obsidian, with the red cloth hanging down over the top edge.
+    for (let y = 0; y < T; y++) {
+      for (let x = 0; x < T; x++) {
+        const d = (rnd() - 0.5) * 12;
+        set(x, y, 26 + d, 20 + d, 40 + d);
+      }
+    }
+    for (let x = 0; x < T; x++) {
+      const drop = 3 + ((x * 7 + 3) % 3 === 0 ? 1 : 0);
+      for (let y = 4; y < 4 + drop; y++) {
+        const d = (rnd() - 0.5) * 16;
+        set(x, y, 150 + d, 28 + d, 36 + d);
+      }
+    }
+    for (let i = 0; i < 10; i++) set(Math.floor(rnd() * T), 9 + Math.floor(rnd() * 7), 78, 56, 118);
+  },
+
+  [TILE.ANVIL_TOP]: (set, rnd) => {
+    noiseFill(set, rnd, [70, 70, 74], 8);
+    // The polished working face down the middle.
+    for (let y = 1; y < T - 1; y++) {
+      for (let x = 4; x < 12; x++) {
+        const d = (rnd() - 0.5) * 8;
+        set(x, y, 104 + d, 104 + d, 108 + d);
+      }
+    }
+    for (const [x, y] of [[2, 2], [13, 2], [2, 13], [13, 13]]) set(x, y, 48, 48, 52);
+  },
+
+  [TILE.ANVIL_SIDE]: (set, rnd) => {
+    noiseFill(set, rnd, [62, 62, 66], 9);
+    for (let x = 0; x < T; x++) set(x, 0, 92, 92, 96);
+    speckle(set, rnd, [48, 48, 52], 14);
+  },
+
+  [TILE.PAPER]: (set, rnd) => {
+    // A sheet, slightly skewed, with ruled lines.
+    for (let y = 2; y < 14; y++) {
+      const shift = Math.floor((y - 2) / 6);
+      for (let x = 3 + shift; x < 13 + shift; x++) {
+        const d = (rnd() - 0.5) * 8;
+        const ruled = (y - 3) % 3 === 0 && y > 3 && x > 4 + shift && x < 12 + shift;
+        if (ruled) set(x, y, 176, 190, 212);
+        else set(x, y, 236 + d, 234 + d, 226 + d);
+      }
+    }
+  },
+
+  [TILE.BOOK]: (set, rnd) => bookPainter(set, rnd, [118, 72, 40], [206, 170, 90]),
+
+  [TILE.ENCHANTED_BOOK]: (set, rnd) => bookPainter(set, rnd, [104, 44, 132], [240, 204, 96]),
+
   [TILE.FLINT]: (set, rnd) => {
     // A struck shard: dark, angular, with one bright chipped edge.
     for (let y = 4; y < 13; y++) {
@@ -2726,6 +2867,60 @@ export function getAtlasTexture() {
 
   return atlasTexture;
 }
+
+/**
+ * A painter for a content pack's texture spec (see content/decor.json). Either
+ * an explicit 16x16 `pixels` grid with a `palette` of characters to colours
+ * (unlisted characters are transparent), or a procedural description in the
+ * same vocabulary as the built-in painters:
+ *   base "#rrggbb", noise (brightness spread), speckles [[colour, count, size]],
+ *   grid (spacing in pixels) with gridColor, border (a one-pixel frame colour)
+ */
+function packPainter(spec) {
+  const rgb = (hex) => {
+    const m = /^#?([0-9a-f]{6})$/i.exec(String(hex ?? ''));
+    const n = m ? parseInt(m[1], 16) : 0x888888;
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  };
+  return (set, rnd) => {
+    if (Array.isArray(spec.pixels)) {
+      const palette = spec.palette ?? {};
+      for (let y = 0; y < T; y++) {
+        const row = String(spec.pixels[y] ?? '');
+        for (let x = 0; x < T; x++) {
+          const colour = palette[row[x]];
+          if (colour) set(x, y, ...rgb(colour));
+        }
+      }
+      return;
+    }
+    noiseFill(set, rnd, rgb(spec.base), Number(spec.noise ?? 8));
+    for (const [colour, count, size] of Array.isArray(spec.speckles) ? spec.speckles : []) {
+      speckle(set, rnd, rgb(colour), count | 0, size | 0 || 1);
+    }
+    const grid = spec.grid | 0;
+    if (grid > 1) {
+      const [r, g, bl] = rgb(spec.gridColor ?? spec.border);
+      for (let i = 0; i < T; i++) {
+        for (let k = 0; k < T; k += grid) {
+          set(k, i, r, g, bl);
+          set(i, k, r, g, bl);
+        }
+      }
+    }
+    if (spec.border) {
+      const [r, g, bl] = rgb(spec.border);
+      for (let i = 0; i < T; i++) {
+        set(i, 0, r, g, bl); set(i, T - 1, r, g, bl);
+        set(0, i, r, g, bl); set(T - 1, i, r, g, bl);
+      }
+    }
+  };
+}
+
+// Pack textures join the painters, so they are painted into the atlas and a
+// held pack item finds its grip like any other.
+for (const [tile, spec] of PACK_PAINTS) PAINTERS[tile] = packPainter(spec);
 
 /**
  * An opaque copy of a leaf tile, for fast leaves: the see-through gaps are

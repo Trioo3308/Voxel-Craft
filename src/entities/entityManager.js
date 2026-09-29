@@ -13,6 +13,8 @@ import { Mob } from './mob.js';
 import { MOB_TYPES, MOB_POOLS } from './mobTypes.js';
 import { ItemEntity } from './itemEntity.js';
 import { rollLoot } from './loot.js';
+import { XpOrb } from './xpOrb.js';
+import { splitIntoOrbs, xpBetween } from '../player/experience.js';
 import { dimensionInfo } from '../world/dimensions.js';
 import { Arrow } from './projectile.js';
 import { Rocket } from './rocket.js';
@@ -71,6 +73,10 @@ export class EntityManager {
     this.mobs = [];
     /** @type {ItemEntity[]} */
     this.items = [];
+    /** Experience orbs on their way to the player; see xpOrb.js. */
+    this.orbs = [];
+    /** Called with the points in each orb the player absorbs. */
+    this.onXpCollected = null;
     /** @type {Arrow[]} */
     this.projectiles = [];
 
@@ -104,6 +110,7 @@ export class EntityManager {
     this._separateEntities(context.player);
     this._updateProjectiles(dt, context);
     this._updateItems(dt, context);
+    this._updateOrbs(dt, context);
     this._updateBreeding(dt);
 
     this._spawnTimer -= dt;
@@ -258,13 +265,14 @@ export class EntityManager {
   }
 
   /** Launch an arrow with an explicit velocity (used by the player's bow). */
-  spawnArrow(position, velocity, owner, damage) {
+  spawnArrow(position, velocity, owner, damage, punch = 0) {
     const arrow = new Arrow(
       this.world,
       this._tmpVec.set(position.x, position.y, position.z),
       new THREE.Vector3(velocity.x, velocity.y, velocity.z),
       owner,
-      damage
+      damage,
+      punch
     );
     this.projectiles.push(arrow);
     this.scene.add(arrow.mesh);
@@ -428,6 +436,8 @@ export class EntityManager {
           (a.position.z + b.position.z) / 2
         );
         baby.makeBaby(a.type.growSeconds ?? DEFAULT_GROW_SECONDS);
+        // Breeding pays a little experience, as in Minecraft.
+        this.spawnXp(baby.position.x, baby.position.y + 0.5, baby.position.z, xpBetween(1, 7));
         if (this.particles) {
           this.particles.portalMotes(baby.position.x, baby.position.y + 0.5, baby.position.z, 8);
         }
@@ -457,11 +467,11 @@ export class EntityManager {
 
     for (let i = this.items.length - 1; i > 0; i--) {
       const a = this.items[i];
-      if (a.removed || a.durability !== undefined) continue;
+      if (a.removed || a.durability !== undefined || a.ench) continue;
 
       for (let j = i - 1; j >= 0; j--) {
         const b = this.items[j];
-        if (b.removed || b.id !== a.id || b.durability !== undefined) continue;
+        if (b.removed || b.id !== a.id || b.durability !== undefined || b.ench) continue;
 
         const dx = a.position.x - b.position.x;
         const dy = a.position.y - b.position.y;
@@ -756,20 +766,59 @@ export class EntityManager {
     // fixed everyday case. Either may be present.
     if (mob.type.lootTable) {
       for (const stack of rollLoot(mob.type.lootTable)) {
-        this.dropItem(mob.position.x, mob.position.y + 0.6, mob.position.z, stack.id, stack.count);
+        this.dropItem(mob.position.x, mob.position.y + 0.6, mob.position.z,
+          stack.id, stack.count, stack.durability, stack);
       }
       if (this.onBossDefeated && mob.type.boss) this.onBossDefeated(mob);
     }
 
+    // Experience only for a mob the player actually fought, as in Minecraft:
+    // a creeper blowing itself up or a zombie burning at dawn pays nothing.
+    const byPlayer = mob.playerHitTimer > 0 && !mob.isBaby;
+    if (byPlayer) {
+      // Monsters 5, animals 1-3, bosses their own `xp`, as in Minecraft.
+      const xp = mob.type.xp ?? (mob.type.brain?.hostile ? 5 : xpBetween(1, 3));
+      this.spawnXp(mob.position.x, mob.position.y + 0.5, mob.position.z, xp);
+    }
+
     if (!mob.type.drops) return;
+    // Looting adds up to one extra of each drop per level.
+    const looting = byPlayer ? mob.looting | 0 : 0;
     for (const drop of mob.type.drops) {
-      const count = drop.min + Math.floor(Math.random() * (drop.max - drop.min + 1));
+      const count = drop.min + Math.floor(Math.random() * (drop.max - drop.min + 1))
+        + (looting > 0 ? Math.floor(Math.random() * (looting + 1)) : 0);
       if (count > 0) this.dropItem(mob.position.x, mob.position.y + 0.4, mob.position.z, drop.id, count);
     }
   }
 
-  dropItem(x, y, z, id, count = 1, durability) {
-    const item = new ItemEntity(this.world, this._tmpVec.set(x, y, z), id, count, durability);
+  /** Experience at a point, split into orbs the way Minecraft splits it. */
+  spawnXp(x, y, z, points) {
+    for (const value of splitIntoOrbs(points)) {
+      const orb = new XpOrb(this._tmpVec.set(x, y, z), value);
+      this.orbs.push(orb);
+      this.scene.add(orb.mesh);
+    }
+  }
+
+  _updateOrbs(dt, ctx) {
+    const orbCtx = { world: this.world, player: ctx.player, onCollect: (value) => this.onXpCollected?.(value) };
+    for (let i = this.orbs.length - 1; i >= 0; i--) {
+      const orb = this.orbs[i];
+      orb.update(dt, orbCtx);
+      if (orb.removed) {
+        this.scene.remove(orb.mesh);
+        orb.dispose();
+        this.orbs.splice(i, 1);
+      }
+    }
+  }
+
+  /**
+   * @param durability wear, for gear
+   * @param extra a stack whose `ench` and `work` should ride along
+   */
+  dropItem(x, y, z, id, count = 1, durability, extra = null) {
+    const item = new ItemEntity(this.world, this._tmpVec.set(x, y, z), id, count, durability, extra);
     if (this.onItemPickup) item.onPickup = this.onItemPickup;
     item.mesh.castShadow = true;
     this.items.push(item);
@@ -832,6 +881,11 @@ export class EntityManager {
     }
     for (const item of this.items) this.scene.remove(item.mesh);
     for (const arrow of this.projectiles) this.scene.remove(arrow.mesh);
+    for (const orb of this.orbs) {
+      this.scene.remove(orb.mesh);
+      orb.dispose();
+    }
+    this.orbs.length = 0;
     this.mobs.length = 0;
     this.items.length = 0;
     this.projectiles.length = 0;

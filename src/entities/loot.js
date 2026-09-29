@@ -6,102 +6,76 @@
  * once per entry rather than being buried in nested random checks.
  */
 
-import { ITEM_ID, COMBIUM_BLOCK, COMB_BRICK, COMB_CRYSTAL, toolItemId, armorItemId } from '../world/blocks.js';
+import { idByName, getDurability } from '../world/blocks.js';
+import { packLootTables } from '../content/packs.js';
+import { enchantForLoot } from '../player/enchanting.js';
 
 /**
- * @param entries {Array<{id, min, max, weight, always?}>}
- * @param rolls how many weighted picks to make
+ * The tables themselves are data: `loot` in content/core.json, by item name
+ * (a pack loaded later can replace a table by giving one the same name).
+ * An entry naming something that does not exist is dropped with a warning.
  */
-function table(entries, rolls) {
-  return { entries, rolls };
+function resolveTable(name, spec) {
+  const entries = [];
+  for (const e of Array.isArray(spec?.entries) ? spec.entries : []) {
+    const id = idByName(e.item);
+    if (id === null) {
+      console.warn(`[packs] loot table "${name}": nothing is called "${e.item}"`);
+      continue;
+    }
+    const min = Math.max(0, e.min | 0);
+    entries.push({
+      id,
+      min,
+      max: Math.max(min, e.max ?? min),
+      weight: e.always ? 0 : Math.max(0, Number(e.weight) || 0),
+      always: e.always === true,
+      // [low, high] table power to enchant the find at; `treasure` allows the
+      // enchantments the table never offers (Mending).
+      enchant: Array.isArray(e.enchant) ? [e.enchant[0] | 0, e.enchant[1] | 0] : null,
+      treasure: e.treasure === true,
+    });
+  }
+  return { entries, rolls: Math.max(0, spec?.rolls | 0) };
+}
+
+const TABLES = new Map(
+  Object.entries(packLootTables()).map(([name, spec]) => [name, resolveTable(name, spec)])
+);
+const EMPTY = { entries: [], rolls: 0 };
+
+/** A loot table by name, or an empty one. */
+export function lootTable(name) {
+  return TABLES.get(name) ?? EMPTY;
 }
 
 /** The chest tucked behind the Comb throne. The dimension's headline reward. */
-export const THRONE_LOOT = table([
-  // Guaranteed, so the trip is never wasted.
-  { id: ITEM_ID.COMBIUM_INGOT, min: 3, max: 6, weight: 0, always: true },
-  { id: ITEM_ID.COMB_SHARD, min: 4, max: 10, weight: 0, always: true },
-
-  { id: ITEM_ID.COMBIUM_INGOT, min: 2, max: 5, weight: 30 },
-  { id: ITEM_ID.COMB_SHARD, min: 3, max: 8, weight: 26 },
-  { id: COMB_BRICK.id, min: 6, max: 16, weight: 20 },
-  { id: COMB_CRYSTAL.id, min: 2, max: 5, weight: 14 },
-  { id: ITEM_ID.DIAMOND, min: 1, max: 3, weight: 12 },
-  { id: ITEM_ID.GOLD_INGOT, min: 2, max: 6, weight: 12 },
-  { id: COMBIUM_BLOCK.id, min: 1, max: 2, weight: 6 },
-  // Ready-made gear, so a lucky chest can jump you a tier.
-  { id: toolItemId('pickaxe', 'diamond'), min: 1, max: 1, weight: 5 },
-  { id: armorItemId('chestplate', 'diamond'), min: 1, max: 1, weight: 4 },
-  { id: toolItemId('sword', 'combium'), min: 1, max: 1, weight: 2 },
-  // The Comb's own record. Nowhere else has it.
-  { id: ITEM_ID.DISC_HOLLOW, min: 1, max: 1, weight: 3 },
-], 5);
-
-/**
- * Overworld dungeon chests. Deliberately mid-game: enough to be worth the trip
- * and the fight, never enough to skip a tier. No combium — that gate stays shut
- * until you mine it yourself.
- */
-export const DUNGEON_LOOT = table([
-  { id: ITEM_ID.BREAD, min: 1, max: 3, weight: 0, always: true },
-
-  { id: ITEM_ID.IRON_INGOT, min: 2, max: 6, weight: 26 },
-  { id: ITEM_ID.COAL, min: 3, max: 9, weight: 22 },
-  { id: ITEM_ID.BREAD, min: 1, max: 3, weight: 18 },
-  { id: ITEM_ID.SEEDS, min: 2, max: 5, weight: 14 },
-  { id: ITEM_ID.GOLD_INGOT, min: 1, max: 4, weight: 13 },
-  { id: ITEM_ID.BONE, min: 2, max: 6, weight: 12 },
-  { id: ITEM_ID.ARROW, min: 4, max: 12, weight: 12 },
-  { id: ITEM_ID.GUNPOWDER, min: 1, max: 4, weight: 10 },
-  { id: ITEM_ID.LAPIS, min: 2, max: 6, weight: 8 },
-  { id: ITEM_ID.DIAMOND, min: 1, max: 2, weight: 5 },
-  { id: toolItemId('pickaxe', 'iron'), min: 1, max: 1, weight: 5 },
-  { id: armorItemId('helmet', 'iron'), min: 1, max: 1, weight: 4 },
-  { id: ITEM_ID.BOW, min: 1, max: 1, weight: 4 },
-  // Records are the only thing in the game you cannot craft, which is the whole
-  // point of them: a jukebox is a reason to go and look in a dungeon.
-  { id: ITEM_ID.DISC_DRIFT, min: 1, max: 1, weight: 3 },
-  { id: ITEM_ID.DISC_GRIND, min: 1, max: 1, weight: 3 },
-], 4);
-
-/**
- * Hive caches. Comb-flavoured and useful, but nothing that shortcuts the
- * dimension — the compass ingredients are here, so raiding hives is the
- * intended route to finding a shrine.
- */
-export const HIVE_LOOT = table([
-  { id: ITEM_ID.COMB_RESIN, min: 2, max: 6, weight: 0, always: true },
-
-  { id: ITEM_ID.AMBER, min: 1, max: 3, weight: 26 },
-  { id: ITEM_ID.COMB_RESIN, min: 2, max: 5, weight: 22 },
-  { id: ITEM_ID.COMB_SHARD, min: 2, max: 6, weight: 20 },
-  { id: ITEM_ID.ROYAL_JELLY, min: 1, max: 2, weight: 14 },
-  { id: ITEM_ID.COMBIUM_INGOT, min: 1, max: 2, weight: 10 },
-  { id: COMB_CRYSTAL.id, min: 1, max: 3, weight: 8 },
-], 3);
-
+export const THRONE_LOOT = lootTable('throne');
+/** Overworld dungeon chests: mid-game, never enough to skip a tier. */
+export const DUNGEON_LOOT = lootTable('dungeon');
+/** Hive caches: the compass ingredients, so raiding hives leads to a shrine. */
+export const HIVE_LOOT = lootTable('hive');
 /** Dropped by the Comb Warden. */
-export const BOSS_LOOT = table([
-  { id: ITEM_ID.COMB_HEART, min: 1, max: 1, weight: 0, always: true },
-  { id: ITEM_ID.COMBIUM_INGOT, min: 6, max: 12, weight: 0, always: true },
-
-  { id: ITEM_ID.COMB_SHARD, min: 8, max: 16, weight: 30 },
-  { id: COMBIUM_BLOCK.id, min: 1, max: 3, weight: 20 },
-  { id: ITEM_ID.DIAMOND, min: 2, max: 5, weight: 18 },
-  { id: toolItemId('sword', 'combium'), min: 1, max: 1, weight: 12 },
-  { id: toolItemId('pickaxe', 'combium'), min: 1, max: 1, weight: 12 },
-  { id: armorItemId('helmet', 'combium'), min: 1, max: 1, weight: 8 },
-], 4);
+export const BOSS_LOOT = lootTable('boss');
 
 /**
- * Roll a table into a list of `{id, count}` stacks.
+ * Roll a table into a list of stacks: `{id, count}`, plus durability and
+ * enchantments for gear and books that come enchanted.
  * `always` entries are included every time; the rest are picked by weight.
  */
 export function rollLoot(lootTable, random = Math.random) {
   const results = [];
   const pick = (entry) => {
     const count = entry.min + Math.floor(random() * (entry.max - entry.min + 1));
-    if (count > 0) results.push({ id: entry.id, count });
+    if (count <= 0) return;
+    if (entry.enchant) {
+      const [lo, hi] = entry.enchant;
+      const power = lo + Math.floor(random() * (Math.max(lo, hi) - lo + 1));
+      results.push(enchantForLoot(entry.id, power, entry.treasure, random));
+      return;
+    }
+    const max = getDurability(entry.id);
+    results.push(max > 0 ? { id: entry.id, count, durability: max } : { id: entry.id, count });
   };
 
   for (const entry of lootTable.entries) if (entry.always) pick(entry);
@@ -136,7 +110,8 @@ export function fillChest(slots, lootTable, random = Math.random) {
     if (free.length === 0) break;
     const pickIndex = Math.floor(random() * free.length);
     const slot = free.splice(pickIndex, 1)[0];
-    slots[slot] = { id: stack.id, count: stack.count };
+    // The whole stack, so a find keeps its wear and enchantments.
+    slots[slot] = stack;
   }
   return slots;
 }

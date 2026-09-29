@@ -122,6 +122,15 @@ function tx(store, mode, fn) {
 // ---------------------------------------------------------------------------
 
 /** Snapshot of every id -> stable name, stored alongside the world. */
+/** A stack as saved: wear and enchantments only when it has them. */
+function saveStack(s) {
+  if (!s) return null;
+  const out = { id: s.id, count: s.count, durability: s.durability ?? null };
+  if (s.ench) out.ench = { ...s.ench };
+  if (s.work) out.work = s.work;
+  return out;
+}
+
 function buildPalette() {
   const blocks = {};
   for (const b of BLOCKS) if (b) blocks[b.id] = b.name;
@@ -247,17 +256,17 @@ export async function captureState(game, meta = {}) {
       maxHealth: player.survival.maxHealth,
       /** Lifetime skateboard style points. A score, so it never resets. */
       style: player.board ? player.board.totalStyle : 0,
+      /** Experience points in total; the level is derived. Optional. */
+      xp: player.experience ? player.experience.total : 0,
+      /** Fixes the enchanting table's offers between visits. Optional. */
+      enchantSeed: player.enchantSeed,
     },
 
     inventory: {
       selected: player.inventory.selected,
       // Nulls are preserved so slot positions survive the round trip.
-      slots: player.inventory.slots.map((s) =>
-        s ? { id: s.id, count: s.count, durability: s.durability ?? null } : null
-      ),
-      armor: player.inventory.armor.map((s) =>
-        s ? { id: s.id, count: s.count, durability: s.durability ?? null } : null
-      ),
+      slots: player.inventory.slots.map(saveStack),
+      armor: player.inventory.armor.map(saveStack),
     },
 
     time: game.sky.time,
@@ -319,6 +328,9 @@ export async function applyState(game, save) {
   player.survival.maxHealth = p.maxHealth ?? Settings.survival.maxHealth;
   player.survival.health = Math.min(p.health, player.survival.maxHealth);
   player.survival.hunger = p.hunger;
+  // Older saves have no experience; they start at level 0.
+  if (player.experience) player.experience.setTotal(p.xp ?? 0);
+  if (Number.isInteger(p.enchantSeed)) player.enchantSeed = p.enchantSeed;
   player.survival.saturation = p.saturation;
   player.survival.dead = false;
   // Old saves have no score; a fresh board starts at zero anyway.
@@ -333,7 +345,13 @@ export async function applyState(game, save) {
       if (!s) { target[i] = null; continue; }
       const id = translate(s.id);
       // A dropped block/item leaves the slot empty rather than becoming air.
-      target[i] = id === AIR ? null : { id, count: s.count, durability: s.durability ?? undefined };
+      if (id === AIR) { target[i] = null; continue; }
+      const stack = { id, count: s.count };
+      if (s.durability !== null && s.durability !== undefined) stack.durability = s.durability;
+      // Enchantments are keyed by name, so they need no remapping.
+      if (s.ench && typeof s.ench === 'object') stack.ench = { ...s.ench };
+      if (s.work) stack.work = s.work | 0;
+      target[i] = stack;
     }
   };
 

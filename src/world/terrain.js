@@ -8,6 +8,7 @@
  */
 
 import { Noise, hash2i, smoothstep, clamp, mulberry32 } from './noise.js';
+import { CANE_SOIL, CANE_MAX_HEIGHT } from './sugarCane.js';
 import { CHUNK_SX, CHUNK_SY, CHUNK_SZ, CHUNK_VOLUME, voxelIndex } from './chunk.js';
 import {
   AIR, GRASS, DIRT, STONE, SAND, GRAVEL, LOG, LEAVES, WATER, LAVA, BEDROCK, SNOW,
@@ -16,6 +17,7 @@ import {
   COBBLE, MOSSY_COBBLE, CHEST, RAIL, TORCH, MUSHROOM_RED, MUSHROOM_BROWN,
   DEEPSLATE, DRIPSTONE, DRIPSTONE_HANGING, DRIPSTONE_SHAFT, isDripstone,
   GLOW_LICHEN, GEODE_SHELL, GEODE_CRYSTAL,
+  SUGAR_CANE,
 } from './blocks.js';
 import Settings from '../settings.js';
 
@@ -602,6 +604,14 @@ export class TerrainGenerator {
       }
     }
 
+    // ---- Pass 2b: sugar cane (every version) --------------------------------
+    // Deliberately not gated on the terrain version, for the reason combium ore
+    // is not: gating it would lock every existing world out of paper, and so
+    // out of books and enchanting, for good. It only ever fills empty air on a
+    // shore block beside water, so it reshapes nothing, and a player's edits
+    // still win wherever they overlap.
+    this._placeSugarCane(voxels, baseX, baseZ);
+
     // ---- Pass 3: mushrooms (v4+) ------------------------------------------
     if (this.version >= 4) this._placeMushrooms(voxels, baseX, baseZ);
 
@@ -806,6 +816,34 @@ export class TerrainGenerator {
    * out in an open field would look wrong, and the shade test is what makes
    * them feel like they belong to the woods rather than being sprinkled.
    */
+  /** Clumps of cane on shore blocks at sea level with water beside them. */
+  _placeSugarCane(voxels, baseX, baseZ) {
+    const sea = this.seaLevel;
+    if (sea + CANE_MAX_HEIGHT >= CHUNK_SY) return;
+    for (let lz = 0; lz < CHUNK_SZ; lz++) {
+      for (let lx = 0; lx < CHUNK_SX; lx++) {
+        const wx = baseX + lx, wz = baseZ + lz;
+        const h = hash2i(wx, wz, this.seed ^ 0x51ca);
+        // About one shore column in four, so cane grows in stands.
+        if ((h & 0xffff) > 16400) continue;
+        if (this.columnHeight(wx, wz) !== sea) continue;
+        if (!CANE_SOIL.has(voxels[voxelIndex(lx, sea, lz)])) continue;
+        if (voxels[voxelIndex(lx, sea + 1, lz)] !== AIR) continue;
+        // Water beside the ground: a neighbouring column below sea level.
+        const wet =
+          this.columnHeight(wx + 1, wz) < sea || this.columnHeight(wx - 1, wz) < sea ||
+          this.columnHeight(wx, wz + 1) < sea || this.columnHeight(wx, wz - 1) < sea;
+        if (!wet) continue;
+        const tall = 1 + ((h >>> 16) % CANE_MAX_HEIGHT);
+        for (let dy = 1; dy <= tall; dy++) {
+          const i = voxelIndex(lx, sea + dy, lz);
+          if (voxels[i] !== AIR) break;
+          voxels[i] = SUGAR_CANE.id;
+        }
+      }
+    }
+  }
+
   _placeMushrooms(voxels, baseX, baseZ) {
     for (let lz = 0; lz < CHUNK_SZ; lz++) {
       for (let lx = 0; lx < CHUNK_SX; lx++) {

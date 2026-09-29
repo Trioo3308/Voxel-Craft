@@ -15,9 +15,15 @@ import {
   getIconTile, getDisplayName, obtainableBlocks, obtainableItems,
   getMaxStack, getDurability, getArmor, getTool, getThing, getBlock, isBlockId, ARMOR_PIECES,
   BLOCKS, ITEM_ID, TOOL_KINDS, toolItemId, armorItemId,
+  idByName,
 } from '../world/blocks.js';
 import { HOTBAR_SIZE, STORAGE_SIZE, Inventory } from '../player/inventory.js';
 import { findRecipe, consumeGrid, fuelValueFor, smeltResultFor, SMELT_SECONDS } from '../player/crafting.js';
+import {
+  tableOffers, tableAccepts, applyEnchantments, anvilCombine, describeEnchantments, isEnchanted,
+  enchantability, ENCHANTMENTS, roman, ANVIL_LIMIT,
+} from '../player/enchanting.js';
+import { roundXp } from '../player/experience.js';
 import { BIOME_NAMES } from '../world/terrain.js';
 import { dimensionInfo } from '../world/dimensions.js';
 import Settings from '../settings.js';
@@ -93,7 +99,34 @@ function describeStack(stack) {
   }
 
   if (stack.count > 1) lines.push(`Stack of ${stack.count}`);
-  return { name: getDisplayName(stack.id), color, lines };
+  // Enchantments are listed right under the name, and an enchanted thing's
+  // name turns aqua, as in Minecraft.
+  const ench = describeEnchantments(stack);
+  if (ench.length > 0) color = '#7ff2f2';
+  if (stack.work > 0) lines.push(`Worked at an anvil ${stack.work} time${stack.work === 1 ? '' : 's'}`);
+  return { name: getDisplayName(stack.id), color, lines, ench };
+}
+
+/**
+ * The enchanting table's line of unreadable script, fixed by the seed so it
+ * holds still while you think. The glyphs are the ones Minecraft's table
+ * writes in, borrowed from Unicode lookalikes.
+ */
+const GLYPHS = ['ᔑ', 'ʖ', 'ᓵ', '↸', 'ᒷ', '⎓', '⊣', '⍑', '╎', '⋮', 'ꖌ', 'ꖎ', 'ᒲ', 'リ', '∷', 'ᓭ', 'ℸ', '⚍', '⍊', '∴', 'ᑑ', '⨅'];
+function glyphLine(seed) {
+  let h = seed >>> 0;
+  const next = () => {
+    h = (Math.imul(h ^ (h >>> 15), 2246822507) + 0x9e3779b9) >>> 0;
+    return h / 4294967296;
+  };
+  const words = [];
+  for (let w = 0; w < 3; w++) {
+    let word = '';
+    const length = 2 + Math.floor(next() * 4);
+    for (let c = 0; c < length; c++) word += GLYPHS[Math.floor(next() * GLYPHS.length)];
+    words.push(word);
+  }
+  return words.join(' ');
 }
 
 /**
@@ -166,6 +199,11 @@ export class HUD {
     this.craftingScreen = el('craftingScreen');
     this.furnaceScreen = el('furnaceScreen');
     this.chestScreen = el('chestScreen');
+    this.enchantScreen = el('enchantScreen');
+    this.anvilScreen = el('anvilScreen');
+    this.xpBar = el('xpBar');
+    this.xpFill = el('xpFill');
+    this.xpLevel = el('xpLevel');
     this.drawBarEl = el('drawBar');
     this.drawFillEl = el('drawFill');
     this.bossBarEl = el('bossBar');
@@ -215,6 +253,8 @@ export class HUD {
     this._buildCraftingScreen();
     this._buildFurnaceScreen();
     this._buildChestScreen();
+    this._buildEnchantScreen();
+    this._buildAnvilScreen();
     this._bindEvents();
   }
 
@@ -434,7 +474,25 @@ export class HUD {
     this.furnaceFuelBinding = field('fuel', 'furnace', (s) => fuelValueFor(s.id) > 0);
     this.furnaceInputSlot = this._makeSlot(this.furnaceInputBinding);
     this.furnaceFuelSlot = this._makeSlot(this.furnaceFuelBinding);
-    this.furnaceOutputSlot = this._makeSlot(field('output', 'output', () => false));
+    // Taking the output pays out the experience the furnace banked for it.
+    const output = field('output', 'output', () => false);
+    const putOutput = output.set;
+    output.set = (next) => {
+      const furnace = this.activeFurnace;
+      const before = furnace?.output?.count ?? 0;
+      const after = next && furnace?.output && next.id === furnace.output.id ? next.count : 0;
+      if (furnace && before > after && furnace.xp > 0) {
+        const share = (furnace.xp * (before - after)) / before;
+        furnace.xp -= share;
+        const points = roundXp(share);
+        if (points > 0) {
+          this.player.gainXp(points);
+          audio.xpOrb();
+        }
+      }
+      putOutput(next);
+    };
+    this.furnaceOutputSlot = this._makeSlot(output);
 
     el('furnaceInput').appendChild(this.furnaceInputSlot.slot);
     el('furnaceFuel').appendChild(this.furnaceFuelSlot.slot);
@@ -471,6 +529,228 @@ export class HUD {
       this._sortBindings(this.chestBindings);
       this.refreshAll();
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // The enchanting table
+  // -------------------------------------------------------------------------
+
+  _buildEnchantScreen() {
+    this.enchantState = { item: null, lapis: null, shelves: 0 };
+    this.enchantOffers = [null, null, null];
+    const field = (name, accept, emptyHint) => ({
+      role: 'enchant',
+      get: () => this.enchantState[name],
+      set: (s) => { this.enchantState[name] = s; },
+      accept,
+      emptyHint,
+    });
+    this.enchantItemBinding = field('item', (s) => enchantability(s.id) > 0 && !isEnchanted(s));
+    this.enchantLapisBinding = field('lapis', (s) => s.id === ITEM_ID.LAPIS);
+    this.enchantItemSlot = this._makeSlot(this.enchantItemBinding);
+    this.enchantItemSlot.emptyHint = 'Item';
+    this.enchantLapisSlot = this._makeSlot(this.enchantLapisBinding);
+    this.enchantLapisSlot.emptyHint = 'Lapis';
+    el('enchantItem').appendChild(this.enchantItemSlot.slot);
+    el('enchantLapis').appendChild(this.enchantLapisSlot.slot);
+
+    this.enchantButtons = [...document.querySelectorAll('#enchantOffers .enchantOffer')];
+    this.enchantButtons.forEach((button, i) => {
+      button.addEventListener('click', () => this._enchant(i));
+    });
+
+    const rows = this._buildPlayerRows('enchantStorageGrid', 'enchantHotbarGrid');
+    this.enchantStorageSlots = rows.storage;
+    this.enchantHotbarSlots = rows.hotbar;
+  }
+
+  /** @param shelves bookshelves around the table, from enchanting.js */
+  openEnchanting(shelves) {
+    this.enchantState.shelves = shelves;
+    this.refreshAll();
+    this.enchantScreen.classList.add('show');
+    audio.uiOpen();
+  }
+
+  closeEnchanting() {
+    // The table keeps nothing: what you left in it comes back to you.
+    this._returnCursor();
+    for (const name of ['item', 'lapis']) {
+      if (this.enchantState[name]) this._giveBack(this.enchantState[name]);
+      this.enchantState[name] = null;
+    }
+    this.enchantScreen.classList.remove('show');
+    audio.uiClose();
+    this.refreshAll();
+  }
+
+  _paintEnchanting() {
+    if (!this.enchantItemSlot) return;
+    const { item, lapis, shelves } = this.enchantState;
+    this._paintSlot(this.enchantItemSlot, item);
+    this._paintSlot(this.enchantLapisSlot, lapis);
+    this.enchantOffers = item ? tableOffers({ ...item, count: 1 }, shelves, this.player.enchantSeed) : [null, null, null];
+
+    const creative = this.player.creative;
+    const level = this.player.experience.level;
+    const lapisCount = lapis?.count ?? 0;
+    this.enchantButtons.forEach((button, i) => {
+      const offer = this.enchantOffers[i];
+      button.classList.toggle('empty', !offer);
+      button.disabled = !offer;
+      if (!offer) {
+        button.querySelector('.glyphs').textContent = '';
+        button.querySelector('.cost').textContent = '';
+        button.querySelector('.lapisCost').textContent = '';
+        button.title = '';
+        return;
+      }
+      const affordable = creative || (level >= offer.cost && lapisCount >= offer.lapis);
+      button.classList.toggle('unaffordable', !affordable);
+      button.querySelector('.glyphs').textContent = glyphLine(this.player.enchantSeed + i * 131);
+      button.querySelector('.cost').textContent = String(offer.cost);
+      button.querySelector('.lapisCost').textContent = `${offer.lapis} lapis`;
+      const def = ENCHANTMENTS[offer.hint.name];
+      // Like Minecraft, the table only admits to one enchantment of the roll.
+      const hint = `${def.label}${def.max > 1 ? ' ' + roman(offer.hint.level) : ''} . . . ?`;
+      button.title = affordable
+        ? hint
+        : `${hint}\nNeeds level ${offer.cost} and ${offer.lapis} lapis`;
+    });
+    el('enchantShelves').textContent = shelves > 0
+      ? `${shelves} ${shelves === 1 ? 'bookshelf' : 'bookshelves'} nearby`
+      : 'No bookshelves nearby: surround the table to reach level 30';
+  }
+
+  _enchant(i) {
+    const offer = this.enchantOffers[i];
+    const state = this.enchantState;
+    if (!offer || !state.item) return;
+    const player = this.player;
+    const creative = player.creative;
+    if (!creative && (player.experience.level < offer.cost || (state.lapis?.count ?? 0) < offer.lapis)) {
+      audio.uiError();
+      return;
+    }
+
+    const result = applyEnchantments({ ...state.item, count: 1 }, offer.enchantments);
+    if (state.item.count > 1) {
+      // A stack of books: one is enchanted and comes to you, the rest stay.
+      state.item.count--;
+      this._giveBack(result);
+    } else {
+      state.item = result;
+    }
+    if (!creative) {
+      state.lapis.count -= offer.lapis;
+      if (state.lapis.count <= 0) state.lapis = null;
+      player.experience.spendLevels(offer.levels);
+    }
+    // New offers next time, as in Minecraft.
+    player.enchantSeed = (Math.random() * 0x7fffffff) | 0;
+    audio.enchant();
+    this.game.onEnchanted?.(result, offer);
+    this.refreshAll();
+  }
+
+  // -------------------------------------------------------------------------
+  // The anvil
+  // -------------------------------------------------------------------------
+
+  _buildAnvilScreen() {
+    this.anvilState = { left: null, right: null };
+    this.anvilResult = null;
+    const field = (name) => ({
+      role: 'anvil',
+      get: () => this.anvilState[name],
+      set: (s) => { this.anvilState[name] = s; },
+    });
+    this.anvilLeftBinding = field('left');
+    this.anvilRightBinding = field('right');
+    this.anvilLeftSlot = this._makeSlot(this.anvilLeftBinding);
+    this.anvilRightSlot = this._makeSlot(this.anvilRightBinding);
+    this.anvilOutputSlot = this._makeSlot({
+      role: 'anvilOut',
+      get: () => this.anvilResult?.result ?? null,
+      set: () => {},
+      special: (button, shift) => this._takeAnvil(shift),
+    }, 'resultSlot');
+    el('anvilLeft').appendChild(this.anvilLeftSlot.slot);
+    el('anvilRight').appendChild(this.anvilRightSlot.slot);
+    el('anvilOutput').appendChild(this.anvilOutputSlot.slot);
+
+    const rows = this._buildPlayerRows('anvilStorageGrid', 'anvilHotbarGrid');
+    this.anvilStorageSlots = rows.storage;
+    this.anvilHotbarSlots = rows.hotbar;
+  }
+
+  openAnvil() {
+    this.refreshAll();
+    this.anvilScreen.classList.add('show');
+    audio.uiOpen();
+  }
+
+  closeAnvil() {
+    this._returnCursor();
+    for (const name of ['left', 'right']) {
+      if (this.anvilState[name]) this._giveBack(this.anvilState[name]);
+      this.anvilState[name] = null;
+    }
+    this.anvilScreen.classList.remove('show');
+    audio.uiClose();
+    this.refreshAll();
+  }
+
+  _paintAnvil() {
+    if (!this.anvilLeftSlot) return;
+    const { left, right } = this.anvilState;
+    this.anvilResult = anvilCombine(left, right, idByName);
+    this._paintSlot(this.anvilLeftSlot, left);
+    this._paintSlot(this.anvilRightSlot, right);
+    this._paintSlot(this.anvilOutputSlot, this.anvilResult?.result ?? null);
+
+    const label = el('anvilCost');
+    const r = this.anvilResult;
+    if (!r) {
+      label.textContent = left && right ? 'These two do not combine' : 'Gear on the left; a book, a matching item or its material on the right';
+      label.className = 'anvilCost';
+      return;
+    }
+    const creative = this.player.creative;
+    if (!creative && r.cost >= ANVIL_LIMIT) {
+      label.textContent = 'Too expensive!';
+      label.className = 'anvilCost bad';
+    } else {
+      label.textContent = `Cost: ${r.cost} level${r.cost === 1 ? '' : 's'}`;
+      label.className = 'anvilCost' + (creative || this.player.experience.level >= r.cost ? '' : ' bad');
+    }
+  }
+
+  _takeAnvil(shift) {
+    const r = this.anvilResult;
+    const player = this.player;
+    if (!r) return;
+    const creative = player.creative;
+    if (!creative && (r.cost >= ANVIL_LIMIT || player.experience.level < r.cost)) {
+      audio.uiError();
+      return;
+    }
+    if (shift) {
+      if (player.inventory.addExisting(r.result) > 0) return;
+    } else {
+      if (this.cursorStack) return;
+      this.cursorStack = r.result;
+    }
+    const state = this.anvilState;
+    state.left = null;
+    if (state.right) {
+      state.right.count -= r.uses;
+      if (state.right.count <= 0 || state.right.durability !== undefined || state.right.ench) state.right = null;
+    }
+    if (!creative) player.experience.spendLevels(r.cost);
+    audio.anvil();
+    this.game.onAnvilUsed?.(r.result);
+    player.inventory.touch();
   }
 
   _bindEvents() {
@@ -631,6 +911,8 @@ export class HUD {
 
   /** Which container screen is showing, for deciding where shift-click goes. */
   _openScreen() {
+    if (this.enchantScreen.classList.contains('show')) return 'enchant';
+    if (this.anvilScreen.classList.contains('show')) return 'anvil';
     if (this.chestScreen.classList.contains('show')) return 'chest';
     if (this.furnaceScreen.classList.contains('show')) return 'furnace';
     if (this.craftingScreen.classList.contains('show')) return 'table';
@@ -650,6 +932,11 @@ export class HUD {
     if (b.role !== 'inv') return [...this._backpackBindings, ...this._hotbarBindings];
 
     if (screen === 'chest' && this.activeChest) return this.chestBindings;
+    if (screen === 'enchant') {
+      if (stack.id === ITEM_ID.LAPIS) return [this.enchantLapisBinding];
+      if (enchantability(stack.id) > 0 && !isEnchanted(stack)) return [this.enchantItemBinding];
+    }
+    if (screen === 'anvil') return [this.anvilLeftBinding, this.anvilRightBinding];
     if (screen === 'furnace' && this.activeFurnace) {
       if (smeltResultFor(stack.id)) return [this.furnaceInputBinding];
       if (fuelValueFor(stack.id) > 0) return [this.furnaceFuelBinding];
@@ -747,7 +1034,7 @@ export class HUD {
       if (!stack || !this.game.entities) return;
       // As in the world: Ctrl throws the whole stack.
       const n = e.ctrlKey ? stack.count : 1;
-      this.player.throwItem(stack.id, n, this.game.entities, stack.durability);
+      this.player.throwItem(stack.id, n, this.game.entities, stack.durability, stack);
       stack.count -= n;
       b.set(stack.count > 0 ? stack : null);
     } else {
@@ -922,6 +1209,12 @@ export class HUD {
     name.textContent = info.name;
     if (info.color) name.style.color = info.color;
     t.appendChild(name);
+    for (const line of info.ench ?? []) {
+      const row = document.createElement('div');
+      row.className = 'ttLine ttEnch';
+      row.textContent = line;
+      t.appendChild(row);
+    }
     for (const line of info.lines) {
       const row = document.createElement('div');
       row.className = 'ttLine';
@@ -1003,7 +1296,7 @@ export class HUD {
     if (!stack) return;
     const left = this.player.inventory.addExisting(stack);
     if (left > 0 && this.game.entities) {
-      this.player.throwItem(stack.id, left, this.game.entities, stack.durability);
+      this.player.throwItem(stack.id, left, this.game.entities, stack.durability, stack);
     }
   }
 
@@ -1019,7 +1312,26 @@ export class HUD {
   // Per-frame update
   // -------------------------------------------------------------------------
 
+  /** Level and progress over the hotbar; hidden in creative, where it means nothing. */
+  _updateXpBar() {
+    const xp = this.player.experience;
+    const hidden = this.player.creative;
+    this.xpBar.classList.toggle('hidden', hidden);
+    if (hidden) return;
+    const width = (xp.progress * 100).toFixed(1) + '%';
+    if (this._xpWidth !== width) {
+      this._xpWidth = width;
+      this.xpFill.style.width = width;
+    }
+    const text = xp.level > 0 ? String(xp.level) : '';
+    if (this._xpText !== text) {
+      this._xpText = text;
+      this.xpLevel.textContent = text;
+    }
+  }
+
   update(dt) {
+    this._updateXpBar();
     this._fpsAccum += dt;
     this._fpsFrames++;
     if (this._fpsAccum >= 0.5) {
@@ -1332,6 +1644,8 @@ export class HUD {
       this._paintSlot(this.tableHotbarSlots[i], slots[i]);
       this._paintSlot(this.furnaceHotbarSlots[i], slots[i]);
       this._paintSlot(this.chestHotbarSlots[i], slots[i]);
+      this._paintSlot(this.enchantHotbarSlots[i], slots[i]);
+      this._paintSlot(this.anvilHotbarSlots[i], slots[i]);
       this.hotbarSlots[i].slot.classList.toggle('selected', i === inv.selected);
     }
 
@@ -1341,6 +1655,8 @@ export class HUD {
       this._paintSlot(this.tableStorageSlots[i], stack);
       this._paintSlot(this.furnaceStorageSlots[i], stack);
       this._paintSlot(this.chestStorageSlots[i], stack);
+      this._paintSlot(this.enchantStorageSlots[i], stack);
+      this._paintSlot(this.anvilStorageSlots[i], stack);
     }
 
     for (let i = 0; i < 27; i++) {
@@ -1358,6 +1674,8 @@ export class HUD {
     this._paintSlot(this.tableResultSlot, findRecipe(this.tableCraftGrid, 3));
 
     if (this.activeFurnace) this._paintFurnace();
+    this._paintEnchanting();
+    this._paintAnvil();
     this._paintCursorStack();
     // What you can craft changes with every move, so the books follow.
     this.invRecipes?.refresh();
@@ -1370,6 +1688,7 @@ export class HUD {
   }
 
   _paintSlot(parts, stack) {
+    parts.slot.classList.toggle('enchanted', isEnchanted(stack));
     if (!stack) {
       parts.icon.style.backgroundImage = '';
       parts.count.textContent = '';
@@ -1377,7 +1696,10 @@ export class HUD {
       return;
     }
 
-    parts.icon.style.backgroundImage = `url(${getTileDataURL(getIconTile(stack.id))})`;
+    const url = `url(${getTileDataURL(getIconTile(stack.id))})`;
+    parts.icon.style.backgroundImage = url;
+    // The glint is masked to the icon's own shape (see .slot.enchanted in CSS).
+    if (isEnchanted(stack)) parts.icon.style.setProperty('--icon', url);
     parts.count.textContent = stack.count > 1 ? stack.count : '';
 
     // Wear bar, green fading to red as the tool nears breaking.
@@ -1566,6 +1888,8 @@ export class HUD {
     if (this.craftingScreen.classList.contains('show')) this.closeCraftingTable();
     if (this.furnaceScreen.classList.contains('show')) this.closeFurnace();
     if (this.chestScreen.classList.contains('show')) this.closeChest();
+    if (this.enchantScreen.classList.contains('show')) this.closeEnchanting();
+    if (this.anvilScreen.classList.contains('show')) this.closeAnvil();
     if (this.signScreen.classList.contains('show')) this.closeSign();
     if (this.progressScreen.classList.contains('show')) this.closeProgress();
     if (this.game.worldMap?.isOpen) this.game.worldMap.close();
@@ -1577,6 +1901,8 @@ export class HUD {
       this.craftingScreen.classList.contains('show') ||
       this.furnaceScreen.classList.contains('show') ||
       this.chestScreen.classList.contains('show') ||
+      this.enchantScreen.classList.contains('show') ||
+      this.anvilScreen.classList.contains('show') ||
       this.signScreen.classList.contains('show') ||
       this.progressScreen.classList.contains('show') ||
       !!this.game.worldMap?.isOpen

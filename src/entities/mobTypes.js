@@ -392,6 +392,8 @@ export const WARDEN = {
   maxHealth: 220,
   speed: 2.2,
   boss: true,
+  /** Experience for the kill: a boss pays out like one (see entityManager). */
+  xp: 60,
   voice: { name: 'warden', voice: 'groan', pitch: 52, duration: 0.9 },
   drops: [],   // handled by the boss loot table instead
   lootTable: BOSS_LOOT,

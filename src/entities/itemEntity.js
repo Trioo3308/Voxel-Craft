@@ -64,12 +64,17 @@ function getGeometry(id) {
 }
 
 export class ItemEntity {
-  /** @param durability carried through so dropped tools keep their wear */
-  constructor(world, position, id, count = 1, durability) {
+  /**
+   * @param durability carried through so dropped tools keep their wear
+   * @param extra `{ ench, work }` carried through so enchantments survive a drop
+   */
+  constructor(world, position, id, count = 1, durability, extra = null) {
     this.world = world;
     this.id = id;
     this.count = count;
     this.durability = durability;
+    this.ench = extra?.ench ?? null;
+    this.work = extra?.work ?? 0;
 
     this.position = position.clone();
     this.velocity = new THREE.Vector3(
@@ -157,9 +162,10 @@ export class ItemEntity {
     const dz = player.position.z - this.position.z;
     if (Math.hypot(dx, dy, dz) > PICKUP_RADIUS) return;
 
-    const stack = this.durability === undefined
-      ? { id: this.id, count: this.count }
-      : { id: this.id, count: this.count, durability: this.durability };
+    const stack = { id: this.id, count: this.count };
+    if (this.durability !== undefined) stack.durability = this.durability;
+    if (this.ench) stack.ench = this.ench;
+    if (this.work) stack.work = this.work;
 
     const leftover = player.inventory.addExisting(stack);
     if (leftover === 0) {

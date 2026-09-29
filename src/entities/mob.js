@@ -169,6 +169,7 @@ export class Mob {
     this.age += dt;
     if (this.attackCooldown > 0) this.attackCooldown -= dt;
     if (this.hurtTimer > 0) this.hurtTimer -= dt;
+    if (this.playerHitTimer > 0) this.playerHitTimer -= dt;
     this._updateHusbandry(dt);
 
     if (this.dead) {
@@ -598,10 +599,20 @@ export class Mob {
    * @param {number} amount hit points
    * @param {{x,y,z}} [knockback] impulse direction
    */
-  takeDamage(amount, knockback) {
+  /**
+   * @param source optional `{ player, looting, knockback }`: a hit from the
+   *   player, which is what earns experience when the mob dies, the killing
+   *   weapon's Looting, and how much harder than usual it knocks back.
+   */
+  takeDamage(amount, knockback, source = null) {
     if (this.dead || amount <= 0) return;
     if (this.hurtTimer > 0.25) return; // i-frames
 
+    if (source?.player) {
+      // Minecraft only pays experience for a mob the player hurt recently.
+      this.playerHitTimer = 5;
+      this.looting = source.looting | 0;
+    }
     this.health -= amount;
     this.hurtTimer = 0.4;
     // `die()` plays the death cry, so only sound hurt if we survived it.
@@ -612,7 +623,7 @@ export class Mob {
     if (brain && brain.fleeWhenHurt) this.fleeTimer = brain.fleeWhenHurt;
 
     if (knockback) {
-      const strength = 6;
+      const strength = 6 * (source?.knockback ?? 1);
       this.velocity.x += knockback.x * strength;
       this.velocity.z += knockback.z * strength;
       this.velocity.y = Math.max(this.velocity.y, (knockback.y ?? 0.4) * strength);

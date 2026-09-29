@@ -30,11 +30,13 @@ export class Arrow {
   /**
    * @param owner the mob that fired it (never hit by its own arrow)
    * @param damage hit points on impact
+   * @param punch the bow's Punch level: extra knockback on a hit
    */
-  constructor(world, position, velocity, owner, damage) {
+  constructor(world, position, velocity, owner, damage, punch = 0) {
     this.world = world;
     this.owner = owner;
     this.damage = damage;
+    this.punch = punch;
 
     this.position = position.clone();
     this.velocity = velocity.clone();
@@ -110,7 +112,9 @@ export class Arrow {
           mob.position.x + hw, mob.position.y + mob.height, mob.position.z + hw
         )) continue;
 
-        mob.takeDamage(this.damage, { x: dir.x, y: 0.3, z: dir.z });
+        const byPlayer = this.owner === ctx.player;
+        mob.takeDamage(this.damage, { x: dir.x, y: 0.3, z: dir.z },
+          byPlayer ? { player: true, knockback: 1 + this.punch * 0.8 } : null);
         this.removed = true;
         audio.arrowHit(this.position);
         return true;
