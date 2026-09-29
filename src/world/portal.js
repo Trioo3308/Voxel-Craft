@@ -109,7 +109,9 @@ export function ignitePortal(world, x, y, z, kind = PORTAL_KINDS[0]) {
     for (const axis of ['x', 'z']) {
       const found = findInterior(world, sx, sy, sz, axis, kind);
       if (!found) continue;
-      for (const [cx, cy, cz] of found.cells) world.setBlock(cx, cy, cz, kind.surface);
+      // Batched: one rebuild per chunk rather than one per cell (see buildReturnPortal).
+      for (const [cx, cy, cz] of found.cells) world.setBlock(cx, cy, cz, kind.surface, true);
+      world.flushBlockChanges();
       return { ...found, kind };
     }
   }
@@ -209,23 +211,31 @@ export function extinguishPortal(world, x, y, z) {
     // a wall do not put each other out.
     if (world.getBlock(cx, cy, cz) !== surface) continue;
 
-    world.setBlock(cx, cy, cz, AIR);
+    world.setBlock(cx, cy, cz, AIR, true);
     cleared++;
     for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
       queue.push([cx + dx, cy + dy, cz + dz]);
     }
   }
+  world.flushBlockChanges();
   return cleared;
 }
 
-/** Where a portal should be built on arrival, and the frame to build with it. */
+/**
+ * Where a portal should be built on arrival, and the frame to build with it.
+ *
+ * Every write is batched into one worker message. Sent one at a time, arriving
+ * inside rock (the Nether, a hillside) meant ~250 edits, each rebuilding and
+ * relighting its chunk: seconds of worker time in which the chunks around you
+ * stopped loading and a trip straight back queued behind all of it.
+ */
 export function buildReturnPortal(world, x, y, z, kind = PORTAL_KINDS[0]) {
   // Clear a pocket so the frame is never fused into terrain.
   for (let dx = -2; dx <= 3; dx++) {
     for (let dy = -1; dy <= 5; dy++) {
       for (let dz = -2; dz <= 2; dz++) {
         const id = world.getBlock(x + dx, y + dy, z + dz);
-        if (id !== AIR && !isLiquid(id)) world.setBlock(x + dx, y + dy, z + dz, AIR);
+        if (id !== AIR && !isLiquid(id)) world.setBlock(x + dx, y + dy, z + dz, AIR, true);
       }
     }
   }
@@ -233,28 +243,29 @@ export function buildReturnPortal(world, x, y, z, kind = PORTAL_KINDS[0]) {
   // Solid footing underneath, so you do not arrive in mid-air.
   for (let dx = -1; dx <= 2; dx++) {
     for (let dz = -1; dz <= 1; dz++) {
-      world.setBlock(x + dx, y - 1, z + dz, kind.frame);
+      world.setBlock(x + dx, y - 1, z + dz, kind.frame, true);
     }
   }
 
   // Frame: 4 wide x 5 tall along X, with a 2x3 interior.
   for (let dx = 0; dx <= 3; dx++) {
-    world.setBlock(x + dx, y, z, kind.frame);
-    world.setBlock(x + dx, y + 4, z, kind.frame);
+    world.setBlock(x + dx, y, z, kind.frame, true);
+    world.setBlock(x + dx, y + 4, z, kind.frame, true);
   }
   for (let dy = 0; dy <= 4; dy++) {
-    world.setBlock(x, y + dy, z, kind.frame);
-    world.setBlock(x + 3, y + dy, z, kind.frame);
+    world.setBlock(x, y + dy, z, kind.frame, true);
+    world.setBlock(x + 3, y + dy, z, kind.frame, true);
   }
 
   // Interior.
   const cells = [];
   for (let dx = 1; dx <= 2; dx++) {
     for (let dy = 1; dy <= 3; dy++) {
-      world.setBlock(x + dx, y + dy, z, kind.surface);
+      world.setBlock(x + dx, y + dy, z, kind.surface, true);
       cells.push([x + dx, y + dy, z]);
     }
   }
+  world.flushBlockChanges();
 
   // `stand` is deliberately *outside* the frame, on the footing in front of it:
   // arriving inside the portal would leave the player embedded in the frame's

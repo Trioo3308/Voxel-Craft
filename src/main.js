@@ -170,6 +170,12 @@ export class Game {
     this._hiveTimer = 0;
     this._caveSoundTimer = 20;
     this._travelling = false;
+    /**
+     * Where chunks stream around while a loading screen waits on somewhere
+     * other than where the player stands; null the rest of the time. See
+     * _preloadAround.
+     */
+    this._loadFocus = null;
 
     this._lastFrameTime = performance.now();
     /** Current FOV multiplier from speed effects, eased toward its target. */
@@ -1627,6 +1633,7 @@ export class Game {
     this._dungeonTimer = 0;
     this._hiveTimer = 0;
     this._travelling = false;
+    this._loadFocus = null;
     this._applyDimensionLook();
 
     // Whether this world may use creative at all, fixed when it was created.
@@ -1689,13 +1696,24 @@ export class Game {
     this._setState('menu');
   }
 
-  /** Wait for the 3x3 chunk area around a position to finish generating. */
+  /**
+   * Wait for the 3x3 chunk area around a position to finish generating.
+   *
+   * Until it has, the whole world streams around that position, not around
+   * the player. The main loop streams every frame too, and during a load the
+   * player is still standing somewhere else: in the previous world, on the
+   * other side of a portal (eight times further out, or in), or where they
+   * died. Each call unloaded the other's chunks, so once the two were a couple
+   * of hundred blocks apart the load never finished and the loading screen
+   * sat at 0% for good.
+   */
   _preloadAround(worldX, worldZ) {
     const REQUIRED = 9;
     const fill = el('loadingFill');
     const centerCX = Math.floor(worldX / 16);
     const centerCZ = Math.floor(worldZ / 16);
     const probe = { x: worldX, y: 0, z: worldZ };
+    this._loadFocus = probe;
 
     return new Promise((resolve) => {
       const tick = () => {
@@ -1710,8 +1728,14 @@ export class Game {
         }
 
         fill.style.width = ((ready / REQUIRED) * 100).toFixed(0) + '%';
-        if (ready >= REQUIRED) resolve();
-        else requestAnimationFrame(tick);
+        if (ready >= REQUIRED) {
+          // Every caller moves the player here as soon as this resolves, in the
+          // same task, so the main loop can go back to following the player.
+          if (this._loadFocus === probe) this._loadFocus = null;
+          resolve();
+        } else {
+          requestAnimationFrame(tick);
+        }
       };
       tick();
     });
@@ -2451,7 +2475,7 @@ export class Game {
     // The world keeps streaming even while paused, so resuming is seamless.
     // Fluids and furnaces still tick while a container is open, as in Minecraft.
     const simDt = playing || this.state === 'container' ? dt : 0;
-    this.world.update(this.player.position, simDt);
+    this.world.update(this._loadFocus ?? this.player.position, simDt);
 
     // Weather runs before the sky, which reads its overcast and flash values.
     this.weather.update(simDt, {

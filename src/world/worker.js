@@ -336,6 +336,34 @@ function sendChunk(cx, cz) {
   self.postMessage({ type: 'chunk', cx, cz, voxels: voxelCopy, opaque, water, light }, transfer);
 }
 
+/**
+ * Chunks to rebuild after a mesher option changed, in the order they were sent
+ * (nearest the player first, since that is how they were requested). Worked
+ * through a slice at a time between messages: rebuilding everything in one go
+ * took seconds, and Graphics "auto" drops to Low exactly when frames are slow,
+ * which is while a new world or a new dimension is streaming in. Chunk
+ * requests and dimension switches now slot in between slices.
+ */
+let rebuildQueue = [];
+let rebuildScheduled = false;
+const REBUILD_SLICE_MS = 12;
+
+function scheduleRebuild() {
+  if (rebuildScheduled || rebuildQueue.length === 0) return;
+  rebuildScheduled = true;
+  setTimeout(rebuildSlice, 0);
+}
+
+function rebuildSlice() {
+  rebuildScheduled = false;
+  const start = performance.now();
+  while (rebuildQueue.length > 0 && performance.now() - start < REBUILD_SLICE_MS) {
+    const [cx, cz] = rebuildQueue.shift().split(',').map(Number);
+    sendRemesh(cx, cz); // skips anything unloaded in the meantime
+  }
+  scheduleRebuild();
+}
+
 function sendRemesh(cx, cz) {
   if (!sentChunks.has(chunkKey(cx, cz))) return;
   const { opaque, water, light } = meshChunk(cx, cz);
@@ -475,6 +503,7 @@ self.onmessage = (event) => {
       // stepping back through a portal does not regenerate the world you left.
       activeDim = msg.dimension;
       sentChunks.clear();
+      rebuildQueue = [];
       invalidateSampleCache();
       self.postMessage({ type: 'dimensionReady', dimension: activeDim });
       break;
@@ -532,12 +561,11 @@ self.onmessage = (event) => {
       break;
 
     case 'options': {
-      // These change geometry, so everything the main thread holds is rebuilt.
+      // These change geometry, so everything the main thread holds is rebuilt,
+      // a slice at a time (see rebuildQueue).
       setMesherOptions(msg);
-      for (const key of [...sentChunks]) {
-        const [cx, cz] = key.split(',').map(Number);
-        sendRemesh(cx, cz);
-      }
+      rebuildQueue = [...sentChunks];
+      scheduleRebuild();
       break;
     }
 
