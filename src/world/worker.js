@@ -19,6 +19,7 @@
  *  in  { type: 'setBlock', x, y, z, id }   -> apply an edit, remesh what moved
  *  in  { type: 'setBlocks', changes }      -> batched edits, one remesh per chunk
  *  in  { type: 'unload',   cx, cz }        -> free voxel memory (edits are kept)
+ *  in  { type: 'options',  fastLeaves }    -> mesher options; remeshes every sent chunk
  *  out { type: 'ready' }
  *  out { type: 'chunk',    cx, cz, voxels, opaque, water }
  *  out { type: 'remesh',   cx, cz, opaque, water }
@@ -28,10 +29,12 @@ import { TerrainGenerator } from './terrain.js';
 import { CombTerrainGenerator } from './combTerrain.js';
 import { NetherTerrainGenerator } from './netherTerrain.js';
 import { AetherTerrainGenerator } from './aetherTerrain.js';
-import { buildChunkMesh } from './mesher.js';
+import { buildChunkMesh, setMesherOptions } from './mesher.js';
 import { computeChunkLight, emissionOf, LIGHT_MARGIN } from './light.js';
 import { DIMENSIONS } from './dimensions.js';
-import { CHUNK_SX, CHUNK_SY, CHUNK_SZ, chunkKey, voxelIndex, toLocalCoord, toChunkCoord } from './chunk.js';
+import {
+  CHUNK_SX, CHUNK_SY, CHUNK_SZ, CHUNK_VOLUME, chunkKey, voxelIndex, padIndex, toLocalCoord, toChunkCoord,
+} from './chunk.js';
 import { AIR } from './blocks.js';
 
 /**
@@ -229,6 +232,7 @@ function collectTransferables(geometry, out) {
     geometry.uvs.buffer,
     geometry.colors.buffer,
     geometry.fx.buffer,
+    geometry.tiles.buffer,
     geometry.indices.buffer
   );
 }
@@ -287,12 +291,37 @@ function meshChunk(cx, cz) {
   invalidateSampleCache();
   const light = computeChunkLight(cx, cz, sampleBlock, emittersNear(cx, cz));
   invalidateSampleCache();
-  return buildChunkMesh(sampleBlock, cx, cz, light);
+  const mesh = buildChunkMesh(sampleBlock, cx, cz, light);
+  mesh.light = interiorLight(light);
+  return mesh;
+}
+
+/**
+ * The chunk's own block light, without the one-voxel skirt the mesher needs,
+ * in voxel order. The main thread uses it to light mobs and items by where
+ * they stand. Null for a chunk with no light in it, which is most of them.
+ */
+function interiorLight(padded) {
+  if (!padded) return null;
+  const out = new Uint8Array(CHUNK_VOLUME);
+  let any = false;
+  for (let y = 0; y < CHUNK_SY; y++) {
+    for (let z = 0; z < CHUNK_SZ; z++) {
+      for (let x = 0; x < CHUNK_SX; x++) {
+        const level = padded[padIndex(x, y, z)];
+        if (level) {
+          out[voxelIndex(x, y, z)] = level;
+          any = true;
+        }
+      }
+    }
+  }
+  return any ? out : null;
 }
 
 function sendChunk(cx, cz) {
   const voxels = ensureChunk(cx, cz);
-  const { opaque, water } = meshChunk(cx, cz);
+  const { opaque, water, light } = meshChunk(cx, cz);
 
   // Hand the main thread its own copy of the voxels — it needs them for
   // collision, raycasting and instant edit feedback.
@@ -301,18 +330,20 @@ function sendChunk(cx, cz) {
   const transfer = [voxelCopy.buffer];
   collectTransferables(opaque, transfer);
   collectTransferables(water, transfer);
+  if (light) transfer.push(light.buffer);
 
   sentChunks.add(chunkKey(cx, cz));
-  self.postMessage({ type: 'chunk', cx, cz, voxels: voxelCopy, opaque, water }, transfer);
+  self.postMessage({ type: 'chunk', cx, cz, voxels: voxelCopy, opaque, water, light }, transfer);
 }
 
 function sendRemesh(cx, cz) {
   if (!sentChunks.has(chunkKey(cx, cz))) return;
-  const { opaque, water } = meshChunk(cx, cz);
+  const { opaque, water, light } = meshChunk(cx, cz);
   const transfer = [];
   collectTransferables(opaque, transfer);
   collectTransferables(water, transfer);
-  self.postMessage({ type: 'remesh', cx, cz, opaque, water }, transfer);
+  if (light) transfer.push(light.buffer);
+  self.postMessage({ type: 'remesh', cx, cz, opaque, water, light }, transfer);
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +530,16 @@ self.onmessage = (event) => {
     case 'request':
       sendChunk(msg.cx, msg.cz);
       break;
+
+    case 'options': {
+      // These change geometry, so everything the main thread holds is rebuilt.
+      setMesherOptions(msg);
+      for (const key of [...sentChunks]) {
+        const [cx, cz] = key.split(',').map(Number);
+        sendRemesh(cx, cz);
+      }
+      break;
+    }
 
     case 'setBlock':
       applyEdit(msg.x, msg.y, msg.z, msg.id);

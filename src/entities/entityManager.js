@@ -5,6 +5,8 @@
  * spawn near the player, simulate while close, remove when far away or dead.
  */
 
+import { difficulty } from '../player/difficulty.js';
+import { sampleLocalLight } from '../engine/localLight.js';
 import * as THREE from 'three';
 import Settings from '../settings.js';
 import { Mob } from './mob.js';
@@ -328,7 +330,7 @@ export class EntityManager {
       if (d <= radius * 1.6) {
         const falloff = 1 - d / (radius * 1.6);
         player.hitFrom = { x, z, at: performance.now() };
-        player.survival.damage(Math.ceil(maxDamage * falloff), 'explosion');
+        player.survival.damage(Math.ceil(maxDamage * falloff * difficulty.rules.damage), 'explosion');
         const dx = player.position.x - x;
         const dz = player.position.z - z;
         const len = Math.hypot(dx, dz) || 1;
@@ -336,7 +338,7 @@ export class EntityManager {
         player.velocity.z += (dz / len) * 9 * falloff;
         player.velocity.y = Math.max(player.velocity.y, 7 * falloff);
       }
-      audio.explosion(d);
+      audio.explosion(d, { x, y, z });
     }
   }
 
@@ -429,7 +431,7 @@ export class EntityManager {
         if (this.particles) {
           this.particles.portalMotes(baby.position.x, baby.position.y + 0.5, baby.position.z, 8);
         }
-        audio.mobSound(a.type.voice, 'idle', 0);
+        audio.mobSound(a.type.voice, 'idle', 0, a.position);
         break;
       }
     }
@@ -533,6 +535,11 @@ export class EntityManager {
 
       const current = this.mobs.reduce((n, m) => n + (m.type === type && !m.dead ? 1 : 0), 0);
       if (current >= rules.maxCount) continue;
+      // Difficulty: Peaceful has no monsters; Easy sees fewer of them.
+      if (type.brain?.hostile && !type.boss) {
+        if (!difficulty.rules.hostiles) continue;
+        if (Math.random() > difficulty.rules.spawnScale) continue;
+      }
       candidates.push({ type, weight: rules.weight ?? 1 });
     }
     if (candidates.length === 0) return;
@@ -547,7 +554,9 @@ export class EntityManager {
 
       // Spawn a small group so the world does not feel evenly sprinkled.
       const [minGroup, maxGroup] = rules.groupSize;
-      const groupSize = minGroup + Math.floor(Math.random() * (maxGroup - minGroup + 1));
+      let groupSize = minGroup + Math.floor(Math.random() * (maxGroup - minGroup + 1));
+      // Hard sends monsters in bigger groups.
+      if (type.brain?.hostile && difficulty.rules.spawnScale > 1) groupSize = Math.ceil(groupSize * difficulty.rules.spawnScale);
       const room = rules.maxCount - current;
       const nearY = player.position.y;
 
@@ -687,6 +696,51 @@ export class EntityManager {
       mob.dispose();
       this.mobs.splice(i, 1);
     }
+  }
+
+  /**
+   * Shade every mob and dropped item by the light where it is. Ten times a
+   * second is plenty: light changes as fast as things walk, not as fast as
+   * frames are drawn.
+   */
+  applyLighting(dt, dynamic) {
+    this._lightClock = (this._lightClock ?? 0) - dt;
+    if (this._lightClock > 0 || !this.world) return;
+    this._lightClock = 0.1;
+    for (const mob of this.mobs) {
+      const p = mob.position;
+      const { k, warm } = sampleLocalLight(this.world, dynamic, p.x, p.y + mob.type.height * 0.6, p.z);
+      mob.setLight(k, warm);
+    }
+    for (const item of this.items) {
+      const p = item.position;
+      item.setLight(sampleLocalLight(this.world, dynamic, p.x, p.y + 0.2, p.z).k);
+    }
+  }
+
+  /**
+   * Switching to Peaceful sends every monster away at once, bosses apart,
+   * so the change is felt immediately rather than as they wander off.
+   */
+  clearHostiles() {
+    for (let i = this.mobs.length - 1; i >= 0; i--) {
+      const mob = this.mobs[i];
+      if (!mob.type.brain?.hostile || mob.type.boss) continue;
+      if (this.particles) this.particles.deathPuff(mob.position.x, mob.position.y, mob.position.z, mob.type.height ?? 1);
+      this.scene.remove(mob.object3D);
+      mob.dispose();
+      this.mobs.splice(i, 1);
+    }
+  }
+
+  /** Mobs that give off light, as dynamic light sources. */
+  lightSources(out = []) {
+    for (const mob of this.mobs) {
+      const level = mob.type.glow?.light;
+      if (!level || mob.dead) continue;
+      out.push({ x: mob.position.x, y: mob.position.y + mob.type.height * 0.5, z: mob.position.z, level });
+    }
+    return out;
   }
 
   // -------------------------------------------------------------------------

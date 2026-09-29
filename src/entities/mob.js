@@ -10,6 +10,7 @@
  * the way the player does.
  */
 
+import { difficulty } from '../player/difficulty.js';
 import * as THREE from 'three';
 import { moveWithCollision, isInLiquid, isSupported } from '../player/physics.js';
 import { raycastVoxels } from '../player/raycast.js';
@@ -22,6 +23,26 @@ const BABY_SCALE = 0.55;
 
 const GRAVITY = 28;
 const TERMINAL_VELOCITY = 55;
+
+const _warmTint = new THREE.Color();
+
+/**
+ * Make a mob type's glowing parts actually glow: unlit, and bright enough for
+ * bloom. A type lists them by colour (`glow.colors`), since that is how its
+ * model builder already tells them apart.
+ */
+function applyGlow(object3D, type) {
+  const glow = type.glow;
+  if (!glow) return;
+  const colors = new Set(glow.colors);
+  object3D.traverse((child) => {
+    if (!child.isMesh || !child.material || !child.material.emissive) return;
+    const hex = child.material.color.getHex();
+    if (!colors.has(hex)) return;
+    child.material.emissive.setHex(hex);
+    child.material.emissiveIntensity = glow.intensity ?? 1.6;
+  });
+}
 
 export class Mob {
   /**
@@ -113,6 +134,10 @@ export class Mob {
     const built = type.buildModel();
     this.object3D = built.group;
     this.parts = built.parts;
+    applyGlow(this.object3D, type);
+    /** Local light multiplier and torch warmth; see sampleLocalLight. */
+    this.light = { k: 1, warm: 0 };
+    this._shadeKey = '';
     this.object3D.position.copy(this.position);
   }
 
@@ -323,7 +348,8 @@ export class Mob {
     // Pass who is hitting, not just "a mob" — the death screen names the killer.
     // Where the blow came from, for the red arc on the edge of the screen.
     player.hitFrom = { x: this.position.x, z: this.position.z, at: performance.now() };
-    if (!player.survival.damage(this.attackDamage ?? brain.attackDamage, 'mob', this.type)) return;
+    const base = this.attackDamage ?? brain.attackDamage;
+    if (!player.survival.damage(Math.max(0.5, base * difficulty.rules.damage), 'mob', this.type)) return;
 
     // Knock the player back and up a little.
     const dx = player.position.x - this.position.x;
@@ -402,7 +428,7 @@ export class Mob {
     const distance = ctx.player ? this.distanceTo(ctx.player.eyePosition) : 0;
     if (distance > 24) return;
 
-    audio.mobSound(this.type.voice, 'idle', distance);
+    audio.mobSound(this.type.voice, 'idle', distance, this.position);
   }
 
   /** Distance from this mob to the listener, for audio falloff. */
@@ -543,16 +569,11 @@ export class Mob {
     if (this.parts.armLeft) this.parts.armLeft.rotation.x = this.type.armsForward ? -HALF_PI_ISH + swing * 0.4 : -swing;
     if (this.parts.armRight) this.parts.armRight.rotation.x = this.type.armsForward ? -HALF_PI_ISH - swing * 0.4 : swing;
 
-    // Flash red briefly when hurt.
+    // Flash red briefly when hurt; the shading keeps track of light as well.
     const hurt = this.hurtTimer > 0;
     if (hurt !== this._wasHurt) {
       this._wasHurt = hurt;
-      this.object3D.traverse((child) => {
-        if (!child.isMesh || !child.material) return;
-        if (!child.userData.baseColor) child.userData.baseColor = child.material.color.clone();
-        if (hurt) child.material.color.setRGB(1, 0.35, 0.35);
-        else child.material.color.copy(child.userData.baseColor);
-      });
+      this._applyShade();
     }
   }
 
@@ -584,7 +605,7 @@ export class Mob {
     this.health -= amount;
     this.hurtTimer = 0.4;
     // `die()` plays the death cry, so only sound hurt if we survived it.
-    if (this.health > 0) audio.mobSound(this.type.voice, 'hurt', this._listenerDist ?? 0);
+    if (this.health > 0) audio.mobSound(this.type.voice, 'hurt', this._listenerDist ?? 0, this.position);
 
     // Anything that gets hit panics for a moment; hostiles then re-engage.
     const brain = this.type.brain;
@@ -607,7 +628,7 @@ export class Mob {
     this.dead = true;
     this.deathTimer = 0;
     this.velocity.set(0, 0, 0);
-    audio.mobSound(this.type.voice, 'death', this._listenerDist ?? 0);
+    audio.mobSound(this.type.voice, 'death', this._listenerDist ?? 0, this.position);
   }
 
   /** Breeding timers, growing up, and wool growing back. */
@@ -667,6 +688,41 @@ export class Mob {
     this.dispose();
     this.object3D = built.group;
     this.parts = built.parts;
+    applyGlow(this.object3D, this.type);
+    // A rebuilt model has fresh materials, which need shading again.
+    this._shadeKey = '';
+    this._applyShade();
+  }
+
+  /** Light where the mob stands, from EntityManager.applyLighting. */
+  setLight(k, warm) {
+    this.light.k = k;
+    this.light.warm = warm;
+    this._applyShade();
+  }
+
+  /**
+   * Colour every part: its own colour, scaled by the light where the mob
+   * stands and warmed by torchlight, or flushed red while hurt. Only
+   * touches materials when the result actually changes.
+   */
+  _applyShade() {
+    const hurt = this.hurtTimer > 0;
+    const k = Math.round(this.light.k * 40) / 40;
+    const warm = Math.round(this.light.warm * 10) / 10;
+    const key = `${hurt}|${k}|${warm}`;
+    if (key === this._shadeKey) return;
+    this._shadeKey = key;
+    this.object3D.traverse((child) => {
+      if (!child.isMesh || !child.material || !child.material.color) return;
+      const m = child.material;
+      if (!child.userData.baseColor) child.userData.baseColor = m.color.clone();
+      if (hurt) m.color.setRGB(1, 0.35, 0.35).multiplyScalar(Math.max(0.5, k));
+      else {
+        m.color.copy(child.userData.baseColor).multiplyScalar(k);
+        if (warm > 0) m.color.multiply(_warmTint.setRGB(1, 1 - 0.18 * warm, 1 - 0.42 * warm));
+      }
+    });
   }
 
   /** Called by a pack-mate that spotted the player. */

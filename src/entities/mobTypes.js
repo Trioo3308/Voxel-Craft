@@ -315,7 +315,7 @@ export const CREEPER = {
     }
 
     if (distance <= fuse.triggerRange && mob.canSeeTarget) {
-      if (mob.fuseTimer === 0) audio.mobSound(this.voice, 'idle', mob._listenerDist ?? 0);
+      if (mob.fuseTimer === 0) audio.mobSound(this.voice, 'idle', mob._listenerDist ?? 0, mob.position);
       mob.fuseTimer = (mob.fuseTimer ?? 0) + dt;
       // Stop dead while priming, so it does not chase you mid-fuse.
       mob.moveX = 0;
@@ -383,6 +383,8 @@ export const CREEPER = {
  * spawns naturally — the shrine places exactly one.
  */
 export const WARDEN = {
+  /** Red markings that glow in the dark and light the ground around it. */
+  glow: { colors: [0xc2323c], intensity: 1.8, light: 9 },
   name: 'comb_warden',
   displayName: 'Comb Warden',
   width: 1.6,
@@ -424,7 +426,7 @@ export const WARDEN = {
     if (phase !== mob.memory.phase) {
       mob.memory.phase = phase;
       // Roar on entering a new phase, and shove anything nearby away.
-      audio.mobSound(this.voice, 'hurt', mob._listenerDist ?? 0);
+      audio.mobSound(this.voice, 'hurt', mob._listenerDist ?? 0, mob.position);
       const player = ctx.player;
       if (mob.horizontalDistanceTo(player.position) < 8) {
         const dx = player.position.x - mob.position.x;
@@ -772,6 +774,8 @@ const COMB_GROUND = new Set([
  * fast they close, which is what makes the open plateau feel exposed.
  */
 export const COMB_MITE = {
+  /** Red markings that glow in the dark. */
+  glow: { colors: [0xc2323c], intensity: 1.8 },
   name: 'comb_mite',
   displayName: 'Comb Mite',
   width: 0.5,
@@ -835,6 +839,8 @@ export const COMB_MITE = {
  * — so the Comb has something worth farming as well as something worth fearing.
  */
 export const COMB_DRIFTER = {
+  /** Red markings that glow in the dark and light the ground around it. */
+  glow: { colors: [0xc2323c], intensity: 1.8, light: 7 },
   name: 'comb_drifter',
   displayName: 'Comb Drifter',
   width: 0.9,
@@ -888,6 +894,8 @@ export const COMB_DRIFTER = {
  * different kinds of pressure rather than more of the same.
  */
 export const COMB_STALKER = {
+  /** Red markings that glow in the dark. */
+  glow: { colors: [0xc2323c], intensity: 1.8 },
   name: 'comb_stalker',
   displayName: 'Comb Stalker',
   width: 0.9,
@@ -1164,7 +1172,7 @@ export const WOLF = {
         if (distance < 1.4 && mob.memory.biteCooldown <= 0) {
           mob.memory.biteCooldown = this.attackCooldown;
           target.takeDamage(this.attackDamage, { x: 0, y: 0.3, z: 0 });
-          audio.mobSound(this.voice, 'hurt', mob.distanceTo(player.eyePosition));
+          audio.mobSound(this.voice, 'hurt', mob.distanceTo(player.eyePosition), mob.position);
         }
         return;
       }
@@ -1343,6 +1351,8 @@ export const EMBER = {
   maxHealth: 18,
   speed: 2.0,
   voice: { name: 'ember', voice: 'crackle', pitch: 150, duration: 0.4 },
+  /** Its core and rods glow, and it lights the rock around it. */
+  glow: { colors: [0xff8a3c, 0xffc45c], intensity: 2.2, light: 11 },
   drops: [{ id: ITEM_ID.NETHER_QUARTZ, min: 0, max: 2 }],
   fireproof: true,
 

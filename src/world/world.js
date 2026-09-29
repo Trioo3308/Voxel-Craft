@@ -10,7 +10,7 @@
  * frame of latency to every block you place.
  */
 
-import { createTerrainMaterial, createWaterMaterial } from '../engine/terrainMaterial.js';
+import { createTerrainMaterial, createWaterMaterial, createTerrainDepthMaterial } from '../engine/terrainMaterial.js';
 import * as THREE from 'three';
 import Settings from '../settings.js';
 import {
@@ -83,6 +83,24 @@ class Chunk {
   }
 }
 
+/** Height of the topmost opaque block in one column, or -1. */
+function columnTop(voxels, lx, lz) {
+  for (let y = CHUNK_SY - 1; y >= 0; y--) {
+    const def = BLOCKS[voxels[voxelIndex(lx, y, lz)]];
+    if (def && def.opaque) return y;
+  }
+  return -1;
+}
+
+/** Every column's topmost opaque block, for sky exposure lookups. */
+function columnTops(voxels) {
+  const top = new Int16Array(CHUNK_SX * CHUNK_SZ);
+  for (let lz = 0; lz < CHUNK_SZ; lz++) {
+    for (let lx = 0; lx < CHUNK_SX; lx++) top[lx + lz * CHUNK_SX] = columnTop(voxels, lx, lz);
+  }
+  return top;
+}
+
 export class World {
   /**
    * @param {THREE.Scene} scene
@@ -146,6 +164,18 @@ export class World {
     // Lit, shadowed and animated; see terrainMaterial.js for the model.
     this.opaqueMaterial = createTerrainMaterial(map);
     this.waterMaterial = createWaterMaterial(map);
+    this.shadowMaterial = createTerrainDepthMaterial();
+  }
+
+  /**
+   * Fast leaves (the Low graphics tier): canopies become solid shells with far
+   * fewer faces. The worker rebuilds every loaded chunk when this changes.
+   */
+  setFastLeaves(on) {
+    on = !!on;
+    if (on === (this.fastLeaves ?? false)) return;
+    this.fastLeaves = on;
+    this.worker.postMessage({ type: 'options', fastLeaves: on });
   }
 
   _initWorker() {
@@ -233,13 +263,19 @@ export class World {
         // The chunk may have been unloaded while the worker was busy.
         if (!chunk) break;
         chunk.voxels = msg.voxels;
+        chunk.light = msg.light ?? null;
+        chunk.top = columnTops(msg.voxels);
         this.uploadQueue.push(msg);
+        // The world map records what it sees as chunks arrive.
+        if (this.onChunkVoxels) this.onChunkVoxels(chunk);
         break;
       }
 
       case 'remesh': {
         const chunk = this.chunks.get(chunkKey(msg.cx, msg.cz));
         if (!chunk) break;
+        // An edit that moved light arrives with the new mesh.
+        chunk.light = msg.light ?? null;
         // Edits should appear immediately — bypass the frame budget.
         this._uploadMeshes(chunk, msg.opaque, msg.water);
         break;
@@ -476,6 +512,8 @@ export class World {
     geometry.setAttribute('color', new THREE.BufferAttribute(data.colors, 3));
     // Sway weight and surface flag, as normalised bytes.
     if (data.fx) geometry.setAttribute('fx', new THREE.BufferAttribute(data.fx, 2, true));
+    // Which atlas tile each quad repeats; the UVs are block-local.
+    geometry.setAttribute('tile', new THREE.BufferAttribute(data.tiles, 1));
     geometry.setIndex(new THREE.BufferAttribute(data.indices, 1));
     geometry.computeBoundingSphere(); // required for frustum culling
 
@@ -484,6 +522,7 @@ export class World {
     mesh.renderOrder = renderOrder;
     // Solid terrain throws shadows; water only catches them.
     mesh.castShadow = renderOrder === 0;
+    if (mesh.castShadow) mesh.customDepthMaterial = this.shadowMaterial;
     mesh.receiveShadow = true;
     // Chunks never move, so skip the per-frame matrix recomputation.
     mesh.updateMatrix();
@@ -558,6 +597,8 @@ export class World {
 
     const previous = chunk.voxels[voxelIndex(toLocalCoord(wx), wy, toLocalCoord(wz))];
     chunk.voxels[voxelIndex(toLocalCoord(wx), wy, toLocalCoord(wz))] = id;
+    if (chunk.top) chunk.top[toLocalCoord(wx) + toLocalCoord(wz) * CHUNK_SX] = columnTop(chunk.voxels, toLocalCoord(wx), toLocalCoord(wz));
+    if (this.onColumnChanged && previous !== id) this.onColumnChanged(wx, wz, chunk, wy);
 
     // Replacing a block discards whatever it was holding — but a furnace
     // lighting up or going out is the *same* furnace, so keep its contents.
@@ -632,6 +673,29 @@ export class World {
     if (this._pendingSync.length === 0) return;
     this.worker.postMessage({ type: 'setBlocks', changes: this._pendingSync });
     this._pendingSync = [];
+  }
+
+  /** Torchlight level (0-15) at a block, from the worker's light pass. */
+  getBlockLight(wx, wy, wz) {
+    wx = Math.floor(wx); wy = Math.floor(wy); wz = Math.floor(wz);
+    if (wy < 0 || wy >= CHUNK_SY) return 0;
+    const chunk = this.getChunk(toChunkCoord(wx), toChunkCoord(wz));
+    if (!chunk || !chunk.light) return 0;
+    return chunk.light[voxelIndex(toLocalCoord(wx), wy, toLocalCoord(wz))];
+  }
+
+  /**
+   * How much sky a position can see, 0.1-1, by the same rule the mesher uses
+   * for terrain: full above the column's topmost opaque block, fading with
+   * depth below it. Lets mobs and items be lit to match the ground they stand on.
+   */
+  skyExposure(wx, wy, wz) {
+    wx = Math.floor(wx); wz = Math.floor(wz);
+    const chunk = this.getChunk(toChunkCoord(wx), toChunkCoord(wz));
+    if (!chunk || !chunk.top) return 1;
+    const top = chunk.top[toLocalCoord(wx) + toLocalCoord(wz) * CHUNK_SX];
+    if (wy > top) return 1;
+    return Math.max(0.1, 1 - (top - Math.floor(wy)) * 0.11);
   }
 
   /**

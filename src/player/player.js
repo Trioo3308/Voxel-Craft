@@ -88,6 +88,10 @@ export class Player {
     this.waypoints = [];
     /** Portals you have lit or arrived through, `{kind, dimension, x, y, z}`. */
     this.portals = [];
+    /** Every place you have died, newest last, `{dimension, x, z}`. */
+    this.deathLog = [];
+    /** Structures you have found, `{kind, dimension, x, z}`. */
+    this.discovered = [];
     /**
      * Last place you stood on solid ground out of lava. A death in the void or
      * in a lava lake buries your things here instead of where you ended up.
@@ -1152,7 +1156,7 @@ export class Player {
       mob.attuned = true;
       if (mob.refreshModel) mob.refreshModel();
       if (!this.creative) this.inventory.consumeSelected(1);
-      audio.mobSound(mob.type.voice, 'idle', 0);
+      audio.mobSound(mob.type.voice, 'idle', 0, mob.position);
       this.didSwing = true;
       if (this.onSustingusAttuned) this.onSustingusAttuned(mob);
       return true;
@@ -1165,7 +1169,7 @@ export class Player {
       mob.sitting = false;
       if (mob.refreshModel) mob.refreshModel();
       if (!this.creative) this.inventory.consumeSelected(1);
-      audio.mobSound(mob.type.voice, 'idle', 0);
+      audio.mobSound(mob.type.voice, 'idle', 0, mob.position);
       this.didSwing = true;
       if (this.onMobTamed) this.onMobTamed(mob);
       return true;
@@ -1179,7 +1183,7 @@ export class Player {
       mob.sitting = !mob.sitting;
       mob.memory.target = null;
       if (mob.refreshModel) mob.refreshModel();
-      audio.mobSound(mob.type.voice, 'idle', 0);
+      audio.mobSound(mob.type.voice, 'idle', 0, mob.position);
       this.didSwing = true;
       if (this.onMobSit) this.onMobSit(mob);
       return true;
@@ -1191,7 +1195,7 @@ export class Player {
 
     mob.loveTimer = BREED_LOVE_SECONDS;
     if (!this.creative) this.inventory.consumeSelected(1);
-    audio.mobSound(mob.type.voice, 'idle', 0);
+    audio.mobSound(mob.type.voice, 'idle', 0, mob.position);
     this.didSwing = true;
     if (ctx.entities.onMobInLove) ctx.entities.onMobInLove(mob);
     return true;
@@ -1512,7 +1516,7 @@ export class Player {
 
     this.inventory.consumeSelected(1);
     this.inventory.add(ITEM_ID.BUCKET_MILK, 1);
-    audio.mobSound(hit.mob.type.voice, 'idle', 0);
+    audio.mobSound(hit.mob.type.voice, 'idle', 0, hit.mob.position);
     return true;
   }
 

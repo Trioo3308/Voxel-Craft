@@ -235,6 +235,10 @@ export async function captureState(game, meta = {}) {
       lastDeath: player.lastDeath ?? null,
       waypoints: player.waypoints,
       portals: player.portals,
+      /** Where you have died, for the crosses on the map. */
+      deathLog: player.deathLog,
+      /** Structures you have come across, marked on the map and compass. */
+      discovered: player.discovered,
       air: player.air,
       health: player.survival.health,
       hunger: player.survival.hunger,
@@ -268,6 +272,10 @@ export async function captureState(game, meta = {}) {
     edits,
     /** Shrines already stocked, so returning does not re-roll their loot. */
     shrines: [...game._shrinesDone],
+    /** Peaceful, Easy, Normal or Hard. Changeable any time; see difficulty.js. */
+    difficulty: game.difficultyId ?? 'normal',
+    /** What you have explored, for the world map. See exploration.js. */
+    exploration: game.exploration ? game.exploration.serialize() : {},
     /** Weather carries over, so logging out in a storm means logging in to one. */
     weather: game.weather ? game.weather.serialize() : null,
 
@@ -303,6 +311,8 @@ export async function applyState(game, save) {
   player.air = typeof p.air === 'number' ? p.air : player.air;
   player.waypoints = Array.isArray(p.waypoints) ? p.waypoints.filter((w) => w && typeof w.x === 'number') : [];
   player.portals = Array.isArray(p.portals) ? p.portals.filter((w) => w && typeof w.x === 'number') : [];
+  player.deathLog = Array.isArray(p.deathLog) ? p.deathLog.filter((d) => d && typeof d.x === 'number') : [];
+  player.discovered = Array.isArray(p.discovered) ? p.discovered.filter((d) => d && typeof d.x === 'number') : [];
   player.lastSafe.copy(player.position);
   // Restore the cap before the value, or a boosted player loads clamped back
   // down to twenty. Old saves have no field and keep the default.
@@ -334,6 +344,10 @@ export async function applyState(game, save) {
 
   game.sky.setTime(save.time ?? 0.1);
   game.sky.dayCount = save.dayCount ?? 0;
+  // Worlds from before difficulty existed were balanced as Normal.
+  if (game.setDifficulty) game.setDifficulty(save.difficulty ?? 'normal', false);
+  // The map remembers ids through the same palette as block edits.
+  if (game.exploration) game.exploration.load(save.exploration, translate);
 
   // Progress predates neither field, so old saves simply start empty.
   if (game.achievements) game.achievements.load(save.achievements);
@@ -447,6 +461,7 @@ export const SaveManager = {
         formatVersion: w.formatVersion,
         terrainVersion: w.terrainVersion,
         allowCreative: w.allowCreative === true,
+        difficulty: w.difficulty ?? 'normal',
         thumbnail: typeof w.thumbnail === 'string' ? w.thumbnail : null,
         dayCount: w.dayCount ?? 0,
         // `list()` reads raw records without migrating, so it sees both the v2
@@ -496,6 +511,7 @@ export const SaveManager = {
       updatedAt: Date.now(),
       playTimeSeconds: 0,
       allowCreative,
+      difficulty: 'normal',
       palette: buildPalette(),
       player: null, // filled in on first save
       inventory: null,

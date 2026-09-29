@@ -27,11 +27,12 @@ export const ACTIONS = [
   { id: 'drop',      label: 'Drop item',    default: 'KeyQ',        group: 'Actions',  desc: 'Throw one; hold Sprint for the whole stack' },
   { id: 'progress',  label: 'Progress',     default: 'KeyL',        group: 'Actions',  desc: 'Achievements and statistics' },
   { id: 'waypoint',  label: 'Waypoint',     default: 'KeyN',        group: 'Actions',  desc: 'Mark this spot on the compass; hold Sprint to remove the nearest' },
+  { id: 'map',       label: 'World map',    default: 'KeyM',        group: 'Actions',  desc: 'The map of everywhere you have explored' },
 
   { id: 'creative',  label: 'Game mode',    default: 'KeyG',        group: 'Options',  desc: 'Switch between survival and creative' },
   { id: 'fly',       label: 'Fly',          default: 'KeyF',        group: 'Options',  desc: 'Toggle flight (creative only)' },
   { id: 'debug',     label: 'Debug info',   default: 'F3',          group: 'Options',  desc: 'Show position, biome and performance' },
-  { id: 'mute',      label: 'Mute sound',   default: 'KeyM',        group: 'Options',  desc: 'Silence all audio' },
+  { id: 'mute',      label: 'Mute sound',   default: 'KeyK',        group: 'Options',  desc: 'Silence all audio' },
   { id: 'settings',  label: 'Settings',     default: 'F1',          group: 'Options',  desc: 'Open this screen' },
 ];
 
@@ -86,6 +87,10 @@ export class Keybinds {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const stored = JSON.parse(raw);
+      // The map took M, which used to be mute. Anyone who never chose M for
+      // mute on purpose (their bindings predate the map) moves to the new
+      // default rather than having one key do both.
+      if (!('map' in stored) && stored.mute === 'KeyM') delete stored.mute;
       // Only accept ids we still know about, so removing an action cannot
       // resurrect a stale binding.
       for (const action of ACTIONS) {

@@ -7,6 +7,7 @@
  * mobs all talk to one small, testable state machine.
  */
 
+import { difficulty } from './difficulty.js';
 import Settings from '../settings.js';
 
 /** Exhaustion needed to consume one saturation/hunger point. */
@@ -88,6 +89,8 @@ export class Survival {
 
   addExhaustion(amount) {
     if (this.dead) return;
+    // On Peaceful hunger never drops.
+    if (!difficulty.rules.hunger) return;
     this.exhaustion += amount;
 
     while (this.exhaustion >= EXHAUSTION_PER_POINT) {
@@ -161,7 +164,9 @@ export class Survival {
     this.addExhaustion(0.01 * dt);
 
     // --- Regeneration: a well-fed player slowly heals ---------------------
-    if (this.hunger >= 18 && this.health < this.maxHealth) {
+    // On Peaceful you heal whatever your hunger, as in Minecraft.
+    const fed = this.hunger >= 18 || difficulty.rules.passiveRegen;
+    if (fed && this.health < this.maxHealth) {
       this._regenTimer += dt;
       const interval = this.saturation > 0 ? 2.0 : 4.0;
       if (this._regenTimer >= interval) {
@@ -181,7 +186,10 @@ export class Survival {
       this._starveTimer += dt;
       if (this._starveTimer >= 4.0) {
         this._starveTimer = 0;
-        if (this.health > STARVE_FLOOR) this.damage(Math.min(1, this.health - STARVE_FLOOR), 'starve');
+        // How low starving takes you depends on the difficulty: half a heart
+        // on Normal, five hearts on Easy, all the way on Hard.
+        const floor = difficulty.id === 'normal' ? STARVE_FLOOR : difficulty.rules.starveFloor;
+        if (this.health > floor) this.damage(Math.min(1, this.health - floor), 'starve');
       }
     } else {
       this._starveTimer = 0;

@@ -224,7 +224,7 @@ export const TILE = {
   AERCLOUD: 255,
 
   // --- Death -----------------------------------------------------------------
-  // Two of the last free cells in the atlas; see the note on ATLAS_COLS.
+  // Two cells squeezed into a gap in the first half of the atlas.
   GRAVESTONE: 94,
   GRAVESTONE_TOP: 95,
 
@@ -272,8 +272,53 @@ export function armorTile(piece, material) {
   return TILE.ARMOR_BASE + ARMOR_PIECES.indexOf(piece) * GEAR_STRIDE + GEAR_MATERIALS.indexOf(material);
 }
 
-export const ATLAS_COLS = 16; // 16x16 tiles
+/**
+ * The atlas is 16 tiles across and 32 down: 512 tiles. It was a 16x16 square
+ * until the Aether and the Comb filled it; tiles 256 and up are free.
+ *
+ * Nothing outside textures.js and the atlas lookups may assume it is square.
+ * The terrain no longer stores atlas positions at all (the mesher emits a tile
+ * index and the shader finds it), so growing it again only means changing
+ * ATLAS_ROWS.
+ */
+export const ATLAS_COLS = 16;
+export const ATLAS_ROWS = 32;
 export const ATLAS_TILE_PX = 16;
+
+/**
+ * Some tiles have a second painting exactly this far along the atlas, in its
+ * second half. Only the tiles listed below reserve that slot; the rest of the
+ * second half is free.
+ *   - VARIANT_TILES: common ground, re-painted from the same painter with a
+ *     different seed. The shader picks one of the two per block.
+ *   - LEAF_TILES: an opaque version for fast leaves (the Low graphics tier).
+ */
+export const ALT_TILE_OFFSET = 256;
+
+export const VARIANT_TILES = [
+  TILE.GRASS_TOP, TILE.GRASS_SIDE, TILE.DIRT, TILE.STONE, TILE.SAND, TILE.GRAVEL, TILE.SNOW_TOP,
+];
+
+export const LEAF_TILES = [TILE.LEAVES, TILE.ACACIA_LEAVES, TILE.SPRUCE_LEAVES, TILE.AETHER_LEAVES];
+
+/**
+ * Tiles with no particular way up: noise-painted ground. The shader turns and
+ * flips them per block on tops and bottoms, and mirrors them on sides (never
+ * turns, so a grass fringe stays on top), which hides the grid a repeated
+ * texture draws across open ground.
+ */
+export const NATURAL_TILES = [
+  TILE.GRASS_TOP, TILE.GRASS_SIDE, TILE.DIRT, TILE.STONE, TILE.SAND, TILE.GRAVEL,
+  TILE.SNOW_TOP, TILE.SNOW_SIDE, TILE.CLAY,
+  TILE.DRY_GRASS_TOP, TILE.DRY_GRASS_SIDE, TILE.PODZOL_TOP, TILE.PODZOL_SIDE,
+  TILE.SWAMP_GRASS_TOP, TILE.SWAMP_GRASS_SIDE,
+  TILE.NETHERRACK, TILE.SOUL_SAND,
+  TILE.AETHER_GRASS_TOP, TILE.AETHER_GRASS_SIDE, TILE.AETHER_DIRT,
+];
+
+/** Flags above the 9-bit tile index in the mesher's `tile` attribute. */
+export const TILE_NATURAL = 512;
+export const TILE_VARIED = 1024;
 
 // ---------------------------------------------------------------------------
 // Block ids. Keep AIR at 0 — a lot of code treats 0 as "nothing here".

@@ -11,6 +11,8 @@
  */
 
 const STORAGE_KEY = 'voxelcraft.prefs.v1';
+/** Bumped when stored options need migrating; see load(). */
+const PREFS_VERSION = 2;
 
 const percent = (v) => `${Math.round(v * 100)}%`;
 
@@ -81,6 +83,14 @@ export const PREFERENCES = [
   {
     id: 'compass', group: 'interface', label: 'Compass strip', type: 'toggle', default: true,
     desc: 'Bearings and markers across the top of the screen.',
+  },
+  {
+    id: 'captions', group: 'interface', label: 'Sound captions', type: 'toggle', default: false,
+    desc: 'Show what you can hear, and where it is, in the corner.',
+  },
+  {
+    id: 'minimap', group: 'interface', label: 'Minimap', type: 'toggle', default: false,
+    desc: 'A small map of your surroundings in the corner.',
   },
   {
     id: 'damageFlash', group: 'interface', label: 'Damage flash', type: 'toggle', default: true,
@@ -161,6 +171,9 @@ export class Preferences {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const stored = JSON.parse(raw);
+      // Settings saved before Graphics had an Auto level recorded High only
+      // because it was the default then. Move them to Auto, once.
+      if ((stored.version ?? 1) < 2 && stored.graphics === 'high') delete stored.graphics;
       for (const def of PREFERENCES) {
         if (def.id in stored) this.values[def.id] = sanitize(def, stored[def.id]);
       }
@@ -171,7 +184,7 @@ export class Preferences {
 
   save() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.values));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...this.values, version: PREFS_VERSION }));
     } catch {
       // Private browsing can block storage; options just will not persist.
     }

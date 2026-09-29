@@ -106,14 +106,19 @@ that broadcast would go.
 | --- | --- |
 | `W` `A` `S` `D` | Move |
 | Mouse | Look |
+| Left click | Hold to mine · click to attack a mob |
+| Right click | Place block · eat held food |
+| `1`–`9`, mouse wheel | Select hotbar slot |
+| `E` | Inventory (creative palette appears in creative mode) |
 | `Space` | Jump / swim up / fly up |
 | `Shift` | Crouch — shorter hitbox, and you cannot walk off a ledge |
 | `Ctrl` | Sprint (works while jumping) |
 | `Q` / `Sprint+Q` | Drop one item / the whole stack |
 | `L` | Achievements and statistics |
+| `M` | World map |
 | `N` / `Sprint+N` | Drop a waypoint here / remove the nearest one |
 | Middle click | Pick block: put the block you are looking at in your hand |
-| `M` | Mute sound |
+| `K` | Mute sound |
 | `F1` | Settings — full control list, and rebind anything |
 
 Every key above is rebindable in Settings, reachable from the title screen, the
@@ -132,10 +137,6 @@ A handful of combinations (`Ctrl+W`, `Ctrl+T`, `Ctrl+N`) are reserved by the
 browser and `preventDefault` cannot touch them. Settings offers a **Capture all
 keys** button which uses the Keyboard Lock API in fullscreen — the only way to
 intercept those. It is opt-in, since it takes over the whole keyboard.
-| Left click | Hold to mine · click to attack a mob |
-| Right click | Place block · eat held food |
-| `1`–`9`, mouse wheel | Select hotbar slot |
-| `E` | Inventory (creative palette appears in creative mode) |
 
 ### Inventory handling
 
@@ -319,6 +320,11 @@ The save format is at **v3**. A v2 world's flat edit list is filed under the
 overworld and its block-entity keys gain a dimension prefix, so an existing world
 opens with its buildings, chests and furnaces intact and simply gains access to
 the Comb.
+
+The map, the death history, discovered structures and difficulty arrived without
+a format bump: each is an optional field. A world saved before them opens on
+Normal with a blank map, which fills in as you explore. Map tiles store block
+*names* through the same palette as edits, so they survive renumbering too.
 
 One deliberate exception to the terrain rule: **combium ore is not gated behind a
 terrain version**. Gating it would lock every existing world out of the dimension
@@ -577,7 +583,7 @@ Settings used to be key bindings and nothing else. It now has four pages:
 swaying plants, particles, view bobbing, speed effects), **Audio** (master,
 music, effects), **Controls** (sensitivity, invert mouse, auto-jump, and every
 key binding) and **Interface** (interface size, coordinates, compass strip,
-damage flash). They live in `localStorage`, apart from world saves, and apply
+minimap, sound captions, damage flash). They live in `localStorage`, apart from world saves, and apply
 the moment you move a slider.
 
 ### A new look
@@ -628,6 +634,70 @@ with whatever you can make right now pinned at the top; clicking one lays the
 ingredients out in the grid for you (shift-click for as many as you can afford).
 Anything else opens its page: how it is made, how many of each ingredient you
 have, what it smelts from, and what it is used in.
+
+### Part two: a map, light that moves, and a lighter world
+
+The second half of the update, with Jev again making the calls (rounds three
+and four in [JEV_DECISIONS.md](JEV_DECISIONS.md)).
+
+**A world map.** `M` opens a satellite view of everywhere you have been: each
+column is remembered as its top block, its height and how deep any water over
+it is, then drawn hill-shaded from the north-west, with water darkening as it
+deepens, on a painted parchment sheet with a compass rose. Ground you have not
+seen stays fog. Drag to pan, scroll to zoom, double-click to drop a waypoint;
+the side panel renames, recolours, hides and deletes them. Dungeons, skate parks,
+Nether fortresses and Comb shrines mark themselves on the map and the compass
+strip the first time you come near, and every death leaves a small cross. A
+corner **minimap** is an Interface option, off by default. The map key took `M`,
+so mute moved to `K`; if you had rebound mute yourself, your binding is kept.
+
+**Difficulty.** Chosen when you create a world and changeable any time from the
+pause menu:
+
+| | Monsters | Damage from monsters | Hunger | Starving |
+| --- | --- | --- | --- | --- |
+| Peaceful | none (hostiles already out vanish) | half | never drops; health regenerates | cannot hurt |
+| Easy | 60% as many | half | normal | stops at five hearts |
+| Normal | as balanced | full | normal | stops at half a heart |
+| Hard | 35% more, in bigger groups | one and a half times | normal | can kill |
+
+**Light that moves.** Holding a torch, glowstone or a lantern lights the ground
+around you as you walk, without placing anything: a 40-block volume around the
+camera is flooded like block light, up to 15 times a second, and the terrain
+shader reads it alongside the baked light. Glowing creatures (embers, drifters,
+the Warden) light the blocks around them the same way. Mobs, dropped items and
+your own hand are now lit by the light where they stand, so a zombie in an unlit
+cave is a dark shape until your torch reaches it, and a Comb mite's red glow
+shows first.
+
+**Sound captions.** An Interface option for playing muted or hard of hearing: a
+short list in the bottom-right ("Zombie groans", "Door opens", "Explosion"), each
+line fading as it ages, with an arrow that keeps pointing at the sound as you
+turn. A herd of cows is one refreshed "Cow moos", not six.
+
+**A lighter, sharper world.** Chunk meshes are greedily merged (see *How
+performance is achieved*). That needed texture coordinates to stop being atlas
+positions: the mesher now emits a tile index plus block-local UVs, and the
+shader finds the tile. Three things fell out of that:
+
+- The atlas grew from 256 tiles to 512. It had eight free.
+- Every texel is drawn the same width. The old baked UVs squeezed the outermost
+  row and column of each texture to half a texel.
+- Ground varies block by block. Grass, dirt, sand, gravel, snow, stone and the
+  other noise-painted ground turn and flip per block on tops (sides only mirror,
+  so a grass fringe stays on top), and the most common ones also have a second
+  painting to swap in, so open ground no longer shows a grid of identical tiles.
+  It is worked out per pixel, so a quad merged from twenty blocks still varies
+  within itself.
+
+Merged quads make T-junctions, where one quad's edge runs past a smaller
+neighbour's corners; rounding there can open hairline cracks that twinkle with
+sky. Each merged quad now overlaps its edges by two ten-thousandths of a block,
+far below a pixel, and a check that renders the terrain over a magenta sky finds
+no gaps at all where it used to find a few per frame.
+
+The recorded sounds now start downloading when the page loads rather than on
+your first click, so the first footsteps are recordings, not stand-ins.
 
 ## Underground
 
@@ -1021,6 +1091,14 @@ The world is infinite, so the work has to be bounded at every stage:
    block" mesher would emit nearly 200,000. The padded snapshot mirrors the
    floor block into its `y = -1` skirt so chunks do not emit the permanently
    invisible underside of the world (another 512 triangles each).
+   **Greedy merging** then joins runs of faces that would look identical (same
+   tile, the same light at all four corners, the same water flag) into single
+   quads. It is lossless by construction, and was checked against the unmerged
+   mesher over 196 chunks in all four dimensions: every block face comes out
+   with the same texture, light and flags. It removes 8% of the Overworld's
+   triangles, 19% of the Nether's and 64% of the Aether's; the Overworld keeps
+   most of its faces because swaying leaves and light gradients cannot merge
+   without changing how they look.
 3. **One draw call per chunk.** A single procedural texture atlas plus one
    material means each chunk is one `Mesh`, and Three.js frustum-culls it for free.
 4. **Light measured once, applied cheaply.** Sky exposure, torchlight and
@@ -1028,7 +1106,8 @@ The world is infinite, so the work has to be bounded at every stage:
    channels. The shader only combines them with the sun, so the per-fragment
    cost is a handful of multiplies plus one shadow-map lookup. The Graphics
    option scales the expensive parts (shadow resolution, bloom), and "auto"
-   steps down by itself if the frame rate drops.
+   steps down by itself if the frame rate drops. Low also draws **fast leaves**:
+   a canopy becomes one solid shell, about 29% fewer triangles in a forest.
 5. **Budgeted uploads.** At most 2 chunk meshes are pushed to the GPU per frame
    (`Settings.maxUploadsPerFrame`) and at most 6 generation jobs are in flight,
    so streaming never causes a frame hitch.

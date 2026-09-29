@@ -6,6 +6,7 @@
  * tunnel through a wall between frames.
  */
 
+import { difficulty } from '../player/difficulty.js';
 import * as THREE from 'three';
 import { raycastVoxels } from '../player/raycast.js';
 import { audio } from '../engine/audio.js';
@@ -63,7 +64,7 @@ export class Arrow {
     const hit = raycastVoxels(this.world, this.position, dir, distance);
     if (hit) {
       this.removed = true;
-      audio.arrowHit();
+      audio.arrowHit(this.position);
       return;
     }
 
@@ -90,9 +91,9 @@ export class Arrow {
         // Credit the shooter, so the death screen names it.
         const from = this.owner?.position ?? this.position;
         player.hitFrom = { x: from.x, z: from.z, at: performance.now() };
-        player.survival.damage(this.damage, 'mob', this.owner?.type ?? null);
+        player.survival.damage(Math.max(0.5, this.damage * difficulty.rules.damage), 'mob', this.owner?.type ?? null);
         this.removed = true;
-        audio.arrowHit();
+        audio.arrowHit(this.position);
         return true;
       }
     }
@@ -111,7 +112,7 @@ export class Arrow {
 
         mob.takeDamage(this.damage, { x: dir.x, y: 0.3, z: dir.z });
         this.removed = true;
-        audio.arrowHit();
+        audio.arrowHit(this.position);
         return true;
       }
     }

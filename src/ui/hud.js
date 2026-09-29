@@ -1568,6 +1568,7 @@ export class HUD {
     if (this.chestScreen.classList.contains('show')) this.closeChest();
     if (this.signScreen.classList.contains('show')) this.closeSign();
     if (this.progressScreen.classList.contains('show')) this.closeProgress();
+    if (this.game.worldMap?.isOpen) this.game.worldMap.close();
   }
 
   get anyContainerOpen() {
@@ -1577,7 +1578,8 @@ export class HUD {
       this.furnaceScreen.classList.contains('show') ||
       this.chestScreen.classList.contains('show') ||
       this.signScreen.classList.contains('show') ||
-      this.progressScreen.classList.contains('show')
+      this.progressScreen.classList.contains('show') ||
+      !!this.game.worldMap?.isOpen
     );
   }
 

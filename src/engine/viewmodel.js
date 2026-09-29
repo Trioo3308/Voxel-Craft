@@ -13,7 +13,7 @@
 import { prefs } from './preferences.js';
 import * as THREE from 'three';
 import { getAtlasTexture, getGripPoint } from '../world/textures.js';
-import { getIconTile, isBlockId, getThing, ATLAS_COLS, FACE_PY, BLOCKS } from '../world/blocks.js';
+import { getIconTile, isBlockId, getThing, ATLAS_COLS, ATLAS_ROWS, FACE_PY, BLOCKS } from '../world/blocks.js';
 
 const SKIN = 0xc98b62;
 const SLEEVE = 0x3f6fb5;
@@ -44,10 +44,12 @@ export class ViewModel {
     this.camera.position.set(0, 0, 0);
 
     // Lighting just for the hand, so it reads as solid regardless of world time.
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x606060, 1.1));
+    this.hemi = new THREE.HemisphereLight(0xffffff, 0x606060, 1.1);
+    this.scene.add(this.hemi);
     const key = new THREE.DirectionalLight(0xffffff, 0.9);
     key.position.set(-0.6, 1, 0.8);
     this.scene.add(key);
+    this.key = key;
 
     /** Holds the arm and whatever is being held, so both swing together. */
     this.pivot = new THREE.Group();
@@ -100,19 +102,20 @@ export class ViewModel {
     const geometry = new THREE.BoxGeometry(0.3, 0.3, 0.3);
     const block = BLOCKS[id];
     const uv = geometry.attributes.uv;
-    const span = 1 / ATLAS_COLS;
+    const spanU = 1 / ATLAS_COLS;
+    const spanV = 1 / ATLAS_ROWS;
 
     // BoxGeometry face order matches our own: +X, -X, +Y, -Y, +Z, -Z.
     for (let face = 0; face < 6; face++) {
       const tile = block ? block.tiles[face] : 0;
-      const u0 = (tile % ATLAS_COLS) * span;
-      const v0 = 1 - (Math.floor(tile / ATLAS_COLS) + 1) * span;
+      const u0 = (tile % ATLAS_COLS) * spanU;
+      const v0 = 1 - (Math.floor(tile / ATLAS_COLS) + 1) * spanV;
       for (let i = 0; i < 4; i++) {
         const index = face * 4 + i;
         uv.setXY(
           index,
-          u0 + (0.03 + uv.getX(index) * 0.94) * span,
-          v0 + (0.03 + uv.getY(index) * 0.94) * span
+          u0 + (0.03 + uv.getX(index) * 0.94) * spanU,
+          v0 + (0.03 + uv.getY(index) * 0.94) * spanV
         );
       }
     }
@@ -131,10 +134,10 @@ export class ViewModel {
     // Clone the atlas so each icon can carry its own UV offset.
     const texture = getAtlasTexture().clone();
     texture.needsUpdate = true;
-    texture.repeat.set(1 / ATLAS_COLS, 1 / ATLAS_COLS);
+    texture.repeat.set(1 / ATLAS_COLS, 1 / ATLAS_ROWS);
     texture.offset.set(
       (tile % ATLAS_COLS) / ATLAS_COLS,
-      1 - (Math.floor(tile / ATLAS_COLS) + 1) / ATLAS_COLS
+      1 - (Math.floor(tile / ATLAS_COLS) + 1) / ATLAS_ROWS
     );
 
     const material = new THREE.MeshBasicMaterial({
@@ -290,6 +293,17 @@ export class ViewModel {
       this._restRotation.y + s * 0.25,
       this._restRotation.z
     );
+  }
+
+  /**
+   * Light the hand by where you stand, so it darkens in a cave and warms by
+   * a torch like everything else, instead of glowing at full daylight.
+   */
+  setLight(k, warm) {
+    const level = Math.min(1.25, Math.max(0.12, k));
+    this.hemi.intensity = 1.1 * level;
+    this.key.intensity = 0.9 * level;
+    this.hemi.color.setRGB(1, 1 - 0.16 * warm, 1 - 0.4 * warm);
   }
 
   resize(aspect) {

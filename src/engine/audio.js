@@ -14,6 +14,8 @@
  * created lazily and `resume()` is called on the first click.
  */
 
+import { mobCaption } from '../ui/captions.js';
+
 /** Per-material voicing for footsteps and mining. */
 const MATERIALS = {
   grass:  { freq: 620,  q: 0.9, decay: 0.10, gain: 0.32, noise: 'pink' },
@@ -200,9 +202,13 @@ export class AudioEngine {
     this._reverbLevel = 0;
     /** Decoded recordings by path, filled in the background after init. */
     this._samples = new Map();
+    /** Recordings downloaded ahead of the context, by path; see preload. */
+    this._raw = new Map();
     this._lastVariant = new Map();
     /** Where the next synthesised sound connects; see mobSound. */
     this._dest = null;
+    /** Called with (text, position) for each captioned sound. See captions.js. */
+    this.onCaption = null;
     this._noiseBuffers = {};
     this._lastPlay = new Map();
 
@@ -284,17 +290,33 @@ export class AudioEngine {
   // Recordings
   // -------------------------------------------------------------------------
 
-  /** Fetch and decode every recording, in the background. */
+  /**
+   * Start downloading every recording now, at boot. The audio context has to
+   * wait for a click, but the files do not: fetched early, they are already
+   * here when "Click to Play" unlocks sound, so the first footsteps are
+   * recordings rather than the synthesised stand-ins while 150 files arrive.
+   */
+  preload() {
+    for (const path of new Set(Object.values(SAMPLE_SETS).flat())) {
+      if (this._raw.has(path) || this._samples.has(path)) continue;
+      this._raw.set(path, fetch(new URL(`../../assets/audio/${path}.ogg`, import.meta.url))
+        .then((response) => (response.ok ? response.arrayBuffer() : null))
+        .catch(() => null));
+    }
+  }
+
+  /** Decode every recording, in the background; called once the context exists. */
   _loadSamples() {
-    const paths = new Set(Object.values(SAMPLE_SETS).flat());
-    for (const path of paths) {
-      fetch(new URL(`../../assets/audio/${path}.ogg`, import.meta.url))
-        .then((response) => (response.ok ? response.arrayBuffer() : Promise.reject(response.status)))
-        .then((data) => this.ctx.decodeAudioData(data))
+    this.preload(); // anything not already on its way
+    for (const [path, pending] of this._raw) {
+      pending
+        .then((data) => (data ? this.ctx.decodeAudioData(data) : Promise.reject()))
         .then((buffer) => this._samples.set(path, buffer))
         // A missing or undecodable file just leaves that sound synthesised.
         .catch(() => {});
     }
+    // The promises hold the bytes until they are decoded; nothing else needs them.
+    this._raw.clear();
   }
 
   /**
@@ -354,6 +376,11 @@ export class AudioEngine {
     const target = 0.08 + amount * 0.55;
     this._reverbLevel += (target - this._reverbLevel) * 0.05;
     this._reverb.gain.value = this._reverbLevel;
+  }
+
+  /** Report a sound to the captions, with where it came from (or null). */
+  caption(text, position = null) {
+    if (this.onCaption && text) this.onCaption(text, position);
   }
 
   // Menu sounds. Quiet, dry, and never throttled into silence by world sounds.
@@ -545,6 +572,7 @@ export class AudioEngine {
   }
 
   playerHurt() {
+    this.caption('You take damage');
     // The hit itself is a recording; a short, quiet strained blip under it
     // still says it was you that was hurt.
     const hit = this.play('hurt', { gain: 0.7, jitter: 0.06 });
@@ -570,6 +598,7 @@ export class AudioEngine {
   }
 
   splash() {
+    this.caption('Splash');
     this.noise({ freq: 800, q: 0.5, decay: 0.35, gain: 0.3, kind: 'pink', type: 'lowpass' });
     this.noise({ freq: 2200, q: 0.7, decay: 0.18, gain: 0.16, delay: 0.03 });
   }
@@ -581,6 +610,7 @@ export class AudioEngine {
   }
 
   eat() {
+    this.caption('Eating');
     for (let i = 0; i < 3; i++) {
       this.noise({ freq: 420, q: 1.4, decay: 0.08, gain: 0.18, kind: 'pink', delay: i * 0.12 });
     }
@@ -612,7 +642,8 @@ export class AudioEngine {
     this.noise({ freq: 1800, q: 2, decay: 0.09, gain: 0.12 });
   }
 
-  arrowHit() {
+  arrowHit(position = null) {
+    this.caption('Arrow hits', position);
     if (this.play('arrowHit', { gain: 0.55, rate: 1.2 })) return;
     this.noise({ freq: 1400, q: 3, decay: 0.09, gain: 0.2 });
     this.thud({ freq: 200, gain: 0.12, duration: 0.08 });
@@ -625,7 +656,7 @@ export class AudioEngine {
    * @param distance metres from the listener; used to attenuate and to drop
    *   calls from animals too far away to be worth hearing.
    */
-  mobSound(profile, kind = 'idle', distance = 0) {
+  mobSound(profile, kind = 'idle', distance = 0, position = null) {
     if (!this.ready || !profile) return;
 
     // Distance culling and falloff. Without this, a herd two hundred blocks
@@ -638,6 +669,8 @@ export class AudioEngine {
     // produce a continuous stream of noise.
     if (kind === 'idle' && !this._throttle('mobIdle', 1.6)) return;
     if (!this._throttle('mob:' + profile.name + kind, 0.25)) return;
+
+    this.caption(mobCaption(profile, kind), position);
 
     // Distance dulls a call as well as quietening it, which is what makes a
     // far-off zombie sound far off rather than just faint. Every synthesised
@@ -744,7 +777,8 @@ export class AudioEngine {
   }
 
   /** Explosion: deep boom plus a long debris tail. */
-  explosion(distance = 0) {
+  explosion(distance = 0, position = null) {
+    this.caption('Explosion', position);
     if (!this.ready) return;
     const falloff = Math.max(0, Math.pow(1 - Math.min(1, distance / 42), 1.5));
     if (falloff <= 0.02) return;
@@ -765,6 +799,7 @@ export class AudioEngine {
    * stops sounds like a firework, not weather.
    */
   thunder() {
+    this.caption('Thunder rolls');
     if (!this.ready) return;
     const near = Math.random() < 0.35;
     const gain = near ? 0.5 : 0.28;
@@ -795,6 +830,7 @@ export class AudioEngine {
    * @param intensity 0..1; 0 stops it.
    */
   rain(intensity, snow = false) {
+    if (intensity > 0.05 && this._throttle('rainCaption', 2.5)) this.caption(snow ? 'Snow falls' : 'Rain');
     if (!this.ready) return;
 
     if (intensity <= 0.01) {
@@ -904,6 +940,7 @@ export class AudioEngine {
    * inhabited, and anything frequent becomes wallpaper.
    */
   caveSound(depth) {
+    this.caption('Cave ambience');
     if (!this.ready) return;
     const pick = Math.random();
 
@@ -935,6 +972,7 @@ export class AudioEngine {
 
   /** A rocket leaving the ground: a hiss that climbs. */
   rocketLaunch() {
+    this.caption('Rocket launches');
     if (!this.ready) return;
     this.noise({ freq: 900, q: 0.5, decay: 0.7, gain: 0.16, kind: 'pink', type: 'bandpass' });
     this.tone({ freq: 220, endFreq: 900, duration: 0.7, gain: 0.08, type: 'sawtooth', lowpass: 2200 });
@@ -945,6 +983,7 @@ export class AudioEngine {
    * what separates it from an explosion.
    */
   fireworkBurst(distance = 0) {
+    this.caption('Firework bursts');
     if (!this.ready) return;
     const falloff = Math.max(0, Math.pow(1 - Math.min(1, distance / 90), 1.4));
     if (falloff <= 0.02) return;
@@ -1024,6 +1063,7 @@ export class AudioEngine {
   playMusic(name) {
     const tune = TUNES[name];
     if (!tune || !this.ready) return false;
+    this.caption('Music plays');
 
     this.stopMusic();
 
@@ -1145,14 +1185,16 @@ export class AudioEngine {
   }
 
   /** Door hinge. */
-  door(opening) {
+  door(opening, position = null) {
+    this.caption(opening ? 'Door opens' : 'Door closes', position);
     if (this.play(opening ? 'doorOpen' : 'doorClose', { gain: 0.5 })) return;
     this.noise({ freq: opening ? 700 : 520, q: 2.5, decay: 0.22, gain: 0.18, kind: 'pink' });
     this.tone({ freq: opening ? 220 : 180, endFreq: opening ? 300 : 140, duration: 0.18, gain: 0.1, type: 'triangle', lowpass: 900 });
   }
 
   /** Chest lid. */
-  chest(opening) {
+  chest(opening, position = null) {
+    this.caption(opening ? 'Chest opens' : 'Chest closes', position);
     if (this.play(opening ? 'chestOpen' : 'chestClose', { gain: 0.45, rate: opening ? 1.15 : 1 })) return;
     this.noise({ freq: 400, q: 1.6, decay: 0.2, gain: 0.16, kind: 'pink', type: 'lowpass' });
     this.tone({ freq: opening ? 180 : 150, endFreq: opening ? 260 : 110, duration: 0.16, gain: 0.09, type: 'triangle', lowpass: 800 });

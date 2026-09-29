@@ -23,9 +23,17 @@
  *   color.r  sky exposure, 0..1        color.g  torch light, 0..1
  *   color.b  ambient occlusion, 0..1, or 3.0 for an emissive block
  *   fx.x     sway weight, 0..1         fx.y     0.5 = under water, 1 = water surface
+ *   uv       block-local, repeating    tile     atlas tile index
+ *
+ * The texture lookup is ours too. The mesher merges runs of identical faces
+ * into one quad, so `uv` counts blocks across it (0..5 for five blocks) and
+ * the shader wraps it into the tile named by `tile`. The shadow pass needs the
+ * same lookup to cut leaves and glass out of their shadows; see
+ * createTerrainDepthMaterial.
  */
 
 import * as THREE from 'three';
+import { ATLAS_COLS, ATLAS_ROWS, ATLAS_TILE_PX, ALT_TILE_OFFSET, TILE_NATURAL } from '../world/blocks.js';
 
 /**
  * Uniforms shared by every terrain material, driven each frame by the sky.
@@ -57,15 +65,87 @@ export const terrainUniforms = {
   uCaustics: { value: 0.6 },
   /** 1 to sway plants, 0 to hold them still (the Swaying plants option). */
   uSway: { value: 1 },
+  /** Moving light around the camera; see dynamicLight.js. */
+  uDynLight: { value: null },
+  uDynOrigin: { value: new THREE.Vector3(1e9, 0, 0) },
+  uDynInvSize: { value: 1 / 40 },
+  /** Tiles across and down the atlas. */
+  uAtlasGrid: { value: new THREE.Vector2(ATLAS_COLS, ATLAS_ROWS) },
 };
+
+/**
+ * Where a point `f` (0..1 across the tile) of tile `t` sits in the atlas.
+ * Clamped to the centres of the tile's edge texels, so nearest sampling can
+ * never reach a neighbouring tile and every texel is drawn the same width (the
+ * old baked UVs squeezed the outermost ones to half size).
+ */
+const ATLAS_PARS = /* glsl */ `
+uniform vec2 uAtlasGrid;
+varying float vTile;
+vec2 atlasTileUv(float t, vec2 f) {
+  float row = floor((t + 0.5) / uAtlasGrid.x);
+  float col = t - row * uAtlasGrid.x;
+  f = clamp(f, vec2(${(0.5 / ATLAS_TILE_PX).toFixed(6)}), vec2(${(1 - 0.5 / ATLAS_TILE_PX).toFixed(6)}));
+  return vec2((col + f.x) / uAtlasGrid.x, 1.0 - (row + 1.0 - f.y) / uAtlasGrid.y);
+}
+`;
+
+/**
+ * Three's map lookup, through the atlas, with per-block variety: `vTile`
+ * carries the tile plus two flags from the mesher (blocks.js). NATURAL turns
+ * and flips the texture per block (sides only mirror, so a fringe stays on
+ * top); VARIED swaps in the tile's second painting for about half the blocks.
+ *
+ * The block is identified by floor(uv), which is exactly where the texture
+ * wraps, so a merged quad changes pattern on the block seams and nowhere else.
+ */
+const FRAGMENT_MAP = /* glsl */ `
+#ifdef USE_MAP
+{
+  float code = floor(vTile + 0.5);
+  float flags = floor(code / ${TILE_NATURAL}.0);
+  float t = code - flags * ${TILE_NATURAL}.0;
+  vec2 f = fract(vMapUv);
+  if (flags > 0.5) {
+    float h = blockHash(vec3(floor(vMapUv), 0.0) + vBlockKey);
+    float turn = floor(h * 8.0);
+    if (mod(flags, 2.0) > 0.5) {
+      if (turn > 3.5) f.x = 1.0 - f.x;
+      if (abs(vWorldNormal.y) > 0.5) {
+        float q = mod(turn, 4.0);
+        if (q > 2.5) f = vec2(1.0 - f.y, f.x);
+        else if (q > 1.5) f = 1.0 - f;
+        else if (q > 0.5) f = vec2(f.y, 1.0 - f.x);
+      }
+    }
+    if (flags > 1.5 && fract(h * 13.0) > 0.5) t += ${ALT_TILE_OFFSET}.0;
+  }
+  diffuseColor *= texture2D(map, atlasTileUv(t, f));
+}
+#endif
+`;
+
+/** The shadow pass: same tile, no variety (the varied tiles are all opaque). */
+const DEPTH_MAP = /* glsl */ `
+#ifdef USE_MAP
+{
+  float code = floor(vTile + 0.5);
+  float t = code - floor(code / ${TILE_NATURAL}.0) * ${TILE_NATURAL}.0;
+  diffuseColor *= texture2D(map, atlasTileUv(t, fract(vMapUv)));
+}
+#endif
+`;
 
 const VERTEX_PARS = /* glsl */ `
 #include <common>
 attribute vec2 fx;
+attribute float tile;
 uniform float uTime;
 uniform float uWind;
 uniform float uSway;
 varying vec2 vFx;
+varying float vTile;
+varying vec3 vBlockKey;
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 `;
@@ -83,6 +163,10 @@ vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);
 const VERTEX_DISPLACE = /* glsl */ `
 #include <begin_vertex>
 vFx = fx;
+vTile = tile;
+// Names the face's plane and chunk; floor(uv) names the block within it.
+vBlockKey = vec3(modelMatrix[3].x * 1.31, modelMatrix[3].z * 1.71,
+  dot(position, normal) * 2.37 + dot(normal, vec3(0.5, 1.0, 1.5)));
 {
   vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
   if (fx.x > 0.0 && uSway > 0.0) {
@@ -118,9 +202,20 @@ uniform vec3 uSunColor;
 uniform vec3 uSunFogColor;
 uniform float uSunFogStrength;
 uniform float uCaustics;
+uniform highp sampler3D uDynLight;
+uniform vec3 uDynOrigin;
+uniform float uDynInvSize;
 varying vec2 vFx;
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
+varying vec3 vBlockKey;
+${ATLAS_PARS}
+// Hash of a block key, 0..1 (Dave Hoskins' hash13).
+float blockHash(vec3 p) {
+  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+  p += dot(p, p.yxz + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
 
 // Light rippling across a sunlit floor under water. Snapped to the texture's
 // sixteenth-of-a-block grid, so it reads as pixel art rather than a smooth
@@ -150,6 +245,13 @@ const FRAGMENT_LIGHT = /* glsl */ `
   float torch = vColor.g;
   float occ = min(vColor.b, 1.0);
   vec3 n = normalize(vWorldNormal);
+
+  // Moving light (a torch in your hand, a glowing mob), sampled on the air
+  // side of the face from the light volume around the camera.
+  vec3 dynP = (vWorldPos + n * 0.5 - uDynOrigin) * uDynInvSize;
+  if (all(greaterThanEqual(dynP, vec3(0.0))) && all(lessThan(dynP, vec3(1.0)))) {
+    torch = max(torch, texture(uDynLight, dynP).r);
+  }
 
   // The sun only reaches places open to the sky. The shadow map handles trees
   // and overhangs; this keeps it out of caves the shadow box does not cover.
@@ -219,6 +321,7 @@ function patch(material, water) {
       .replace('#include <project_vertex>', VERTEX_WORLDPOS);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', FRAGMENT_PARS)
+      .replace('#include <map_fragment>', FRAGMENT_MAP)
       .replace('#include <color_fragment>', FRAGMENT_COLOR)
       .replace(
         'vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;',
@@ -240,6 +343,27 @@ export function createTerrainMaterial(map) {
     side: THREE.FrontSide,
     fog: true,
   }), false);
+}
+
+/**
+ * What chunk meshes cast shadows with. Three's stock depth material would
+ * read the atlas at the raw block-local UV, cutting leaves and glass out of
+ * the wrong tile; this does the same lookup as the colour pass. It takes map
+ * and alphaTest from the mesh's own material when the shadow is drawn.
+ */
+export function createTerrainDepthMaterial() {
+  const material = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uAtlasGrid = terrainUniforms.uAtlasGrid;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float tile;\nvarying float vTile;')
+      .replace('#include <uv_vertex>', '#include <uv_vertex>\nvTile = tile;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\n' + ATLAS_PARS)
+      .replace('#include <map_fragment>', DEPTH_MAP);
+  };
+  material.customProgramCacheKey = () => 'terrain-depth';
+  return material;
 }
 
 /** The alpha-blended pass: water, and translucent blocks such as portals. */

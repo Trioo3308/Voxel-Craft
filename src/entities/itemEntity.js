@@ -7,7 +7,7 @@
 
 import * as THREE from 'three';
 import { moveWithCollision } from '../player/physics.js';
-import { getIconTile, ATLAS_COLS } from '../world/blocks.js';
+import { getIconTile, ATLAS_COLS, ATLAS_ROWS } from '../world/blocks.js';
 import { getAtlasTexture } from '../world/textures.js';
 
 const SIZE = 0.28;
@@ -42,9 +42,10 @@ function getGeometry(id) {
   const tile = getIconTile(id);
   const col = tile % ATLAS_COLS;
   const row = Math.floor(tile / ATLAS_COLS);
-  const span = 1 / ATLAS_COLS;
-  const u0 = col * span;
-  const v0 = 1 - (row + 1) * span;
+  const spanU = 1 / ATLAS_COLS;
+  const spanV = 1 / ATLAS_ROWS;
+  const u0 = col * spanU;
+  const v0 = 1 - (row + 1) * spanV;
 
   // BoxGeometry UVs are all 0 or 1; remap them into this tile's rect, inset a
   // little so neighbouring tiles cannot bleed in.
@@ -52,8 +53,8 @@ function getGeometry(id) {
   for (let i = 0; i < uv.count; i++) {
     uv.setXY(
       i,
-      u0 + (0.03 + uv.getX(i) * 0.94) * span,
-      v0 + (0.03 + uv.getY(i) * 0.94) * span
+      u0 + (0.03 + uv.getX(i) * 0.94) * spanU,
+      v0 + (0.03 + uv.getY(i) * 0.94) * spanV
     );
   }
   uv.needsUpdate = true;
@@ -80,7 +81,10 @@ export class ItemEntity {
     this.age = 0;
     this.removed = false;
 
-    this.mesh = new THREE.Mesh(getGeometry(id), getMaterial());
+    // Its own copy of the shared material, so it can be shaded by the light
+    // where it lies (see setLight). Items are few; the copies are cheap.
+    this.mesh = new THREE.Mesh(getGeometry(id), getMaterial().clone());
+    this._shade = -1;
     this.mesh.position.copy(this.position);
   }
 
@@ -166,7 +170,16 @@ export class ItemEntity {
     }
   }
 
+  /** Light where it lies, from EntityManager.applyLighting. */
+  setLight(k) {
+    const shade = Math.round(k * 40) / 40;
+    if (shade === this._shade) return;
+    this._shade = shade;
+    this.mesh.material.color.setScalar(shade);
+  }
+
   dispose() {
-    // Geometry and material are shared/cached, so nothing to free here.
+    // Geometry is shared and cached; the material is this item's own copy.
+    this.mesh.material.dispose();
   }
 }

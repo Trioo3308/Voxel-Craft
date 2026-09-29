@@ -11,6 +11,13 @@
 
 import { prefs } from './engine/preferences.js';
 import { terrainUniforms } from './engine/terrainMaterial.js';
+import { DynamicLight } from './engine/dynamicLight.js';
+import { sampleLocalLight } from './engine/localLight.js';
+import { Exploration } from './world/exploration.js';
+import { WorldMap } from './ui/worldMap.js';
+import { Captions } from './ui/captions.js';
+import { difficulty, setDifficulty as applyDifficulty, nextDifficulty, DIFFICULTIES } from './player/difficulty.js';
+import { NetherTerrainGenerator, FORTRESS_SPACING, NETHER_LAVA_LEVEL, NETHER_CEILING } from './world/netherTerrain.js';
 import Settings from './settings.js';
 import { Renderer } from './engine/renderer.js';
 import { Input } from './engine/input.js';
@@ -44,12 +51,11 @@ import { DIMENSIONS, dimensionInfo } from './world/dimensions.js';
 import {
   CombTerrainGenerator, SHRINE_SPACING, SHRINE_LAYOUT, nearestShrineAnchor, HIVE_SPACING,
 } from './world/combTerrain.js';
-import { DUNGEON_SPACING, BIOME_NAMES } from './world/terrain.js';
+import { DUNGEON_SPACING, SKATEPARK_SPACING, BIOME_NAMES } from './world/terrain.js';
 import {
   ignitePortal, extinguishPortal, buildReturnPortal, destinationOf,
   portalKindForIgniter, portalKindForFrame, kindForDimension,
 } from './world/portal.js';
-import { NETHER_LAVA_LEVEL, NETHER_CEILING } from './world/netherTerrain.js';
 import { ISLAND_BAND, ISLAND_SPREAD, AETHER_VOID } from './world/aetherTerrain.js';
 import { THRONE_LOOT, DUNGEON_LOOT, HIVE_LOOT, fillChest } from './entities/loot.js';
 import { WARDEN } from './entities/mobTypes.js';
@@ -122,6 +128,15 @@ export class Game {
     this.settings = new SettingsScreen(this.input, () => this._closeSettings());
 
     this.weather = new Weather();
+
+    /** Moving light: a held torch, glowing mobs. See dynamicLight.js. */
+    this.dynamicLight = new DynamicLight();
+    /** What you have explored, per dimension, for the map. */
+    this.exploration = new Exploration();
+    this.worldMap = new WorldMap(this);
+    this.captions = new Captions(el('captions'));
+    audio.onCaption = (text, position) => this.captions.show(text, position);
+    this.difficultyId = 'normal';
 
     this.state = 'worlds';
     this.cameraInWater = false;
@@ -198,6 +213,7 @@ export class Game {
         // Auto starts from wherever it last settled on this machine.
         this._autoQuality = { total: 0, frames: 0 };
         this.renderer.setQuality(value === 'auto' ? loadAutoQuality() : value);
+        this.world?.setFastLeaves(this.renderer.quality === 'low');
         break;
       case 'clouds':
         this.sky.atmosphere.cloudsEnabled = value;
@@ -229,6 +245,12 @@ export class Game {
     el('modeCreative').addEventListener('click', () => this._setCreateMode(true));
     el('cancelCreateButton').addEventListener('click', () => this._showCreateForm(false));
     el('confirmCreateButton').addEventListener('click', () => this._createWorld());
+    for (const id of Object.keys(DIFFICULTIES)) {
+      el(`diff-${id}`)?.addEventListener('click', () => this._setCreateDifficulty(id));
+    }
+    el('difficultyButton').addEventListener('click', () => {
+      this.setDifficulty(nextDifficulty(this.difficultyId));
+    });
     el('newWorldName').addEventListener('keydown', (e) => { if (e.key === 'Enter') this._createWorld(); });
     el('newWorldSeed').addEventListener('keydown', (e) => { if (e.key === 'Enter') this._createWorld(); });
 
@@ -236,7 +258,9 @@ export class Game {
     el('importFileInput').addEventListener('change', (e) => this._importWorld(e));
 
     // Browsers refuse to start audio before a user gesture, so every button
-    // and the canvas double as the unlock.
+    // and the canvas double as the unlock. The recordings download now, so
+    // they are ready the moment it happens.
+    audio.preload();
     const unlockAudio = () => audio.init();
     document.addEventListener('click', (e) => {
       if (e.target instanceof HTMLElement && e.target.closest('button')) audio.uiClick();
@@ -387,7 +411,7 @@ export class Game {
     // fanfare, and it retires the shrine so the Warden does not come back.
     this.entities.onBossDefeated = (mob) => {
       this.hud.showToast(`${mob.type.displayName} falls`);
-      audio.explosion(mob.distanceTo(this.player.eyePosition));
+      audio.explosion(mob.distanceTo(this.player.eyePosition), mob.position);
       if (mob.memory.shrineKey) this._shrinesDone.add(mob.memory.shrineKey);
       this.achievements.unlock('warden');
     };
@@ -453,7 +477,7 @@ export class Game {
           type: 'chest',
           state: { slots: new Array(27).fill(null) },
         }));
-        audio.chest(true);
+        audio.chest(true, { x: x + 0.5, y, z: z + 0.5 });
         this._openContainer(() => this.hud.openChest(entity.state));
         return true;
       }
@@ -597,6 +621,7 @@ export class Game {
 
     await this.world.setDimension(to);
     this.dimension = to;
+    this.dynamicLight.clear();
 
     // Stream the arrival area before deciding where the ground is.
     await this._preloadAround(targetX, targetZ);
@@ -789,7 +814,7 @@ export class Game {
       this.world.setBlock(x, y + dy, z, want);
     }
 
-    audio.door(open);
+    audio.door(open, { x: x + 0.5, y, z: z + 0.5 });
     return true;
   }
 
@@ -1148,7 +1173,7 @@ export class Game {
       const [x, y, z] = key.split(',').map(Number);
       this.world.setBlock(x, y, z, PRESSURE_PLATE_PRESSED.id);
       this._platesDown.set(key, this._setNeighbourDoors(x, y, z, true));
-      audio.door(true);
+      audio.door(true, { x: x + 0.5, y, z: z + 0.5 });
     }
 
     // Newly stepped off.
@@ -1158,7 +1183,7 @@ export class Game {
       // Only restore a plate that is still a plate — it may have been mined.
       if (isPlate(this.world.getBlock(x, y, z))) {
         this.world.setBlock(x, y, z, PRESSURE_PLATE.id);
-        audio.door(false);
+        audio.door(false, { x: x + 0.5, y, z: z + 0.5 });
       }
       for (const [dx, dy, dz] of opened) this._setDoorOpen(dx, dy, dz, false);
       this._platesDown.delete(key);
@@ -1400,7 +1425,7 @@ export class Game {
         (world.allowCreative ? '<span class="badge">Creative</span>' : '') +
         (world.tooNew ? '<span class="badge warn">Newer version</span>' : '') +
         '</div>' +
-        `<div class="wmeta">Day ${world.dayCount + 1} &middot; ${played}m played &middot; seed ${world.seed} &middot; ` +
+        `<div class="wmeta">Day ${world.dayCount + 1} &middot; ${DIFFICULTIES[world.difficulty]?.label ?? 'Normal'} &middot; ${played}m played &middot; seed ${world.seed} &middot; ` +
         `${world.editedBlocks.toLocaleString()} blocks changed &middot; ${formatWhen(world.updatedAt)}</div>`;
 
       const play = document.createElement('button');
@@ -1469,10 +1494,28 @@ export class Game {
     return h;
   }
 
+  _setCreateDifficulty(id) {
+    this._createDifficulty = id;
+    for (const key of Object.keys(DIFFICULTIES)) el(`diff-${key}`)?.classList.toggle('selected', key === id);
+    el('difficultyNote').textContent = DIFFICULTIES[id].blurb;
+  }
+
+  /**
+   * Change the world's difficulty. Peaceful sends the monsters away at once,
+   * rather than as they happen to wander off.
+   */
+  setDifficulty(id, announce = true) {
+    this.difficultyId = applyDifficulty(id);
+    el('difficultyButton').textContent = `Difficulty: ${difficulty.rules.label}`;
+    if (!difficulty.rules.hostiles) this.entities.clearHostiles();
+    if (announce) this.hud.showToast(`Difficulty: ${difficulty.rules.label}`);
+  }
+
   async _createWorld() {
     const name = el('newWorldName').value.trim() || 'New World';
     const seed = this._parseSeed(el('newWorldSeed').value);
     const save = SaveManager.createNew(name, seed, this._createCreative === true);
+    save.difficulty = this._createDifficulty ?? 'normal';
     try {
       if (SaveManager.available) await SaveManager.put(save);
     } catch (error) {
@@ -1538,6 +1581,7 @@ export class Game {
       seed: save.seed,
       terrainVersion: save.terrainVersion,
     });
+    this.world.setFastLeaves(this.renderer.quality === 'low');
     this.player.world = this.world;
     this.entities.world = this.world;
     this.terrainInfo = new TerrainGenerator(save.seed, save.terrainVersion);
@@ -1550,6 +1594,15 @@ export class Game {
     this.signRenderer = new SignRenderer(this.renderer.scene, this.world);
     this.entities.particles = this.particles;
     this.world.onLeafDecayed = this.world_onLeafDecayed;
+    // The map records chunks as they stream in, and follows edits.
+    this.world.onChunkVoxels = (chunk) => this.exploration.record(this.world.dimension, chunk);
+    this.world.onColumnChanged = (wx, wz, chunk, wy) => {
+      this.exploration.updateColumn(this.world.dimension, chunk, wx, wz);
+      this.dynamicLight.markDirty(wx, wy, wz);
+    };
+    this.dynamicLight.clear();
+    this.captions.clear();
+    this._netherInfo = null;
     this.world.onSmelted = (itemId) => this._notePlayerMilestone('smelted', itemId, null);
 
     // Per-world state that must not leak across sessions. The shrine oracle is
@@ -1594,6 +1647,14 @@ export class Game {
     this._thumbTimer = 4;
 
     if (isNew) {
+      this.exploration.load(null);
+      this.setDifficulty(save.difficulty ?? 'normal', false);
+      this.player.waypoints = [];
+      this.player.portals = [];
+      this.player.deathLog = [];
+      this.player.discovered = [];
+      this.player.lastDeath = null;
+      this.player.bedSpawn = null;
       this.player.survival.respawn();
       this.player.inventory.clear();
       this.player.inventory.armor.fill(null);
@@ -1754,6 +1815,8 @@ export class Game {
       this._thumbCanvas.height = 108;
     }
     const source = this.canvas;
+    // A hidden or collapsed window can leave the canvas with no size at all.
+    if (!source.width || !source.height) return;
     const cropH = Math.min(source.height, (source.width * 9) / 16);
     const cropW = (cropH * 16) / 9;
     const ctx = this._thumbCanvas.getContext('2d');
@@ -1785,6 +1848,7 @@ export class Game {
     const next = { high: 'medium', medium: 'low' }[this.renderer.quality];
     if (!next) return;
     this.renderer.setQuality(next);
+    this.world?.setFastLeaves(next === 'low');
     saveAutoQuality(next);
     this.hud.showSaveToast(`Graphics: ${next}`);
   }
@@ -1823,21 +1887,36 @@ export class Game {
       this.hud.showToast(`Removed ${gone.name}`);
       return;
     }
-    if (list.length >= 24) {
+    const w = this.addWaypoint(p.x, p.z, p.y);
+    if (w) this.hud.showToast(`Waypoint: ${w.name}`);
+  }
+
+  /**
+   * Add a waypoint, named after the biome it is in, so a list of them still
+   * means something. Used by the Waypoint key and by the map.
+   * @returns the new waypoint, or null if there are too many
+   */
+  addWaypoint(x, z, y = null) {
+    const dimension = this.world.dimension;
+    const list = this.player.waypoints;
+    if (list.length >= 48) {
       this.hud.showToast('Too many waypoints: remove one first');
-      return;
+      audio.uiError();
+      return null;
     }
-    // Named after where it is, so a list of them still means something.
-    let place = dimensionInfo(dimension).name;
+    let place = dimensionInfo(dimension).name.replace(/^The /, '');
     if (dimension === DIMENSIONS.OVERWORLD && this.terrainInfo) {
-      const biome = this.terrainInfo.biomeAt?.(Math.floor(p.x), Math.floor(p.z));
+      const biome = this.terrainInfo.biomeAt?.(Math.floor(x), Math.floor(z));
       if (biome !== undefined && BIOME_NAMES[biome]) place = BIOME_NAMES[biome];
     }
     const number = list.filter((w) => w.name.startsWith(place)).length + 1;
-    const name = `${place} ${number}`;
-    list.push({ name, dimension, x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) });
-    audio.uiConfirm?.();
-    this.hud.showToast(`Waypoint: ${name}`);
+    const w = {
+      name: `${place} ${number}`, dimension,
+      x: Math.round(x), y: Math.round(y ?? this.player.position.y), z: Math.round(z),
+    };
+    list.push(w);
+    audio.uiConfirm();
+    return w;
   }
 
   /** Everything the compass strip should show, in the current dimension. */
@@ -1859,7 +1938,120 @@ export class Game {
     for (const w of player.waypoints) {
       if (w.dimension === dimension) marks.push({ label: w.name, kind: 'waypoint', x: w.x + 0.5, z: w.z + 0.5 });
     }
+    // Structures you have found, while they are close enough to matter.
+    const p = player.position;
+    for (const s of player.discovered) {
+      if (s.dimension !== dimension || Math.hypot(s.x - p.x, s.z - p.z) > 400) continue;
+      marks.push({ label: STRUCTURE_NAMES[s.kind] ?? 'Structure', kind: 'structure', x: s.x, z: s.z, icon: this._markerIcon(s.kind) });
+    }
     return marks;
+  }
+
+  /** Everything the world map draws, in the current dimension. */
+  mapMarkers() {
+    const dimension = this.world.dimension;
+    const player = this.player;
+    const marks = [];
+    for (const d of player.deathLog) {
+      if (d.dimension === dimension) marks.push({ kind: 'death', x: d.x, z: d.z });
+    }
+    for (const s of player.discovered) {
+      if (s.dimension === dimension) marks.push({ kind: 'structure', x: s.x, z: s.z, label: STRUCTURE_NAMES[s.kind], icon: this._markerIcon(s.kind) });
+    }
+    for (const portal of player.portals) {
+      if (portal.dimension === dimension) marks.push({ kind: 'portal', x: portal.x, z: portal.z, label: 'Portal', icon: this._markerIcon(portal.kind) });
+    }
+    if (dimension === DIMENSIONS.OVERWORLD && player.bedSpawn) {
+      marks.push({ kind: 'bed', x: player.bedSpawn.x, z: player.bedSpawn.z, label: 'Bed', icon: this._markerIcon('bed') });
+    }
+    const grave = player.lastDeath;
+    if (grave && grave.dimension === dimension) {
+      marks.push({ kind: 'grave', x: grave.x + 0.5, z: grave.z + 0.5, label: 'Grave', icon: this._markerIcon('grave') });
+    }
+    for (const w of player.waypoints) {
+      if (w.dimension === dimension) marks.push({ kind: 'waypoint', x: w.x + 0.5, z: w.z + 0.5, label: w.name, colour: w.colour });
+    }
+    return marks;
+  }
+
+  /** Name of the dimension you are in, for the map's title. */
+  dimensionName() {
+    return dimensionInfo(this.world.dimension).name;
+  }
+
+  /**
+   * Mark structures you come near: dungeons and skate parks in the
+   * Overworld, shrines in the Comb, fortresses in the Nether. Every one of
+   * them is a pure function of the seed, so this only asks the same
+   * questions the generators answer, a few times a second.
+   */
+  _discoverStructures(dt) {
+    this._discoverClock = (this._discoverClock ?? 0) - dt;
+    if (this._discoverClock > 0) return;
+    this._discoverClock = 1.5;
+    const p = this.player.position;
+    const dimension = this.world.dimension;
+    const pcx = Math.floor(p.x / 16), pcz = Math.floor(p.z / 16);
+    const found = (kind, x, z, range) => {
+      if (Math.hypot(x - p.x, z - p.z) > range) return;
+      const known = this.player.discovered.some((d) => d.kind === kind && d.dimension === dimension && Math.abs(d.x - x) < 8 && Math.abs(d.z - z) < 8);
+      if (known) return;
+      this.player.discovered.push({ kind, dimension, x: Math.round(x), z: Math.round(z) });
+      this.hud.showToast(`Discovered: ${STRUCTURE_NAMES[kind]}`);
+      audio.uiConfirm();
+    };
+    const around = (spacing, visit) => {
+      const ox = Math.floor(pcx / spacing) * spacing, oz = Math.floor(pcz / spacing) * spacing;
+      for (let gz = -1; gz <= 1; gz++) for (let gx = -1; gx <= 1; gx++) visit(ox + gx * spacing, oz + gz * spacing);
+    };
+    if (dimension === DIMENSIONS.OVERWORLD && this.terrainInfo) {
+      around(DUNGEON_SPACING, (cx, cz) => {
+        const room = this.terrainInfo.dungeonAt?.(cx, cz);
+        // A dungeon is underground: found when you are close to it in all three axes.
+        if (room && Math.abs(room.y - p.y) < 14) found('dungeon', room.wx, room.wz, 20);
+      });
+      around(SKATEPARK_SPACING, (cx, cz) => {
+        const park = this.terrainInfo.skateparkAt?.(cx, cz);
+        if (park) found('skatepark', park.wx, park.wz, 48);
+      });
+    } else if (dimension === DIMENSIONS.NETHER) {
+      this._netherInfo ??= new NetherTerrainGenerator(this.world.seed);
+      around(FORTRESS_SPACING, (cx, cz) => {
+        const fort = this._netherInfo.fortressAt(cx, cz);
+        if (fort) found('fortress', fort.wx, fort.wz, 56);
+      });
+    } else if (dimension === DIMENSIONS.COMB) {
+      const shrine = this.nearestShrine();
+      if (shrine) found('shrine', shrine.wx, shrine.wz, 40);
+    }
+  }
+
+  /**
+   * Moving light and the shading that follows it: gather what glows (the
+   * block in your hand, glowing mobs), refill the light volume if anything
+   * moved, then shade mobs, items and your hand by where they are.
+   */
+  _updateLighting(dt) {
+    const player = this.player;
+    const sources = this._lightSources ?? (this._lightSources = []);
+    sources.length = 0;
+    const held = player.inventory.getSelected();
+    const glow = held && Blocks.isBlockId(held.id) ? getBlock(held.id)?.lightEmission ?? 0 : 0;
+    if (glow > 0 && !player.survival.dead) {
+      const eye = player.eyePosition;
+      sources.push({ x: eye.x, y: eye.y - 0.4, z: eye.z, level: Math.min(15, glow) });
+    }
+    this.entities.lightSources(sources);
+    this.dynamicLight.update(dt, this.world, this.renderer.camera.position, sources);
+    this.entities.applyLighting(dt, this.dynamicLight);
+
+    this._handLightClock = (this._handLightClock ?? 0) - dt;
+    if (this._handLightClock <= 0) {
+      this._handLightClock = 0.1;
+      const eye = player.eyePosition;
+      const { k, warm } = sampleLocalLight(this.world, this.dynamicLight, eye.x, eye.y, eye.z);
+      this.viewModel.setLight(k, warm);
+    }
   }
 
   /** A block picture for a marker, cached. */
@@ -1869,6 +2061,8 @@ export class Game {
       const ids = {
         bed: BED.id, grave: GRAVESTONE.id, comb: PORTAL.id,
         nether: Blocks.PORTAL_NETHER.id, aether: Blocks.PORTAL_AETHER.id,
+        dungeon: Blocks.CHEST.id, skatepark: Blocks.RAIL.id,
+        fortress: Blocks.NETHER_BRICK.id, shrine: Blocks.THRONE.id,
       };
       const id = ids[kind];
       this._markerIcons[kind] = id ? getTileDataURL(Blocks.getIconTile(id)) : null;
@@ -1944,6 +2138,10 @@ export class Game {
 
   _onDeath(cause) {
     this.stats.record('deaths');
+    // Every death leaves a cross on the map, whether or not there was a grave.
+    const p = this.player.position;
+    this.player.deathLog.push({ dimension: this.world.dimension, x: Math.round(p.x), z: Math.round(p.z) });
+    if (this.player.deathLog.length > 30) this.player.deathLog.shift();
     const messages = {
       fall: 'You hit the ground too hard.',
       mob: 'You were slain.',
@@ -2190,6 +2388,11 @@ export class Game {
 
       if (playing && input.actionWasPressed('waypoint')) this._markWaypoint(input.isActionDown('sprint'));
 
+      if (input.actionWasPressed('map')) {
+        if (this.state === 'container' && this.worldMap.isOpen) this._closeContainer();
+        else if (playing) this._openContainer(() => this.worldMap.open());
+      }
+
       // Drop throws one item; holding sprint throws the whole stack.
       if (playing && input.actionWasPressed('drop')) {
         this.player.dropHeld(input.isActionDown('sprint'), { entities: this.entities });
@@ -2235,6 +2438,7 @@ export class Game {
       this._updatePressurePlates();
       this._updateEffects(dt);
       this._updateProgress(dt);
+      this._discoverStructures(dt);
       if (this.signRenderer) this.signRenderer.update(dt, this.player.position, SIGN.id);
 
       this._autosaveTimer += dt;
@@ -2284,6 +2488,11 @@ export class Game {
     this.cameraInWater = this.world.isWater(camera.x, camera.y, camera.z);
     this.cameraInLava = this.world.isLava(camera.x, camera.y, camera.z);
 
+    if (playing || this.state === 'container') this._updateLighting(dt);
+    this.captions.update(dt, this.player);
+    this.worldMap.updateMinimap(dt, playing);
+    if (this.worldMap.isOpen) this.worldMap.draw();
+
     this.hud.update(dt);
     this.renderer.render();
 
@@ -2309,6 +2518,11 @@ export class Game {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** How structures are named on the map, the compass and when found. */
+const STRUCTURE_NAMES = {
+  dungeon: 'Dungeon', skatepark: 'Skate park', fortress: 'Fortress', shrine: 'Shrine',
+};
 
 /** Where Graphics "auto" last settled on this machine. */
 const AUTO_QUALITY_KEY = 'voxelcraft.autoQuality';

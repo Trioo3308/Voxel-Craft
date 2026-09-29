@@ -1,8 +1,8 @@
 /**
  * textures.js — Procedural texture atlas.
  *
- * Every block texture is painted pixel-by-pixel into one 256x256 canvas
- * (a 16x16 grid of 16px tiles) at startup. No image files to ship, and the
+ * Every block texture is painted pixel-by-pixel into one 256x512 canvas
+ * (a 16x32 grid of 16px tiles) at startup. No image files to ship, and the
  * whole world renders from a single texture + single draw call per chunk.
  *
  * To add a texture: add a tile id in blocks.js, then a painter in `PAINTERS`.
@@ -10,13 +10,14 @@
 
 import * as THREE from 'three';
 import {
-  TILE, ATLAS_COLS, ATLAS_TILE_PX,
+  TILE, ATLAS_COLS, ATLAS_ROWS, ATLAS_TILE_PX, ALT_TILE_OFFSET, VARIANT_TILES, LEAF_TILES,
   TOOL_KINDS, ARMOR_PIECES, GEAR_MATERIALS, ARMOR_MATERIAL_NAMES,
   TOOL_MATERIALS, toolTile, armorTile,
 } from './blocks.js';
 import { mulberry32 } from './noise.js';
 
-const ATLAS_PX = ATLAS_COLS * ATLAS_TILE_PX;
+const ATLAS_WIDTH = ATLAS_COLS * ATLAS_TILE_PX;
+const ATLAS_HEIGHT = ATLAS_ROWS * ATLAS_TILE_PX;
 const T = ATLAS_TILE_PX;
 
 // ---------------------------------------------------------------------------
@@ -2699,13 +2700,18 @@ export function getAtlasTexture() {
   if (atlasTexture) return atlasTexture;
 
   atlasCanvas = document.createElement('canvas');
-  atlasCanvas.width = ATLAS_PX;
-  atlasCanvas.height = ATLAS_PX;
+  atlasCanvas.width = ATLAS_WIDTH;
+  atlasCanvas.height = ATLAS_HEIGHT;
   const ctx = atlasCanvas.getContext('2d', { willReadFrequently: true });
 
   for (const key of Object.keys(PAINTERS)) {
     paint(ctx, Number(key), PAINTERS[key]);
   }
+  // The second paintings (see ALT_TILE_OFFSET). A variant is the same painter
+  // run again: paint() seeds its randomness from the tile index, so the new
+  // slot gets a different scatter of the same material.
+  for (const tile of VARIANT_TILES) paint(ctx, tile + ALT_TILE_OFFSET, PAINTERS[tile]);
+  for (const tile of LEAF_TILES) paintSolidLeaves(ctx, tile);
 
   atlasTexture = new THREE.CanvasTexture(atlasCanvas);
   // Nearest filtering with no mipmaps: crisp pixel-art look, and — importantly —
@@ -2719,6 +2725,35 @@ export function getAtlasTexture() {
   atlasTexture.needsUpdate = true;
 
   return atlasTexture;
+}
+
+/**
+ * An opaque copy of a leaf tile, for fast leaves: the see-through gaps are
+ * filled with a deep shade of the leaf's own colour, so a canopy drawn as a
+ * solid shell reads as dense foliage rather than a green box.
+ */
+function paintSolidLeaves(ctx, tile) {
+  const img = ctx.getImageData((tile % ATLAS_COLS) * T, Math.floor(tile / ATLAS_COLS) * T, T, T);
+  const data = img.data;
+  let r = 0, g = 0, bl = 0, n = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 128) continue;
+    r += data[i];
+    g += data[i + 1];
+    bl += data[i + 2];
+    n++;
+  }
+  const shade = n ? 0.42 / n : 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 128) {
+      data[i] = r * shade;
+      data[i + 1] = g * shade;
+      data[i + 2] = bl * shade;
+    }
+    data[i + 3] = 255;
+  }
+  const alt = tile + ALT_TILE_OFFSET;
+  ctx.putImageData(img, (alt % ATLAS_COLS) * T, Math.floor(alt / ATLAS_COLS) * T);
 }
 
 const tilePaletteCache = new Map();
