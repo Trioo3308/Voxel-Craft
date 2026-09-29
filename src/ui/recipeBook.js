@@ -11,6 +11,9 @@
  * One instance sits beside each crafting grid (the 2x2 in the inventory and
  * the 3x3 table). It owns no state of its own beyond what is on screen: what
  * can be crafted is worked out afresh from the inventory each refresh.
+ *
+ * Phase 3 added discovery (see discovery.js): a recipe only appears once you
+ * have held something that goes into it, and the book counts what is left.
  */
 
 import { RECIPES, SMELTING } from '../player/crafting.js';
@@ -163,6 +166,12 @@ export class RecipeBook {
   // The list
   // -------------------------------------------------------------------------
 
+  /** Whether the player has found out how to make this yet. */
+  _known(id) {
+    const discovery = this.hud.game.discovery;
+    return !discovery || discovery.knows(id);
+  }
+
   _renderList() {
     const available = this._available();
     const craftable = [];
@@ -174,6 +183,7 @@ export class RecipeBook {
       if (!matches(id)) continue;
       const list = BY_RESULT.get(id);
       if (!list) materials.push(id);
+      else if (!this._known(id)) continue;
       else if (list.some((r) => this._batches(r, available) > 0)) craftable.push(id);
       else recipes.push(id);
     }
@@ -187,6 +197,13 @@ export class RecipeBook {
       empty.className = 'rbEmpty';
       empty.textContent = 'Nothing matches.';
       this.body.appendChild(empty);
+    }
+    const hidden = this.hud.game.discovery?.remaining ?? 0;
+    if (hidden > 0) {
+      const note = document.createElement('div');
+      note.className = 'rbEmpty rbUndiscovered';
+      note.textContent = `${hidden} more to discover: pick up new materials to learn what they make.`;
+      this.body.appendChild(note);
     }
   }
 
@@ -314,8 +331,9 @@ export class RecipeBook {
       this.body.appendChild(note);
     }
 
-    const used = USED_IN.get(id);
-    if (used) this._iconRow('Used to make', [...used]);
+    // Only what you know about; the rest stays a surprise.
+    const used = [...(USED_IN.get(id) ?? [])].filter((result) => this._known(result));
+    if (used.length) this._iconRow('Used to make', used);
   }
 
   /** One way of making it: the pattern, what you have of each ingredient, and a Fill button. */

@@ -46,10 +46,12 @@ import {
   LOG, ACACIA_LOG, SPRUCE_LOG, DIAMOND_ORE, FURNACE, getItem, getDisplayName,
   OBSIDIAN, GLOWSTONE, GRAVESTONE, isFluidFamily,
   SUGAR_CANE, ENCHANTING_TABLE, ANVIL, BOOKSHELF,
+  getThing,
 } from './world/blocks.js';
 import { MINING_XP, xpBetween, roundXp } from './player/experience.js';
 import { countBookshelves } from './player/enchanting.js';
 import { caneCanStand } from './world/sugarCane.js';
+import { RecipeDiscovery } from './player/discovery.js';
 import { audio } from './engine/audio.js';
 import { DIMENSIONS, dimensionInfo } from './world/dimensions.js';
 import {
@@ -125,6 +127,10 @@ export class Game {
       this.hud.showAchievement(achievement);
       audio.achievement();
     };
+    /** Which recipes this world's player has found out about; see discovery.js. */
+    this.discovery = new RecipeDiscovery();
+    this.discovery.onDiscover = (ids) => this.hud.showRecipes(ids);
+    this._discoveryVersion = -1;
 
     this.hud = new HUD(this);
     // Remembers where settings was opened from, so closing returns there.
@@ -446,7 +452,13 @@ export class Game {
       this.player.gainXp(points);
       audio.xpOrb();
     };
-    this.player.experience.onLevelUp = (level) => audio.levelUp(level);
+    this.player.experience.onLevelUp = (level) => {
+      audio.levelUp(level);
+      this.achievements.notify('level', level);
+    };
+    // The enchanting table and the anvil report back for the advancements.
+    this.onEnchanted = () => this.achievements.notify('enchanted', this.hud.enchantState.shelves);
+    this.onAnvilUsed = () => this.achievements.notify('event', 'anvil');
 
     // Right-clicking a station opens its interface instead of placing a block.
     this.player.onUseStation = (blockId, x, y, z) => {
@@ -1188,6 +1200,9 @@ export class Game {
       if (id === ITEM_ID.IRON_INGOT) this.achievements.unlock('iron');
       if (id === ITEM_ID.COMBIUM_INGOT) this.achievements.unlock('combium');
     }
+    // Advancements that describe their own trigger (content packs) hear it too.
+    const thing = getThing(id);
+    if (thing) this.achievements.notify(kind, thing.name);
     this.achievements.checkAll();
   }
 
@@ -1710,6 +1725,7 @@ export class Game {
       this.player.inventory.armor.fill(null);
       this.player.experience.setTotal(0);
       this.player.enchantSeed = (Math.random() * 0x7fffffff) | 0;
+      this.discovery.reset();
       // Creative worlds start in creative; survival worlds can never leave it.
       this.player.creative = this.allowCreative;
       this.sky.setTime(save.time ?? 0.08);
@@ -1724,6 +1740,9 @@ export class Game {
       if (missing.length > 0) {
         console.warn('[save] blocks no longer in this build:', missing.join(', '));
       }
+      // A world from before recipe discovery knows whatever its things teach:
+      // everything carried, worn, or kept in its chests and furnaces.
+      if (!this.discovery.load(save.player?.knownRecipes)) this._seedDiscovery();
       await this._preloadAround(this.player.position.x, this.player.position.z);
     }
 
@@ -1985,6 +2004,7 @@ export class Game {
     };
     list.push(w);
     audio.uiConfirm();
+    this.achievements.notify('event', 'waypoint');
     return w;
   }
 
@@ -2066,6 +2086,7 @@ export class Game {
       const known = this.player.discovered.some((d) => d.kind === kind && d.dimension === dimension && Math.abs(d.x - x) < 8 && Math.abs(d.z - z) < 8);
       if (known) return;
       this.player.discovered.push({ kind, dimension, x: Math.round(x), z: Math.round(z) });
+      this.achievements.notify('discovered', kind);
       this.hud.showToast(`Discovered: ${STRUCTURE_NAMES[kind]}`);
       audio.uiConfirm();
     };
@@ -2390,6 +2411,7 @@ export class Game {
     }
     inv.touch();
     audio.chest(true);
+    this.achievements.notify('event', 'grave');
     // Experience comes back whole, and first, so Mending does not eat it.
     if (entity?.state.xp > 0) {
       this.player.experience.add(entity.state.xp);
@@ -2420,6 +2442,39 @@ export class Game {
       this.entities.dropItem(x + 0.5, y + 0.5, z + 0.5, SUGAR_CANE.id, 1);
       y++;
     }
+  }
+
+  /** Teach an older world every recipe its belongings point to, quietly. */
+  _seedDiscovery() {
+    const ids = [];
+    const take = (stack) => { if (stack) ids.push(stack.id); };
+    this.player.inventory.slots.forEach(take);
+    this.player.inventory.armor.forEach(take);
+    for (const entity of this.world.blockEntities.values()) {
+      const state = entity.state ?? {};
+      if (Array.isArray(state.slots)) state.slots.forEach(take);
+      for (const field of ['input', 'fuel', 'output']) take(state[field]);
+    }
+    this.discovery.learnFrom(ids, true);
+    this._discoveryVersion = this.player.inventory.version;
+  }
+
+  /**
+   * Whenever the inventory changes, learn what it teaches (see discovery.js),
+   * and notice a Mending find for its advancement.
+   */
+  _updateDiscovery() {
+    const inv = this.player.inventory;
+    this.discovery.everything = this.player.creative;
+    if (inv.version === this._discoveryVersion) return;
+    this._discoveryVersion = inv.version;
+    const ids = [];
+    for (const stack of [...inv.slots, ...inv.armor]) {
+      if (!stack) continue;
+      ids.push(stack.id);
+      if (stack.ench?.mending) this.achievements.notify('event', 'mending');
+    }
+    if (!this.player.creative) this.discovery.learnFrom(ids);
   }
 
   /** Stop the compass pointing at a grave that has been emptied or broken. */
@@ -2481,7 +2536,10 @@ export class Game {
 
       if (input.actionWasPressed('map')) {
         if (this.state === 'container' && this.worldMap.isOpen) this._closeContainer();
-        else if (playing) this._openContainer(() => this.worldMap.open());
+        else if (playing) {
+          this._openContainer(() => this.worldMap.open());
+          this.achievements.notify('event', 'map');
+        }
       }
 
       // Drop throws one item; holding sprint throws the whole stack.
@@ -2580,6 +2638,7 @@ export class Game {
     this.cameraInLava = this.world.isLava(camera.x, camera.y, camera.z);
 
     if (playing || this.state === 'container') this._updateLighting(dt);
+    if (playing || this.state === 'container') this._updateDiscovery();
     this.captions.update(dt, this.player);
     this.worldMap.updateMinimap(dt, playing);
     if (this.worldMap.isOpen) this.worldMap.draw();

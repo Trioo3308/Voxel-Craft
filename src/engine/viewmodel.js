@@ -210,7 +210,9 @@ export class ViewModel {
       return;
     }
 
-    if (isBlockId(id)) {
+    // Plants (saplings, flowers, cane) are held flat like items: as a cube
+    // they printed their picture on six faces of a box.
+    if (isBlockId(id) && !BLOCKS[id]?.cross) {
       const mesh = new THREE.Mesh(
         this._blockGeometry(id),
         new THREE.MeshLambertMaterial({ map: getAtlasTexture(), alphaTest: 0.5 })

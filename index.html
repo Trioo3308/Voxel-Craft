@@ -922,6 +922,70 @@
   .overlay { background: radial-gradient(ellipse at center, rgba(8, 10, 18, 0.55), rgba(4, 5, 10, 0.85)); backdrop-filter: blur(5px); }
   #inventoryScreen, #craftingScreen, #furnaceScreen, #chestScreen { background: rgba(4, 6, 12, 0.45); backdrop-filter: blur(2px); }
 
+  /* Advancements: tabs, a tree to drag around, and a line about the hovered one. */
+  .progressPanel { width: min(1000px, 94vw); max-width: none; }
+  .advTabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0 8px; }
+  .advTab {
+    margin: 0; display: flex; align-items: center; gap: 6px; padding: 5px 10px 5px 6px; font-size: 13px;
+    background: rgba(255, 255, 255, 0.05);
+  }
+  .advTab i { width: 22px; height: 22px; background: center / contain no-repeat; image-rendering: pixelated; }
+  .advTab b { font-size: 11px; opacity: 0.7; font-weight: 400; }
+  .advTab.active { background: var(--accent-dim); box-shadow: inset 0 0 0 2px var(--accent); }
+  .advView {
+    position: relative; height: min(420px, 52vh); overflow: hidden; cursor: grab;
+    background:
+      linear-gradient(rgba(6, 8, 12, 0.72), rgba(6, 8, 12, 0.72)),
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.025) 0 2px, transparent 2px 32px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.025) 0 2px, transparent 2px 32px);
+    box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.6), inset 0 0 40px rgba(0, 0, 0, 0.5);
+  }
+  .advView:active { cursor: grabbing; }
+  .advCanvas { position: absolute; left: 0; top: 0; }
+  #advLines { position: absolute; left: 0; top: 0; overflow: visible; }
+  .advLine { fill: none; stroke: rgba(160, 170, 190, 0.35); stroke-width: 3; }
+  .advLine.done { stroke: rgba(240, 236, 214, 0.9); }
+  .advNode {
+    position: absolute; width: 44px; height: 44px;
+    background: rgba(40, 44, 54, 0.95) center / 30px 30px no-repeat;
+    image-rendering: pixelated;
+    box-shadow: inset 0 0 0 2px #6b7280, 0 0 0 2px #05060a;
+    filter: grayscale(0.85) brightness(0.75);
+  }
+  .advNode.goal { border-radius: 12px; }
+  .advNode.challenge {
+    clip-path: polygon(50% 0, 62% 12%, 88% 12%, 88% 38%, 100% 50%, 88% 62%, 88% 88%, 62% 88%, 50% 100%, 38% 88%, 12% 88%, 12% 62%, 0 50%, 12% 38%, 12% 12%, 38% 12%);
+    background-size: 26px 26px;
+  }
+  .advNode.earned {
+    filter: none; background-color: rgba(92, 72, 24, 0.95);
+    box-shadow: inset 0 0 0 2px #f2cf5b, 0 0 0 2px #05060a, 0 0 14px rgba(242, 207, 91, 0.35);
+  }
+  .advNode.challenge.earned { background-color: rgba(96, 40, 110, 0.95); }
+  .advNode:hover { outline: 2px solid #fff; outline-offset: 2px; }
+  .advStats { position: absolute; inset: 12px 18px; overflow-y: auto; }
+  .advInfo { min-height: 40px; margin-top: 8px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: 13px; opacity: 0.5; }
+  .advInfo.show { opacity: 1; }
+  .advInfo b { font-size: 15px; }
+  .advInfo em { font-style: normal; font-size: 11px; color: #9aa4b8; margin-left: auto; }
+  .advInfo.earned em { color: #f2cf5b; }
+  .rbUndiscovered { margin-top: 10px; opacity: 0.75; }
+
+  /* The recipe card slides in under the achievement card. */
+  #recipeCard {
+    position: absolute; right: 14px; top: 92px; display: flex; gap: 10px; align-items: center;
+    padding: 8px 14px 8px 8px; min-width: 240px; max-width: 320px;
+    background: var(--glass); backdrop-filter: blur(6px);
+    box-shadow: inset 2px 2px 0 var(--glass-edge), inset -2px -2px 0 var(--glass-shade), 0 0 0 2px #05060a;
+    transform: translateX(120%); transition: transform 0.35s ease;
+    z-index: 30; pointer-events: none;
+  }
+  #recipeCard.show { transform: translateX(0); }
+  #recipeCard .acIcon { width: 32px; height: 32px; background: center / contain no-repeat; image-rendering: pixelated; flex-shrink: 0; }
+  #recipeCard .acKicker { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--accent); }
+  #recipeCard .acTitle { font-size: 14px; font-weight: 700; }
+  #recipeCard .acHint { font-size: 12px; opacity: 0.8; }
+
   /* Experience: a thin green bar over the hotbar with the level in the middle. */
   #xpBar {
     position: relative; align-self: stretch; height: 7px; margin: 0 6px -2px;
@@ -1488,25 +1552,22 @@
 <div id="progressScreen" class="overlay">
   <div class="panel progressPanel">
     <h2 style="text-align:left">
-      Progress <span id="progressCount" class="progressCount"></span>
+      Advancements <span id="progressCount" class="progressCount"></span>
     </h2>
-    <div class="progressColumns">
-      <div class="progressColumn">
-        <div class="invLabel">Achievements</div>
-        <ul id="achievementList" class="achievementList"></ul>
-      </div>
-      <div class="progressColumn">
-        <div class="invLabel">Statistics</div>
-        <ul id="statList" class="statList"></ul>
-      </div>
+    <div class="advTabs" id="advTabs"></div>
+    <div class="advView" id="advView">
+      <div class="advCanvas" id="advCanvas"><svg id="advLines"></svg></div>
+      <ul id="statList" class="statList advStats"></ul>
     </div>
-    <p class="subtitle" style="margin:14px 0 0">Press <b>L</b> or <b>Esc</b> to close.</p>
+    <div class="advInfo" id="advInfo"></div>
+    <p class="subtitle" style="margin:10px 0 0">Hover an advancement to read it; drag or scroll to look around. Each one reveals what comes after it. <b>L</b> or <b>Esc</b> closes.</p>
   </div>
 </div>
 
 <div id="saveToast"></div>
 <div id="cursorStack"><div class="icon"></div><div class="count"></div></div>
 <div id="tooltip"></div>
+<div id="recipeCard"><div class="acIcon"></div><div class="acText"><div class="acKicker">Recipe book</div><div class="acTitle"></div><div class="acHint"></div></div></div>
 <div id="achievementCard"><div class="acIcon"></div><div class="acText"><div class="acKicker">Achievement</div><div class="acTitle"></div><div class="acHint"></div></div></div>
 
 <script type="module" src="./src/main.js"></script>

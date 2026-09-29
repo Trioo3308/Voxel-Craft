@@ -24,6 +24,7 @@ import {
   enchantability, ENCHANTMENTS, roman, ANVIL_LIMIT,
 } from '../player/enchanting.js';
 import { roundXp } from '../player/experience.js';
+import { ACHIEVEMENTS, ADVANCEMENT_TABS } from '../player/progress.js';
 import { BIOME_NAMES } from '../world/terrain.js';
 import { dimensionInfo } from '../world/dimensions.js';
 import Settings from '../settings.js';
@@ -108,6 +109,47 @@ function describeStack(stack) {
 }
 
 /**
+ * Lay out one tab's advancements as a tree growing left to right: depth is the
+ * column, leaves take one row each in order, and a parent sits level with the
+ * middle of its children.
+ * @returns {{pos: Map<string,{x,y}>, depth: number, rows: number}}
+ */
+function layoutTree(nodes) {
+  const names = new Set(nodes.map((n) => n.name));
+  const children = new Map();
+  const roots = [];
+  for (const node of nodes) {
+    if (node.parent && names.has(node.parent)) {
+      if (!children.has(node.parent)) children.set(node.parent, []);
+      children.get(node.parent).push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+  const pos = new Map();
+  let row = 0;
+  let depth = 0;
+  const place = (node, x) => {
+    depth = Math.max(depth, x);
+    const kids = children.get(node.name) ?? [];
+    let y;
+    if (kids.length === 0) {
+      y = row++;
+    } else {
+      const ys = kids.map((kid) => place(kid, x + 1));
+      y = (ys[0] + ys[ys.length - 1]) / 2;
+    }
+    pos.set(node.name, { x, y });
+    return y;
+  };
+  for (const root of roots) {
+    place(root, 0);
+    row += 0.5;
+  }
+  return { pos, depth, rows: Math.ceil(row) };
+}
+
+/**
  * The enchanting table's line of unreadable script, fixed by the seed so it
  * holds still while you think. The glyphs are the ones Minecraft's table
  * writes in, borrowed from Unicode lookalikes.
@@ -145,6 +187,10 @@ const ACHIEVEMENT_ICONS = {
 };
 
 function achievementIcon(name) {
+  // Advancements name their own icon (content/core.json); the table above is
+  // kept for any saved name a pack no longer describes.
+  const fromData = ACHIEVEMENTS.find((a) => a.name === name)?.icon;
+  if (fromData && idByName(fromData) !== null) return idByName(fromData);
   const key = ACHIEVEMENT_ICONS[name];
   if (!key) return null;
   if (Array.isArray(key)) {
@@ -186,7 +232,6 @@ export class HUD {
     this.activeSign = null;
     this.progressScreen = el('progressScreen');
     this.progressCount = el('progressCount');
-    this.achievementList = el('achievementList');
     this.statList = el('statList');
 
     /** Result text kept on screen after a run ends. See `_updateStyle`. */
@@ -1842,40 +1887,167 @@ export class HUD {
   // Achievements and statistics
   // -------------------------------------------------------------------------
 
-  /** Rebuild and show the progress screen. Cheap: both lists are short. */
+  /**
+   * The advancement tree (Phase 3; Jev's pick). One tab per branch of the
+   * game plus statistics; each tree is laid out once from its parent links,
+   * so nodes never jump about as you earn them, and only what `visible`
+   * allows is drawn — the rest waits until its parent is earned.
+   */
   openProgress() {
-    const { achievements, stats } = this.game;
-
+    const { achievements } = this.game;
     const { earned, total } = achievements.progress;
     this.progressCount.textContent = `${earned} / ${total}`;
-
-    this.achievementList.innerHTML = '';
-    for (const row of achievements.rows()) {
-      const li = document.createElement('li');
-      li.className = row.earned ? 'earned' : 'locked';
-      const title = document.createElement('span');
-      title.className = 'achTitle';
-      title.textContent = row.title;
-      const hint = document.createElement('span');
-      hint.className = 'achHint';
-      hint.textContent = row.hint;
-      li.append(title, hint);
-      this.achievementList.appendChild(li);
-    }
-
-    this.statList.innerHTML = '';
-    for (const [label, value] of stats.rows()) {
-      const li = document.createElement('li');
-      const name = document.createElement('span');
-      name.textContent = label;
-      const amount = document.createElement('span');
-      amount.className = 'statValue';
-      amount.textContent = value;
-      li.append(name, amount);
-      this.statList.appendChild(li);
-    }
-
+    this._advTab ??= ADVANCEMENT_TABS[0]?.id ?? 'stats';
+    // Shown first, so the tree can measure the view it is centring in.
     this.progressScreen.classList.add('show');
+    this._buildAdvTabs();
+    this._renderAdvTab();
+  }
+
+  _buildAdvTabs() {
+    const bar = el('advTabs');
+    bar.textContent = '';
+    const tabs = [...ADVANCEMENT_TABS, { id: 'stats', title: 'Statistics', icon: 'book' }];
+    for (const tab of tabs) {
+      const button = document.createElement('button');
+      button.className = 'advTab' + (tab.id === this._advTab ? ' active' : '');
+      const iconId = idByName(tab.icon);
+      const pic = document.createElement('i');
+      if (iconId !== null) pic.style.backgroundImage = `url(${getTileDataURL(getIconTile(iconId))})`;
+      const label = document.createElement('span');
+      label.textContent = tab.title;
+      button.append(pic, label);
+      if (tab.id !== 'stats') {
+        const nodes = ACHIEVEMENTS.filter((a) => a.tab === tab.id);
+        const got = nodes.filter((a) => this.game.achievements.has(a.name)).length;
+        const count = document.createElement('b');
+        count.textContent = `${got}/${nodes.length}`;
+        button.append(count);
+      }
+      button.addEventListener('click', () => {
+        this._advTab = tab.id;
+        audio.uiSwitch?.();
+        this._buildAdvTabs();
+        this._renderAdvTab();
+      });
+      bar.appendChild(button);
+    }
+  }
+
+  _renderAdvTab() {
+    const view = el('advView');
+    const canvas = el('advCanvas');
+    const stats = el('statList');
+    const info = el('advInfo');
+    info.textContent = '';
+    const showStats = this._advTab === 'stats';
+    canvas.style.display = showStats ? 'none' : '';
+    stats.style.display = showStats ? '' : 'none';
+    if (showStats) {
+      stats.innerHTML = '';
+      for (const [label, value] of this.game.stats.rows()) {
+        const li = document.createElement('li');
+        const name = document.createElement('span');
+        name.textContent = label;
+        const amount = document.createElement('span');
+        amount.className = 'statValue';
+        amount.textContent = value;
+        li.append(name, amount);
+        stats.appendChild(li);
+      }
+      return;
+    }
+
+    const achievements = this.game.achievements;
+    const nodes = ACHIEVEMENTS.filter((a) => a.tab === this._advTab);
+    const layout = layoutTree(nodes);
+    const COL = 128, ROW = 70, PAD = 36, SIZE = 44;
+    const width = PAD * 2 + (layout.depth + 1) * COL;
+    const height = PAD * 2 + Math.max(1, layout.rows) * ROW;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    canvas.querySelectorAll('.advNode').forEach((n) => n.remove());
+    const svg = el('advLines');
+    svg.setAttribute('width', width);
+    svg.setAttribute('height', height);
+    svg.innerHTML = '';
+
+    const at = (name) => {
+      const p = layout.pos.get(name);
+      return { x: PAD + p.x * COL, y: PAD + p.y * ROW };
+    };
+    for (const node of nodes) {
+      if (!achievements.visible(node) || !node.parent || !layout.pos.has(node.parent)) continue;
+      const a = at(node.parent), b = at(node.name);
+      const mid = a.x + SIZE + (COL - SIZE) / 2;
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', `M${a.x + SIZE} ${a.y + SIZE / 2} H${mid} V${b.y + SIZE / 2} H${b.x}`);
+      path.setAttribute('class', achievements.has(node.name) ? 'advLine done' : 'advLine');
+      svg.appendChild(path);
+    }
+    for (const node of nodes) {
+      if (!achievements.visible(node)) continue;
+      const { x, y } = at(node.name);
+      const got = achievements.has(node.name);
+      const cell = document.createElement('div');
+      cell.className = `advNode ${node.frame ?? 'task'}${got ? ' earned' : ''}`;
+      cell.style.left = `${x}px`;
+      cell.style.top = `${y}px`;
+      const iconId = idByName(node.icon);
+      if (iconId !== null) cell.style.backgroundImage = `url(${getTileDataURL(getIconTile(iconId))})`;
+      const show = () => {
+        const kind = node.frame === 'challenge' ? 'Challenge' : node.frame === 'goal' ? 'Goal' : 'Advancement';
+        info.innerHTML = '';
+        const title = document.createElement('b');
+        title.textContent = node.title;
+        const hint = document.createElement('span');
+        hint.textContent = node.hint;
+        const state = document.createElement('em');
+        state.textContent = got ? `${kind} earned` : kind;
+        info.append(title, hint, state);
+        info.className = 'advInfo show' + (got ? ' earned' : '');
+      };
+      cell.addEventListener('mouseenter', show);
+      canvas.appendChild(cell);
+    }
+
+    // Start with the tree's root in view: centred if the whole tree fits,
+    // otherwise from its left edge, level with the first root.
+    const first = nodes.find((n) => !n.parent);
+    const rootY = first ? at(first.name).y + SIZE / 2 : height / 2;
+    this._advPan = {
+      x: width <= view.clientWidth ? (view.clientWidth - width) / 2 : 0,
+      y: height <= view.clientHeight ? (view.clientHeight - height) / 2 : view.clientHeight / 2 - rootY,
+    };
+    this._applyAdvPan();
+    if (!this._advDragBound) {
+      this._advDragBound = true;
+      let drag = null;
+      view.addEventListener('mousedown', (e) => { drag = { x: e.clientX, y: e.clientY, pan: { ...this._advPan } }; });
+      window.addEventListener('mousemove', (e) => {
+        if (!drag) return;
+        this._advPan = { x: drag.pan.x + e.clientX - drag.x, y: drag.pan.y + e.clientY - drag.y };
+        this._applyAdvPan();
+      });
+      window.addEventListener('mouseup', () => { drag = null; });
+      view.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        this._advPan = { x: this._advPan.x - e.deltaX, y: this._advPan.y - e.deltaY };
+        this._applyAdvPan();
+      }, { passive: false });
+    }
+  }
+
+  /** Keep the tree from being dragged right off the screen. */
+  _applyAdvPan() {
+    const view = el('advView');
+    const canvas = el('advCanvas');
+    const w = canvas.offsetWidth, h = canvas.offsetHeight;
+    const vw = view.clientWidth, vh = view.clientHeight;
+    const clamp = (v, lo, hi) => Math.max(Math.min(lo, hi), Math.min(Math.max(lo, hi), v));
+    this._advPan.x = clamp(this._advPan.x, vw - w - 40, 40);
+    this._advPan.y = clamp(this._advPan.y, vh - h - 40, 40);
+    canvas.style.transform = `translate(${this._advPan.x}px, ${this._advPan.y}px)`;
   }
 
   closeProgress() {
@@ -1976,6 +2148,22 @@ export class HUD {
     card.classList.add('show');
     clearTimeout(this._achievementTimer);
     this._achievementTimer = setTimeout(() => card.classList.remove('show'), 4200);
+  }
+
+  /** "New recipes" card, beside the achievement card, for what discovery taught. */
+  showRecipes(ids) {
+    const card = el('recipeCard');
+    if (!card || ids.length === 0) return;
+    card.querySelector('.acIcon').style.backgroundImage = `url(${getTileDataURL(getIconTile(ids[0]))})`;
+    const names = ids.slice(0, 3).map((id) => getDisplayName(id));
+    const more = ids.length - names.length;
+    card.querySelector('.acTitle').textContent = ids.length === 1 ? 'New recipe' : `${ids.length} new recipes`;
+    card.querySelector('.acHint').textContent = names.join(', ') + (more > 0 ? `, and ${more} more` : '');
+    card.classList.remove('show');
+    void card.offsetWidth;
+    card.classList.add('show');
+    clearTimeout(this._recipeTimer);
+    this._recipeTimer = setTimeout(() => card.classList.remove('show'), 3600);
   }
 
   _showItemName() {

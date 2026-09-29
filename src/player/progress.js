@@ -11,62 +11,30 @@
  * silently re-grant or revoke somebody's progress.
  */
 
+import { packEntries, PACKS } from '../content/packs.js';
+
 /**
- * The list.
+ * The advancement tree, from the packs' `advancements` lists (content/core.json):
+ * each has a `tab`, a `parent` (none for a tab's root), a `frame` ('task',
+ * 'goal' or 'challenge') and an `icon` by name. Phase 3 turned the flat list
+ * into this tree (Jev's pick; JEV_DECISIONS.md).
  *
- * `check` is optional: an achievement with one is tested against the stats
- * after every `record()`, so counting goals need no special-casing at the call
- * site. Everything else is unlocked explicitly by name.
+ * `when` is optional: an advancement with one unlocks itself when the game
+ * reports a matching event (see `notify`) or, for `stat`, when a counter
+ * passes a threshold. Everything else is unlocked explicitly by name from the
+ * game code, so advancements from older builds keep their triggers.
  */
-export const ACHIEVEMENTS = [
-  { name: 'wood', title: 'Getting Wood', hint: 'Break a log.' },
-  { name: 'bench', title: 'Benchmarking', hint: 'Craft a crafting table.' },
-  { name: 'pickaxe', title: 'Time to Mine', hint: 'Craft a pickaxe.' },
-  { name: 'furnace', title: 'Hot Topic', hint: 'Craft a furnace.' },
-  { name: 'iron', title: 'Acquire Hardware', hint: 'Smelt an iron ingot.' },
-  { name: 'diamonds', title: 'Diamonds!', hint: 'Mine a diamond.' },
-  {
-    name: 'deep', title: 'Into the Deep', hint: 'Reach bedrock depth.',
-  },
-  { name: 'farmer', title: 'Bake Bread', hint: 'Bake a loaf of bread.' },
-  { name: 'shepherd', title: 'Shear Delight', hint: 'Shear a sheep.' },
-  { name: 'angler', title: 'Catch of the Day', hint: 'Catch a fish.' },
-  { name: 'tamer', title: 'Best Friend', hint: 'Tame a wolf.' },
-  { name: 'sailor', title: 'Row Your Boat', hint: 'Ride a boat.' },
-  { name: 'dj', title: 'Put a Record On', hint: 'Play a record in a jukebox.' },
-  { name: 'combium', title: 'White Metal', hint: 'Smelt a combium ingot.' },
-  // Retitled when fire and water became igniters too — the name key is what
-  // saves are matched on, so the wording can change freely.
-  { name: 'portal', title: 'Doorway', hint: 'Light a portal of any kind.' },
-  { name: 'comb', title: 'The Comb', hint: 'Set foot in the Comb.' },
-  { name: 'obsidian', title: 'Cooling Off', hint: 'Make obsidian by pouring water on lava.' },
-  { name: 'nether', title: 'Downward', hint: 'Light an obsidian portal and step through.' },
-  { name: 'glowstone', title: 'Bring a Light', hint: 'Mine glowstone in the Nether.' },
-  { name: 'aether', title: 'Upward', hint: 'Open a glowstone portal with water.' },
-  { name: 'warden', title: 'Kingslayer', hint: 'Defeat the Warden of the Comb.' },
-  { name: 'throne', title: 'Crowned', hint: 'Awaken a Comb throne.' },
-  { name: 'skater', title: 'Drop In', hint: 'Ride a skateboard.' },
-  { name: 'grinder', title: 'Rail Rider', hint: 'Grind a rail.' },
-  {
-    name: 'sevenTwenty', title: 'Seven Twenty', hint: 'Land a 720 spin.',
-  },
-  {
-    name: 'stylish', title: 'Certified Stylish', hint: 'Bank 10,000 style points.',
-    check: (stats) => stats.get('style') >= 10000,
-  },
-  {
-    name: 'miner', title: 'Well Excavated', hint: 'Break 1,000 blocks.',
-    check: (stats) => stats.get('blocksMined') >= 1000,
-  },
-  {
-    name: 'walker', title: 'The Long Way', hint: 'Travel 10,000 blocks on foot.',
-    check: (stats) => stats.get('distance') >= 10000,
-  },
-  {
-    name: 'survivor', title: 'Still Here', hint: 'Survive ten days.',
-    check: (stats) => stats.get('days') >= 10,
-  },
-];
+export const ACHIEVEMENTS = packEntries('advancements').filter(
+  (a) => typeof a.name === 'string' && typeof a.title === 'string'
+);
+
+/** Tabs, in order, from the packs' `advancementTabs` lists. */
+export const ADVANCEMENT_TABS = [];
+for (const pack of PACKS) {
+  for (const tab of pack.advancementTabs ?? []) {
+    if (!ADVANCEMENT_TABS.some((t) => t.id === tab.id)) ADVANCEMENT_TABS.push(tab);
+  }
+}
 
 const BY_NAME = new Map(ACHIEVEMENTS.map((a) => [a.name, a]));
 
@@ -170,9 +138,38 @@ export class Achievements {
   /** Re-test every counting achievement. Cheap: the list is short. */
   checkAll() {
     for (const achievement of ACHIEVEMENTS) {
-      if (!achievement.check || this.earned.has(achievement.name)) continue;
-      if (achievement.check(this.stats)) this.unlock(achievement.name);
+      const stat = achievement.when?.stat;
+      if (!Array.isArray(stat) || this.earned.has(achievement.name)) continue;
+      if (this.stats.get(stat[0]) >= stat[1]) this.unlock(achievement.name);
     }
+  }
+
+  /**
+   * Something happened that an advancement might be waiting for.
+   *   notify('crafted', 'book')           a name, or any of a list of names
+   *   notify('enchanted', shelves)         at least this many bookshelves
+   *   notify('level', 30)                  at least this level
+   *   notify('discovered', 'fortress')
+   *   notify('event', 'map')               a named one-off
+   */
+  notify(kind, value) {
+    for (const achievement of ACHIEVEMENTS) {
+      if (this.earned.has(achievement.name)) continue;
+      const want = achievement.when?.[kind];
+      if (want === undefined) continue;
+      const hit = typeof want === 'number' ? value >= want
+        : Array.isArray(want) ? want.includes(value)
+        : want === value;
+      if (hit) this.unlock(achievement.name);
+    }
+  }
+
+  /**
+   * Whether the tree shows an advancement yet: earned ones, tab roots, and
+   * anything whose parent is earned. Deeper ones stay hidden, as in Minecraft.
+   */
+  visible(achievement) {
+    return !achievement.parent || this.earned.has(achievement.name) || this.earned.has(achievement.parent);
   }
 
   get progress() {

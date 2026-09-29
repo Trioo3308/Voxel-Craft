@@ -260,6 +260,8 @@ export async function captureState(game, meta = {}) {
       xp: player.experience ? player.experience.total : 0,
       /** Fixes the enchanting table's offers between visits. Optional. */
       enchantSeed: player.enchantSeed,
+      /** Recipes found out about, by result name (discovery.js). Optional. */
+      knownRecipes: game.discovery ? game.discovery.serialize() : undefined,
     },
 
     inventory: {
