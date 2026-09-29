@@ -52,6 +52,20 @@ function blockColour(id) {
   return rgb;
 }
 
+/**
+ * Draw one chunk tile. Each edge is rounded on its own and the size taken from
+ * the difference, so neighbouring tiles share an edge exactly: rounding each
+ * tile's position separately let float error at .5 split two neighbours apart
+ * and open a one-pixel seam of fog right across the map.
+ */
+function drawTile(ctx, tile, cx, cz, left, topZ, s) {
+  const x0 = Math.round((cx * CHUNK_SX - left) * s);
+  const y0 = Math.round((cz * CHUNK_SZ - topZ) * s);
+  const x1 = Math.round(((cx + 1) * CHUNK_SX - left) * s);
+  const y1 = Math.round(((cz + 1) * CHUNK_SZ - topZ) * s);
+  ctx.drawImage(tile, x0, y0, x1 - x0, y1 - y0);
+}
+
 // ---------------------------------------------------------------------------
 // Tile cache: one 16x16 canvas per explored chunk
 // ---------------------------------------------------------------------------
@@ -452,11 +466,7 @@ export class WorldMap {
     for (let cz = cz0; cz <= cz1; cz++) {
       for (let cx = cx0; cx <= cx1; cx++) {
         const tile = tiles.get(dimension, cx, cz);
-        if (!tile) continue;
-        const sx = Math.round((cx * CHUNK_SX - left) * s);
-        const sy = Math.round((cz * CHUNK_SZ - topZ) * s);
-        const size = Math.ceil(CHUNK_SX * s);
-        ctx.drawImage(tile, sx, sy, size, size);
+        if (tile) drawTile(ctx, tile, cx, cz, left, topZ, s);
       }
     }
 
@@ -562,9 +572,7 @@ export class WorldMap {
     for (let cz = cz0; cz <= cz1; cz++) {
       for (let cx = cx0; cx <= cx1; cx++) {
         const tile = tiles.get(dimension, cx, cz);
-        if (!tile) continue;
-        ctx.drawImage(tile, Math.round((cx * CHUNK_SX - left) * s), Math.round((cz * CHUNK_SZ - topZ) * s),
-          Math.ceil(CHUNK_SX * s), Math.ceil(CHUNK_SX * s));
+        if (tile) drawTile(ctx, tile, cx, cz, left, topZ, s);
       }
     }
     const toScreen = (x, z) => [(x - left) * s, (z - topZ) * s];
